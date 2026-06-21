@@ -9,6 +9,10 @@ const schema = z.object({
   TELEGRAM_WEBHOOK_SECRET_TOKEN: z.string().min(1),
   TELEGRAM_BOT_USERNAME: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
+  QSTASH_URL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   QSTASH_TOKEN: z.string().min(1),
   QSTASH_CURRENT_SIGNING_KEY: z.string().min(1),
   QSTASH_NEXT_SIGNING_KEY: z.string().min(1),

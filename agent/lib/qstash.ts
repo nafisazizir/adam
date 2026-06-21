@@ -2,7 +2,7 @@ import { Client, Receiver } from "@upstash/qstash";
 
 import { env } from "#lib/env.js";
 
-const client = new Client({ token: env.QSTASH_TOKEN });
+const client = new Client({ baseUrl: env.QSTASH_URL, token: env.QSTASH_TOKEN });
 
 const receiver = new Receiver({
   currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
