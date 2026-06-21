@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-**Adam** an open-source, proactive personal agent built on the **Eve** framework (Vercel's
+**Adam** a proactive personal agent built on the **Eve** framework (Vercel's
 filesystem-first framework for durable backend agents). Not a chatbot: a durable agent harness where
 every trigger (inbound message, self-scheduled reminder, cron, external event) starts a session whose
 first message is the trigger payload.
