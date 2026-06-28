@@ -11,9 +11,12 @@
     "dev": "eve dev",
     "start": "eve start",
     "typecheck": "tsgo",
-    "telegram:webhook:set": "node --env-file=.env scripts/telegram-webhook.ts set",
-    "telegram:webhook:info": "node --env-file=.env scripts/telegram-webhook.ts info",
-    "telegram:webhook:delete": "node --env-file=.env scripts/telegram-webhook.ts delete"
+    "telegram:webhook:set:dev": "node --env-file=.env.local scripts/telegram-webhook.ts set",
+    "telegram:webhook:info:dev": "node --env-file=.env.local scripts/telegram-webhook.ts info",
+    "telegram:webhook:delete:dev": "node --env-file=.env.local scripts/telegram-webhook.ts delete",
+    "telegram:webhook:set:prod": "node --env-file=.env.production scripts/telegram-webhook.ts set",
+    "telegram:webhook:info:prod": "node --env-file=.env.production scripts/telegram-webhook.ts info",
+    "telegram:webhook:delete:prod": "node --env-file=.env.production scripts/telegram-webhook.ts delete"
   },
   "dependencies": {
     "@upstash/qstash": "^2.11.1",
