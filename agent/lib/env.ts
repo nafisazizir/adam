@@ -16,6 +16,11 @@ const schema = z.object({
   QSTASH_TOKEN: z.string().min(1),
   QSTASH_CURRENT_SIGNING_KEY: z.string().min(1),
   QSTASH_NEXT_SIGNING_KEY: z.string().min(1),
+  RIZ_MCP_URL: z
+    .string()
+    .min(1)
+    .transform((value) => value.replace(/\/+$/, "")),
+  RIZ_MCP_JWT_SECRET: z.string().min(1),
 });
 
 const parsed = schema.safeParse(process.env);
