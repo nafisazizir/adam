@@ -1,6 +1,7 @@
 import type { RouteHandlerArgs } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
+import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
 import telegram from "#channels/telegram.js";
 
 type To = RouteHandlerArgs["to"];
@@ -34,7 +35,19 @@ const telegramDelivery: DeliveryChannel = {
   },
 };
 
-export const deliveryChannels: readonly DeliveryChannel[] = [telegramDelivery];
+const photonDelivery: DeliveryChannel = {
+  name: "photon",
+  targetFromAuth(auth) {
+    if (auth.authenticator !== photonAuthenticator) return null;
+    const threadId = attribute(auth, "thread_id");
+    return threadId ? { threadId, adapterName: photonAdapterName } : null;
+  },
+  deliver({ to, message, target, auth }) {
+    return to(photon, target as { threadId: string; adapterName: string }).send(message, { auth });
+  },
+};
+
+export const deliveryChannels: readonly DeliveryChannel[] = [telegramDelivery, photonDelivery];
 
 export function deliveryChannelForAuth(
   auth: SessionAuthContext,

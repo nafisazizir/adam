@@ -22,6 +22,9 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(1),
   TELEGRAM_WEBHOOK_SECRET_TOKEN: z.string().min(1),
   TELEGRAM_BOT_USERNAME: z.string().min(1),
+  IMESSAGE_PROJECT_ID: z.string().min(1),
+  IMESSAGE_PROJECT_SECRET: z.string().min(1),
+  IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
   QSTASH_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),

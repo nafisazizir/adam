@@ -75,6 +75,7 @@ URL is computed from `BASE_URL`, not its own env var.
   and never leave commented-out code. Reserve a comment for the rare _why_ that the code can't show:
   a non-obvious constraint, a workaround, a deliberate trade-off. If a comment is needed to explain
   _what_ something does, refactor until it isn't.
-- **Scope discipline:** v1 is single-user, Telegram-only, no Redis. Cross-session memory, multi-user,
-  multi-channel, and specialist subagents (`coach`, `inbox`, `finance`) are explicitly deferred — see
-  `spec.md` §7–8 before adding any of them.
+- **Scope discipline:** v1 is single-user, no Redis, and messaging is Telegram + iMessage (Photon)
+  only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
+  Cross-session memory, multi-user, and specialist subagents (`coach`, `inbox`, `finance`) are
+  explicitly deferred — see `spec.md` §7–8 before adding any of them.

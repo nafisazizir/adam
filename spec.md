@@ -14,7 +14,7 @@ where reactive and proactive collapse into one model —
 
 > **`trigger → agent run → (maybe) send a message`**
 
-The channel (Telegram in v1) is just the surface. What makes Adam feel _alive_ rather than reactive
+The channel (Telegram and iMessage) is just the surface. What makes Adam feel _alive_ rather than reactive
 is that it can wake itself up — on a timer it set, on an external event, or on a schedule — and it
 exercises **the right to silence**: most events are not worth interrupting a human for, and Adam is
 expected to decide that.
@@ -95,6 +95,7 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
 ```
                        ┌─────────────── Triggers ───────────────┐
    Telegram webhook ──▶│ inbound message (reactive)             │
+   Photon webhook   ──▶│ inbound iMessage (reactive)            │
    QStash callback  ──▶│ one-shot reminder (self-scheduled)     │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    (future) webhooks──▶│ external events (Strava, email)        │
@@ -103,8 +104,13 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
                  every trigger's payload becomes the session's first message
 ```
 
-- **Channels** (`agent/channels/`): `telegram` (reactive UI + delivery) and `reminders` (custom
-  channel; QStash callback endpoint that hands off to Telegram via `receive`).
+- **Channels** (`agent/channels/`): `telegram` and `photon` (reactive UI + delivery), plus
+  `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
+  the reminder was scheduled from, via `receive`).
+- **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
+  channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
+  knows how to `receive` back into it. Adding a messaging surface is a channel file plus one entry
+  here.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`. Later:
   memory tools, plus connection-provided tools.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
@@ -125,9 +131,11 @@ adam/
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
 │   │   ├── telegram.ts        # telegramChannel({ botUsername })
-│   │   └── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(telegram,…)
+│   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
+│   │   └── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env (zod); derive remindersDeliverUrl from BASE_URL
+│   │   ├── delivery.ts        # delivery-channel registry: auth → { channel, target } → receive
 │   │   └── qstash.ts          # publish / list / cancel + signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -196,9 +204,9 @@ own instructions/tools/connections; inherits nothing from root).
    semantic recall.)
 2. **`coach` (flagship subagent).** riz-mcp + Strava connections. On a new analyzed workout, computes
    next-session recs and calls `schedule_reminder` for ~15 min before the next session. Will still need a bit more work to fit into this architecture, but you'll get the vision.
-3. **Multi-channel.** Add WhatsApp/iMessage by dropping a file in `channels/`. The trigger model and
-   reminder loop are channel-agnostic (`receive` takes any channel; reminder payloads carry
-   `{ channel, target }`).
+3. **Multi-channel.** iMessage (`photon`) has landed; WhatsApp and friends are a file in `channels/`
+   plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
+   (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
 4. **`inbox`.** Gmail connection; triages mail, exercises right-to-silence, schedules follow-ups.
 5. **`finance`.** Spend tracking, anomaly surfacing, weekly summary (cron).
 6. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
