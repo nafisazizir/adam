@@ -6,7 +6,7 @@ export default defineEval({
   tags: ["personality"],
   async test(t) {
     await t.send("ugh i keep forgetting to email my landlord back about the lease");
-    t.completed();
+    t.succeeded();
     assertHouseStyle(t);
     t.judge.autoevals
       .closedQA(

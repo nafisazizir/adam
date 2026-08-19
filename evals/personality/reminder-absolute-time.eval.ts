@@ -6,10 +6,9 @@ export default defineEval({
   tags: ["personality", "behavior"],
   async test(t) {
     await t.send("remind me to take my meds at 9pm");
-    const requests = t.expectInputRequests();
-    t.waiting();
+    t.parked();
+    const question = t.requireInputRequest().prompt;
     assertHouseStyle(t);
-    const question = requests[0]?.prompt ?? "";
     t.judge.autoevals
       .closedQA(
         "Asks the user how long from now the reminder should fire, rather than silently assuming an absolute clock time. A short, casual question counts as success.",

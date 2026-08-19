@@ -13,7 +13,7 @@ const reminderAuth: SessionAuthContext = {
 
 export default defineChannel({
   routes: [
-    POST("/deliver", async (req, { receive, waitUntil }) => {
+    POST("/deliver", async (req, { to, waitUntil }) => {
       const signature = req.headers.get("upstash-signature") ?? "";
       const body = await req.text();
 
@@ -34,7 +34,7 @@ export default defineChannel({
 
       waitUntil(
         delivery.deliver({
-          receive,
+          to,
           message: `A reminder you scheduled earlier is now due: ${message}`,
           target,
           auth: reminderAuth,

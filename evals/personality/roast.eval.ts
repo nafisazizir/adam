@@ -6,7 +6,7 @@ export default defineEval({
   tags: ["personality"],
   async test(t) {
     await t.send("just crushed my third energy drink today, feeling unstoppable");
-    t.completed();
+    t.succeeded();
     assertHouseStyle(t);
     t.judge.autoevals
       .closedQA(

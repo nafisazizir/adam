@@ -3,13 +3,13 @@ import type { SessionAuthContext } from "eve/context";
 
 import telegram from "#channels/telegram.js";
 
-type Receive = RouteHandlerArgs["receive"];
+type To = RouteHandlerArgs["to"];
 
 export interface DeliveryChannel {
   readonly name: string;
   targetFromAuth(auth: SessionAuthContext): Record<string, unknown> | null;
   deliver(args: {
-    receive: Receive;
+    to: To;
     message: string;
     target: Record<string, unknown>;
     auth: SessionAuthContext;
@@ -29,8 +29,8 @@ const telegramDelivery: DeliveryChannel = {
     const chatId = attribute(auth, "chat_id");
     return chatId ? { chatId } : null;
   },
-  deliver({ receive, message, target, auth }) {
-    return receive(telegram, { message, target: target as { chatId: string }, auth });
+  deliver({ to, message, target, auth }) {
+    return to(telegram, target as { chatId: string }).send(message, { auth });
   },
 };
 
