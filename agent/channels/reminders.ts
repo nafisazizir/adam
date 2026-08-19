@@ -3,6 +3,7 @@ import type { SessionAuthContext } from "eve/context";
 
 import { deliveryChannelByName } from "#lib/delivery.js";
 import { verifyReminderSignature } from "#lib/qstash.js";
+import { currentTimeContext } from "#lib/time.js";
 
 const reminderAuth: SessionAuthContext = {
   attributes: {},
@@ -32,10 +33,12 @@ export default defineChannel({
         return new Response(`unknown delivery channel: ${channel}`, { status: 400 });
       }
 
+      // Local time rides in the message body: eve's proactive receive() path
+      // has no `context` field, unlike an inbound channel dispatch.
       waitUntil(
         delivery.deliver({
           to,
-          message: `A reminder you scheduled earlier is now due: ${message}`,
+          message: `${currentTimeContext()}\n\nA reminder you scheduled earlier is now due: ${message}`,
           target,
           auth: reminderAuth,
         }),

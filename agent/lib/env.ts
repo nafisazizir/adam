@@ -1,6 +1,20 @@
 import { z } from "zod";
 
+function isValidTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-AU", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const schema = z.object({
+  USER_TIMEZONE: z
+    .string()
+    .min(1)
+    .default("Australia/Brisbane")
+    .refine(isValidTimeZone, "must be a valid IANA time zone name"),
   BASE_URL: z
     .string()
     .min(1)
