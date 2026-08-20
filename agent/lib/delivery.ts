@@ -2,7 +2,6 @@ import type { RouteHandlerArgs } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
-import telegram from "#channels/telegram.js";
 
 type To = RouteHandlerArgs["to"];
 
@@ -23,18 +22,6 @@ function attribute(auth: SessionAuthContext, key: string): string | undefined {
   return String(Array.isArray(value) ? value[0] : value);
 }
 
-const telegramDelivery: DeliveryChannel = {
-  name: "telegram",
-  targetFromAuth(auth) {
-    if (auth.authenticator !== "telegram-webhook") return null;
-    const chatId = attribute(auth, "chat_id");
-    return chatId ? { chatId } : null;
-  },
-  deliver({ to, message, target, auth }) {
-    return to(telegram, target as { chatId: string }).send(message, { auth });
-  },
-};
-
 const photonDelivery: DeliveryChannel = {
   name: "photon",
   targetFromAuth(auth) {
@@ -47,7 +34,7 @@ const photonDelivery: DeliveryChannel = {
   },
 };
 
-export const deliveryChannels: readonly DeliveryChannel[] = [telegramDelivery, photonDelivery];
+export const deliveryChannels: readonly DeliveryChannel[] = [photonDelivery];
 
 export function deliveryChannelForAuth(
   auth: SessionAuthContext,

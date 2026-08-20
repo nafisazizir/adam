@@ -14,7 +14,7 @@ where reactive and proactive collapse into one model —
 
 > **`trigger → agent run → (maybe) send a message`**
 
-The channel (Telegram and iMessage) is just the surface. What makes Adam feel _alive_ rather than reactive
+The channel (iMessage, via Photon) is just the surface. What makes Adam feel _alive_ rather than reactive
 is that it can wake itself up — on a timer it set, on an external event, or on a schedule — and it
 exercises **the right to silence**: most events are not worth interrupting a human for, and Adam is
 expected to decide that.
@@ -38,7 +38,7 @@ and runs it. It collapses almost the entire hand-rolled stack we'd otherwise bui
 
 | Need                                                | Eve provides                                                                                                                                 |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Webhooks / HTTP routing                             | **Channels** (`telegram.ts` mounts its own webhook + HITL inline keyboards)                                                                  |
+| Webhooks / HTTP routing                             | **Channels** (`photon.ts` mounts its own webhook)                                                                                            |
 | Durability / crash-safety / retries                 | **Built-in** — every turn is a durable workflow (Workflow SDK under the hood); sessions survive redeploys                                    |
 | Per-user, per-channel chat history + context window | **Durable sessions** keyed by `continuationToken`; history is append-only + durable; **compaction** manages the context window automatically |
 | Conversation-scoped working memory                  | **`defineState`** (durable per-session)                                                                                                      |
@@ -47,8 +47,7 @@ and runs it. It collapses almost the entire hand-rolled stack we'd otherwise bui
 | Specialist agents                                   | **Declared subagents** (`agent/subagents/<id>/`)                                                                                             |
 | Recurring jobs                                      | **Schedules** (`agent/schedules/*.ts`, become Vercel Cron)                                                                                   |
 
-**Key consequence:** we do **not** build our own conversation store. Each Telegram chat / iMessage
-channel / forum thread is its own Eve session, durable and compacted. "Redis for fast per-user
+**Key consequence:** we do **not** build our own conversation store. Each iMessage thread is its own Eve session, durable and compacted. "Redis for fast per-user
 history" is something Eve _already is_.
 
 Docs (bundled with the `eve` npm package): `node_modules/eve/docs/README.md`.
@@ -80,7 +79,7 @@ schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, not
                                           ▼
         POST https://<app>/eve/v1/reminders/deliver
                                           ──> verify Upstash-Signature
-                                          ──> receive(telegram, { message: context, target:{chatId}, auth })
+                                          ──> receive(photon, { message: context, target:{threadId}, auth })
                                           ──> session starts, message lands on the phone
 list_reminders / cancel_reminder ───────> QStash messages API
 ```
@@ -94,7 +93,6 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
 
 ```
                        ┌─────────────── Triggers ───────────────┐
-   Telegram webhook ──▶│ inbound message (reactive)             │
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
    QStash callback  ──▶│ one-shot reminder (self-scheduled)     │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
@@ -104,7 +102,7 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
                  every trigger's payload becomes the session's first message
 ```
 
-- **Channels** (`agent/channels/`): `telegram` and `photon` (reactive UI + delivery), plus
+- **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
   the reminder was scheduled from, via `receive`).
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
@@ -130,7 +128,6 @@ adam/
 │   ├── agent.ts               # model: anthropic/claude-sonnet-4.6
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
-│   │   ├── telegram.ts        # telegramChannel({ botUsername })
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
 │   │   └── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
 │   ├── lib/
@@ -160,11 +157,11 @@ adam/
 
 ## 7. v1 scope & non-goals
 
-**In:** Telegram round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
+**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
 `briefing` cron · right-to-silence instructions.
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · specialist subagents
-· external-event webhooks · inbound burst debouncing (low-risk single-user; add a Telegram
+· external-event webhooks · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
 ### Environment variables
@@ -175,8 +172,9 @@ its own env var; it's computed from `BASE_URL` as `remindersDeliverUrl = \`${BAS
 
 ```
 BASE_URL=...                        # app's public origin, e.g. https://adam.vercel.app (deliver URL derived in env.ts)
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_WEBHOOK_SECRET_TOKEN=...
+IMESSAGE_PROJECT_ID=...             # Photon project
+IMESSAGE_PROJECT_SECRET=...
+IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
@@ -186,7 +184,7 @@ AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY
 ### Deployment notes
 
 - Deploy to Vercel; schedules become Vercel Cron (verify under Settings → Cron Jobs).
-- Register the Telegram webhook manually after deploy (`setWebhook`); Eve does not call it. Re-run if
+- Point the Photon project's webhook at the deployed `photon` channel route after deploy. Re-run if
   the URL changes.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
@@ -199,12 +197,12 @@ own instructions/tools/connections; inherits nothing from root).
 
 1. **Cross-session memory + the Redis layer.** When multi-user/multi-channel arrives, Eve still owns
    per-`(channel, user)` history. **Redis becomes the _identity + long-term memory_ layer, NOT
-   history:** durable per-user facts keyed `user:<id>` that span sessions/channels, plus mapping a
-   Telegram chatId + a WhatsApp number to the same logical user. (Postgres/pgvector if memory needs
+   history:** durable per-user facts keyed `user:<id>` that span sessions/channels, plus mapping an
+   iMessage handle + a WhatsApp number to the same logical user. (Postgres/pgvector if memory needs
    semantic recall.)
 2. **`coach` (flagship subagent).** riz-mcp + Strava connections. On a new analyzed workout, computes
    next-session recs and calls `schedule_reminder` for ~15 min before the next session. Will still need a bit more work to fit into this architecture, but you'll get the vision.
-3. **Multi-channel.** iMessage (`photon`) has landed; WhatsApp and friends are a file in `channels/`
+3. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
    plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
    (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
 4. **`inbox`.** Gmail connection; triages mail, exercises right-to-silence, schedules follow-ups.

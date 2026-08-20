@@ -54,7 +54,7 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
 - **Scheduling a reminder is a tool** (`schedule_reminder`), called by the model mid-turn; it
   publishes to QStash via `lib/qstash.ts`. **Delivering a reminder is a channel** (`channels/reminders.ts`):
   at fire-time no agent is running, so QStash makes an inbound HTTP POST to a route, and only a
-  channel can receive inbound HTTP _and start a fresh session_ (via `receive(telegram, …)`). Delivery
+  channel can receive inbound HTTP _and start a fresh session_ (via `receive(photon, …)`). Delivery
   re-enters the agent on purpose, so it can exercise right-to-silence, recall context, and compose —
   not blindly send a string.
 - **`receive(channel, { message, target, auth })`** is the primitive for starting a session without
@@ -75,7 +75,7 @@ URL is computed from `BASE_URL`, not its own env var.
   and never leave commented-out code. Reserve a comment for the rare _why_ that the code can't show:
   a non-obvious constraint, a workaround, a deliberate trade-off. If a comment is needed to explain
   _what_ something does, refactor until it isn't.
-- **Scope discipline:** v1 is single-user, no Redis, and messaging is Telegram + iMessage (Photon)
+- **Scope discipline:** v1 is single-user, no Redis, and messaging is iMessage (Photon)
   only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
   Cross-session memory, multi-user, and specialist subagents (`coach`, `inbox`, `finance`) are
   explicitly deferred — see `spec.md` §7–8 before adding any of them.
