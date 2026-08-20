@@ -9,6 +9,8 @@ function isValidTimeZone(value: string): boolean {
   }
 }
 
+export const remindersDeliverPath = "/eve/v1/reminders/deliver";
+
 const schema = z.object({
   USER_TIMEZONE: z
     .string()
@@ -48,5 +50,5 @@ if (!parsed.success) {
 
 export const env = {
   ...parsed.data,
-  remindersDeliverUrl: `${parsed.data.BASE_URL}/eve/v1/reminders/deliver`,
+  remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
 };

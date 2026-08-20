@@ -2,6 +2,7 @@ import { defineChannel, POST } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import { deliveryChannelByName } from "#lib/delivery.js";
+import { remindersDeliverPath } from "#lib/env.js";
 import { verifyReminderSignature } from "#lib/qstash.js";
 import { currentTimeContext } from "#lib/time.js";
 
@@ -14,7 +15,7 @@ const reminderAuth: SessionAuthContext = {
 
 export default defineChannel({
   routes: [
-    POST("/deliver", async (req, { to, waitUntil }) => {
+    POST(remindersDeliverPath, async (req, { to, waitUntil }) => {
       const signature = req.headers.get("upstash-signature") ?? "";
       const body = await req.text();
 
