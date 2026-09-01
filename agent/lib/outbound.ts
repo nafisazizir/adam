@@ -1,4 +1,6 @@
 const IMAGE_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
+const BUBBLE_BREAK = /^[ \t]*---[ \t]*$/m;
+const MAX_BUBBLES = 3;
 const MAX_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -42,6 +44,22 @@ async function fetchImage(rawUrl: string): Promise<OutboundFile | null> {
   if (data.byteLength === 0 || data.byteLength > MAX_BYTES) return null;
 
   return { data, filename: filenameFor(url, mimeType), mimeType };
+}
+
+/**
+ * Splits a reply on lone `---` lines, the delimiter instructions.md teaches the
+ * model. Anything past the cap folds into the last bubble so nothing is lost.
+ */
+export function splitBubbles(message: string): string[] {
+  const segments = message
+    .split(BUBBLE_BREAK)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length <= MAX_BUBBLES) return segments;
+
+  const head = segments.slice(0, MAX_BUBBLES - 1);
+  const tail = segments.slice(MAX_BUBBLES - 1).join("\n\n");
+  return [...head, tail];
 }
 
 export async function renderOutbound(message: string): Promise<OutboundMessage> {
