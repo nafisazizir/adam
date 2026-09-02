@@ -109,8 +109,15 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
   knows how to `receive` back into it. Adding a messaging surface is a channel file plus one entry
   here.
-- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`. Later:
-  memory tools, plus connection-provided tools.
+- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`.
+  Later: memory tools, plus connection-provided tools.
+- **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
+  model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
+  the allowlist (`image/*` plus common audio types), and hands the bytes to the channel as a file.
+  Attachment kinds are an allowlist entry, not a code path, and an unreachable or disallowed url
+  degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI Gateway) and
+  `lib/assets.ts` (bytes → public https url, via Vercel Blob) are the two seams behind
+  `generate_speech`; a different TTS provider or blob store is a one-file change.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -133,11 +140,15 @@ adam/
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env (zod); derive remindersDeliverUrl from BASE_URL
 │   │   ├── delivery.ts        # delivery-channel registry: auth → { channel, target } → receive
+│   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
+│   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
+│   │   ├── assets.ts          # bytes → public https url (Vercel Blob)
 │   │   └── qstash.ts          # publish / list / cancel + signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
 │   │   ├── cancel_reminder.ts
-│   │   └── list_reminders.ts
+│   │   ├── list_reminders.ts
+│   │   └── generate_speech.ts # speak text, upload, return the url the model embeds
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
 └── .env
@@ -158,7 +169,9 @@ adam/
 ## 7. v1 scope & non-goals
 
 **In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
-`briefing` cron · right-to-silence instructions.
+`briefing` cron · right-to-silence instructions · outbound image and audio attachments, with
+`generate_speech` for the occasional voice note (text stays the default; see
+`agent/instructions.md`).
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · specialist subagents
 · external-event webhooks · inbound burst debouncing (low-risk single-user; add a Photon
@@ -178,7 +191,10 @@ IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
-AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY
+AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
+BLOB_READ_WRITE_TOKEN=...           # Vercel Blob, hosts generated audio at a public url
+SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
+SPEECH_VOICE=...                    # optional, defaults to alloy
 ```
 
 ### Deployment notes

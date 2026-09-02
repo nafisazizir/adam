@@ -41,6 +41,8 @@ regress.
 | best-friend-no-moralizing     | helps the harmless white lie, no lecture |
 | plain-text-style              | plain text, lowercase, no markdown |
 | reminder-absolute-time        | works out relative timing, no silent assumption |
+| voice-note-restraint          | text by default, no unasked-for voice note |
+| voice-note-on-request         | speaks when asked, and embeds the clip as `![](url)` |
 
 ## Running
 
@@ -51,7 +53,8 @@ eve eval personality --strict   # soft judge thresholds also fail the exit code
 ```
 
 Evals boot a local dev server and call live models (Adam under test plus the judge),
-so they need the same `.env` credentials the app uses and they cost tokens.
+so they need the same `.env` credentials the app uses and they cost tokens. The `voice`
+tag also hits the speech model and Vercel Blob, so `BLOB_READ_WRITE_TOKEN` has to be set.
 
 ## Judge model
 

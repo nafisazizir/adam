@@ -11,15 +11,18 @@ importers:
       '@upstash/qstash':
         specifier: ^2.11.1
         version: 2.11.1
+      '@vercel/blob':
+        specifier: 2.8.0
+        version: 2.8.0
       '@vercel/connect':
         specifier: 0.2.2
-        version: 0.2.2(ai@7.0.68(zod@4.4.3))(eve@0.39.1(ai@7.0.68(zod@4.4.3)))
+        version: 0.2.2(ai@7.0.68(zod@4.4.3))(eve@0.39.1(@vercel/blob@2.8.0)(ai@7.0.68(zod@4.4.3)))
       ai:
         specifier: 7.0.68
         version: 7.0.68(zod@4.4.3)
       eve:
         specifier: ^0.39.1
-        version: 0.39.1(ai@7.0.68(zod@4.4.3))
+        version: 0.39.1(@vercel/blob@2.8.0)(ai@7.0.68(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -224,6 +227,10 @@ packages:
   '@upstash/qstash@2.11.1':
     resolution: {integrity: sha512-rq8e/40lgWThlfMZUsOUtABW6gZ+dzrl+CjESmHE8oL6l7hUp2kK1bni1auNBjxz5cpHqPheFlVqufNXbK+cVg==}
 
+  '@vercel/blob@2.8.0':
+    resolution: {integrity: sha512-Nu+HWKpkgovCh/ezlG7wCVwF7RErTzLzZMbGKFBdGBCbTKyK+s5VXPLl+0+TpNEQPH8AVaGzOpIsXUOtkqylCQ==}
+    engines: {node: '>=20.0.0'}
+
   '@vercel/cli-config@0.2.0':
     resolution: {integrity: sha512-fJRRRB7734BDuXZ89yBEaA2ncYhH7bWX30mk04W80J6VAfQc+4iB8lyzAdaGpFV3/vNlkt9VZt+/uoQoWX6UsQ==}
 
@@ -268,6 +275,9 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  async-retry@1.3.3:
+    resolution: {integrity: sha512-wfr/jstw9xNi/0teMHrRW7dsz3Lt5ARhYNZ2ewpadnhaIp5mbALhOAP+EAdsC7t4Z6wqsDVv9+W6gm1Dk9mEyw==}
+
   consola@3.4.2:
     resolution: {integrity: sha512-5IKcdX0nnYavi6G7TtOhwkYzyjfJlatbjMjuLSfE2kYT5pMDOilZ4OvMhi637CcDICTmz3wARPoyhqyX1Y+XvA==}
     engines: {node: ^14.18.0 || >=16.10.0}
@@ -286,6 +296,7 @@ packages:
 
   crypto-js@4.2.0:
     resolution: {integrity: sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==}
+    deprecated: Active development of CryptoJS has been discontinued. This library is no longer maintained.
 
   db0@0.3.4:
     resolution: {integrity: sha512-RiXXi4WaNzPTHEOu8UPQKMooIbqOEyqA1t7Z6MsdxSCeb8iUC9ko3LcmsLmeUt2SM5bctfArZKkRQggKZz7JNw==}
@@ -383,6 +394,13 @@ packages:
     resolution: {integrity: sha512-B4FFZ6q/T2jhhksgkbEW3HBvWIfDW85snkQgawt07S7J5QXTk6BkNV+0yAeZrM5QpMAdYlocGoljn0sJ/WQkFw==}
     engines: {node: '>=10.17.0'}
 
+  is-buffer@2.0.5:
+    resolution: {integrity: sha512-i2R6zNFDwgEHJyQUtJEk0XFi1i0dPFn/oqjK3/vPCcDeJvW5NQ83V8QbicfF1SupOaB0h8ntgBC2YiE7dfyctQ==}
+    engines: {node: '>=4'}
+
+  is-node-process@1.2.0:
+    resolution: {integrity: sha512-Vg4o6/fqPxIjtxgUH5QLJhwZ7gW5diGCVlXpuUfELC62CuxM1iHcRe51f2W1FDy04Ai4KJkagKjx3XaqyfRKXw==}
+
   is-stream@2.0.1:
     resolution: {integrity: sha512-hFoiJiTl63nn+kstHGBtewWSKnQLpyb155KHheA1l39uvtO9nWIop1p3udqPcUd/xbF1VLMO4n7OI6p7RbngDg==}
     engines: {node: '>=8'}
@@ -469,6 +487,10 @@ packages:
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
 
+  retry@0.13.1:
+    resolution: {integrity: sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg==}
+    engines: {node: '>= 4'}
+
   rolldown@1.1.1:
     resolution: {integrity: sha512-IN750c0p+s3jqJIsFLRZrQazmbAB1kkQDTtQjSt/gbS2ywLhlv4R5Shazer0FZKmuo/BsO3/w2UoYnUjuOZqHg==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -497,11 +519,19 @@ packages:
     resolution: {integrity: sha512-BrpvfNAE3dcvq7ll3xVumzjKjZQ5tI1sEUIKr3Uoks0XUl45St3FlatVqef9prk4jRDzhW6WZg+3bk93y6pLjA==}
     engines: {node: '>=6'}
 
+  throttleit@2.1.0:
+    resolution: {integrity: sha512-nt6AMGKW1p/70DF/hGBdJB57B8Tspmbp5gfJ8ilhLnt7kkr2ye7hzD6NVG8GGErk2HWF34igrL2CXmNIkzKqKw==}
+    engines: {node: '>=18'}
+
   tslib@2.8.1:
     resolution: {integrity: sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==}
 
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  undici@6.28.0:
+    resolution: {integrity: sha512-LIY910g9TI13YS95lrMFrs8Rm/u/irgHeTWoKCoteeJ04CUJ92eEfj0rVn+7VKMPBpUPiUoBKfhNyLI23EE/KA==}
+    engines: {node: '>=18.17'}
 
   undici@7.29.0:
     resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
@@ -753,6 +783,15 @@ snapshots:
       jose: 5.10.0
       neverthrow: 7.2.0
 
+  '@vercel/blob@2.8.0':
+    dependencies:
+      '@vercel/oidc': 3.6.1
+      async-retry: 1.3.3
+      is-buffer: 2.0.5
+      is-node-process: 1.2.0
+      throttleit: 2.1.0
+      undici: 6.28.0
+
   '@vercel/cli-config@0.2.0':
     dependencies:
       xdg-app-paths: 5.5.1
@@ -762,12 +801,12 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.2.2(ai@7.0.68(zod@4.4.3))(eve@0.39.1(ai@7.0.68(zod@4.4.3)))':
+  '@vercel/connect@0.2.2(ai@7.0.68(zod@4.4.3))(eve@0.39.1(@vercel/blob@2.8.0)(ai@7.0.68(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.6.1
     optionalDependencies:
       ai: 7.0.68(zod@4.4.3)
-      eve: 0.39.1(ai@7.0.68(zod@4.4.3))
+      eve: 0.39.1(@vercel/blob@2.8.0)(ai@7.0.68(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -785,6 +824,10 @@ snapshots:
       '@ai-sdk/provider': 4.0.7
       '@ai-sdk/provider-utils': 5.0.27(zod@4.4.3)
       zod: 4.4.3
+
+  async-retry@1.3.3:
+    dependencies:
+      retry: 0.13.1
 
   consola@3.4.2: {}
 
@@ -809,10 +852,10 @@ snapshots:
       httpxy: 0.5.3
       srvx: 0.11.16
 
-  eve@0.39.1(ai@7.0.68(zod@4.4.3)):
+  eve@0.39.1(@vercel/blob@2.8.0)(ai@7.0.68(zod@4.4.3)):
     dependencies:
       ai: 7.0.68(zod@4.4.3)
-      nitro: 3.0.260610-beta
+      nitro: 3.0.260610-beta(@vercel/blob@2.8.0)
       undici: 8.9.0
     transitivePeerDependencies:
       - '@azure/app-configuration'
@@ -885,6 +928,10 @@ snapshots:
 
   human-signals@2.1.0: {}
 
+  is-buffer@2.0.5: {}
+
+  is-node-process@1.2.0: {}
+
   is-stream@2.0.1: {}
 
   isexe@2.0.0: {}
@@ -901,7 +948,7 @@ snapshots:
 
   nf3@0.3.17: {}
 
-  nitro@3.0.260610-beta:
+  nitro@3.0.260610-beta(@vercel/blob@2.8.0):
     dependencies:
       consola: 3.4.2
       crossws: 0.4.6(srvx@0.11.16)
@@ -916,7 +963,7 @@ snapshots:
       rolldown: 1.1.1
       srvx: 0.11.16
       unenv: 2.0.0-rc.24
-      unstorage: 2.0.0-alpha.7(db0@0.3.4)(ofetch@2.0.0-alpha.3)
+      unstorage: 2.0.0-alpha.7(@vercel/blob@2.8.0)(db0@0.3.4)(ofetch@2.0.0-alpha.3)
     transitivePeerDependencies:
       - '@azure/app-configuration'
       - '@azure/cosmos'
@@ -971,6 +1018,8 @@ snapshots:
 
   pathe@2.0.3: {}
 
+  retry@0.13.1: {}
+
   rolldown@1.1.1:
     dependencies:
       '@oxc-project/types': 0.135.0
@@ -1006,10 +1055,14 @@ snapshots:
 
   strip-final-newline@2.0.0: {}
 
+  throttleit@2.1.0: {}
+
   tslib@2.8.1:
     optional: true
 
   undici-types@7.18.2: {}
+
+  undici@6.28.0: {}
 
   undici@7.29.0: {}
 
@@ -1019,8 +1072,9 @@ snapshots:
     dependencies:
       pathe: 2.0.3
 
-  unstorage@2.0.0-alpha.7(db0@0.3.4)(ofetch@2.0.0-alpha.3):
+  unstorage@2.0.0-alpha.7(@vercel/blob@2.8.0)(db0@0.3.4)(ofetch@2.0.0-alpha.3):
     optionalDependencies:
+      '@vercel/blob': 2.8.0
       db0: 0.3.4
       ofetch: 2.0.0-alpha.3
 
