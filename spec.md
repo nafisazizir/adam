@@ -123,6 +123,11 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
   handoff rather than storage — `renderOutbound` reports the urls it turned into files and the
   channel calls `releaseAssets` once iMessage has its own copy. Urls Adam did not publish are
   fetched plainly and never deleted.
+  The render path deliberately does **not** check where a url came from: a fabricated url is
+  unfetchable and already degrades to a raw link, a guessed Blob url fails `readAsset`, and a
+  provenance allowlist would reject legitimate photo urls the user pasted. Provenance is a
+  prompt-level rule instead (`agent/instructions.md` "Attachments": a url is only ever one the
+  user sent or a tool returned this turn), gated by the `voice-note-provenance` eval.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This

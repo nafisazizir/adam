@@ -2,6 +2,8 @@ import { defineEval } from "eve/evals";
 import { matches } from "eve/evals/expect";
 import { z } from "zod";
 
+import { assertMediaProvenance } from "#evals/personality/media.js";
+
 const attachesAudio = z
   .string()
   .refine(
@@ -13,9 +15,10 @@ export default defineEval({
   description: "Voice on request: an explicit ask for a voice note produces an embedded clip.",
   tags: ["personality", "voice"],
   async test(t) {
-    await t.send("send me that as a voice note: good luck at the race tomorrow");
+    const turn = await t.send("send me that as a voice note: good luck at the race tomorrow");
     t.succeeded();
     t.calledTool("generate_speech");
     t.check(t.reply ?? "", matches(attachesAudio));
+    assertMediaProvenance(t, turn);
   },
 });

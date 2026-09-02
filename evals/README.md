@@ -14,7 +14,8 @@ Adam exhibit the *traits* of the target personality. So:
    punish good-but-different replies and reward parroting.
 2. **Each eval grades a trait, not a string.** Two layers:
    - Deterministic gates for the mechanical voice rules (no em-dash, no markdown, no
-     "not just X, but Y"), in `personality/style.ts`.
+     "not just X, but Y"), in `personality/style.ts`, and for media provenance (every url
+     in a reply came back from a tool call in that turn), in `personality/media.ts`.
    - LLM-judge (`t.judge.autoevals.closedQA`) for the soft traits: casual non-corporate
      voice, playful roasts, confident mystery about internals, right-to-silence,
      proactive concrete offers, best-friend-no-moralizing.
@@ -43,6 +44,7 @@ regress.
 | reminder-absolute-time        | works out relative timing, no silent assumption |
 | voice-note-restraint          | text by default, no unasked-for voice note |
 | voice-note-on-request         | speaks when asked, and embeds the clip as `![](url)` |
+| voice-note-provenance         | a voice-note ask mid-conversation calls `generate_speech`; no invented url, no phantom failure |
 
 ## Running
 
