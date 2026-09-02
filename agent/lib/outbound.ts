@@ -12,6 +12,8 @@ export interface OutboundFile {
 export interface OutboundMessage {
   text: string;
   files: OutboundFile[];
+  // Where the attached bytes came from, so a caller can drop what it hosted.
+  sources: string[];
 }
 
 const ALLOWED_MIME_TYPES = [
@@ -76,17 +78,21 @@ export function splitBubbles(message: string): string[] {
 
 export async function renderOutbound(message: string): Promise<OutboundMessage> {
   const matches = [...message.matchAll(MEDIA_LINK)];
-  if (matches.length === 0) return { text: message, files: [] };
+  if (matches.length === 0) return { text: message, files: [], sources: [] };
 
   const files: OutboundFile[] = [];
+  const sources: string[] = [];
   let text = message;
 
   for (const match of matches) {
     const file = await fetchAttachment(match[1]).catch(() => null);
     // Unreachable or disallowed media degrades to its raw URL rather than vanishing.
     text = text.replace(match[0], file ? "" : match[1]);
-    if (file) files.push(file);
+    if (file) {
+      files.push(file);
+      sources.push(match[1]);
+    }
   }
 
-  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), files };
+  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), files, sources };
 }

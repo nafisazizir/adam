@@ -118,6 +118,9 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
   degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI Gateway) and
   `lib/assets.ts` (bytes → public https url, via Vercel Blob) are the two seams behind
   `generate_speech`; a different TTS provider or blob store is a one-file change.
+  Hosting is a handoff, not storage: `renderOutbound` reports the urls it turned into files, and the
+  channel calls `releaseAssets` once iMessage has its own copy, so a generated clip is public for
+  the seconds it takes to deliver rather than forever. Urls Adam did not publish are left alone.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -142,7 +145,7 @@ adam/
 │   │   ├── delivery.ts        # delivery-channel registry: auth → { channel, target } → receive
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
-│   │   ├── assets.ts          # bytes → public https url (Vercel Blob)
+│   │   ├── assets.ts          # bytes → public https url (Vercel Blob), dropped after delivery
 │   │   └── qstash.ts          # publish / list / cancel + signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
