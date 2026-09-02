@@ -1,4 +1,5 @@
 const IMAGE_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
+const BUBBLE_BREAK = /^[ \t]*---[ \t]*$/m;
 const MAX_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
 
@@ -42,6 +43,14 @@ async function fetchImage(rawUrl: string): Promise<OutboundFile | null> {
   if (data.byteLength === 0 || data.byteLength > MAX_BYTES) return null;
 
   return { data, filename: filenameFor(url, mimeType), mimeType };
+}
+
+// Lone `---` lines are the bubble delimiter instructions.md teaches the model.
+export function splitBubbles(message: string): string[] {
+  return message
+    .split(BUBBLE_BREAK)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
 }
 
 export async function renderOutbound(message: string): Promise<OutboundMessage> {

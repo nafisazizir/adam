@@ -1,11 +1,15 @@
 import { photonIMessageChannel } from "eve/channels/photon";
 
 import { env } from "#lib/env.js";
-import { renderOutbound } from "#lib/outbound.js";
+import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { currentTimeContext } from "#lib/time.js";
 
 export const photonAdapterName = "imessage";
 export const photonAuthenticator = "photon-imessage";
+
+const BUBBLE_GAP_MS = 400;
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function firstNonEmptyLine(message: string): string | null {
   for (const line of message.split(/\r?\n/u)) {
@@ -23,7 +27,8 @@ export default photonIMessageChannel({
   webhookSecret: env.IMESSAGE_WEBHOOK_SECRET,
   events: {
     // Replaces the default text-only post so image links become real iMessage
-    // attachments. Streaming is off for this channel, so a turn posts once here.
+    // attachments and a reply lands as a few bubbles. Streaming is off for this
+    // channel, so a turn is delivered once here.
     async "message.completed"(event, channel) {
       if (event.finishReason === "tool-calls") {
         channel.state.pendingToolCallMessage = event.message
@@ -35,10 +40,15 @@ export default photonIMessageChannel({
       channel.state.pendingToolCallMessage = null;
       if (!event.message || !channel.thread) return;
 
-      const { text, files } = await renderOutbound(event.message);
-      if (text.length === 0 && files.length === 0) return;
+      let posted = 0;
+      for (const bubble of splitBubbles(event.message)) {
+        const { text, files } = await renderOutbound(bubble);
+        if (text.length === 0 && files.length === 0) continue;
 
-      await channel.thread.post({ markdown: text, files });
+        if (posted > 0) await pause(BUBBLE_GAP_MS);
+        await channel.thread.post({ markdown: text, files });
+        posted += 1;
+      }
     },
   },
   onMessage(_ctx, message) {
