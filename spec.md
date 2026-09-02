@@ -192,7 +192,7 @@ QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # Vercel Blob, hosts generated audio at a public url
+BLOB_READ_WRITE_TOKEN=...           # optional; injected by Vercel once a Blob store is connected, hosts generated audio
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
 ```

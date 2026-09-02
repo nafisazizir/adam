@@ -33,7 +33,12 @@ const schema = z.object({
     (value) => (value === "" ? undefined : value),
     z.string().min(1).default("alloy"),
   ),
-  BLOB_READ_WRITE_TOKEN: z.string().min(1),
+  // Vercel injects this only once a Blob store is connected, so a project
+  // without one still boots; publishAsset is what fails.
+  BLOB_READ_WRITE_TOKEN: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   QSTASH_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional(),

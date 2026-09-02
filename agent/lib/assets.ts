@@ -15,6 +15,12 @@ export async function publishAsset({
   filename,
   mimeType,
 }: PublishableAsset): Promise<string> {
+  if (!env.BLOB_READ_WRITE_TOKEN) {
+    throw new Error(
+      "No blob store is configured, so I cannot host this file: connect a Vercel Blob store.",
+    );
+  }
+
   const { url } = await put(filename, Buffer.from(data), {
     access: "public",
     addRandomSuffix: true,
