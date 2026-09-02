@@ -62,7 +62,10 @@ export async function readAsset(
     access: "private",
     token: requireToken(),
   });
-  if (result?.statusCode !== 200) return null;
+  if (result?.statusCode !== 200) {
+    console.warn("[assets:read.rejected]", { statusCode: result?.statusCode ?? null });
+    return null;
+  }
 
   return {
     data: new Uint8Array(await new Response(result.stream).arrayBuffer()),

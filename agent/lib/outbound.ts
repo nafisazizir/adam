@@ -49,6 +49,12 @@ function filenameFor(url: URL, mimeType: string): string {
   return `${stem}.${extensionFor(mimeType)}`;
 }
 
+function errorForLog(error: unknown): { message: string; name: string } {
+  const name = error instanceof Error ? error.name : "UnknownError";
+  const message = error instanceof Error ? error.message : String(error);
+  return { name, message: message.replace(/https?:\/\/\S+/gu, "[redacted-url]") };
+}
+
 async function fetchPublic(
   url: URL,
   signal: AbortSignal,
@@ -67,19 +73,38 @@ async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   try {
     url = new URL(rawUrl);
   } catch {
+    console.warn("[outbound:attachment.rejected]", { reason: "invalid-url" });
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    console.warn("[outbound:attachment.rejected]", { reason: "unsupported-protocol" });
+    return null;
+  }
 
   const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   // What Adam hosts is private, so it can only be read back through the seam.
   const asset =
     (await readAsset(rawUrl, signal)) ?? (await fetchPublic(url, signal));
-  if (!asset) return null;
+  if (!asset) {
+    console.warn("[outbound:attachment.rejected]", { reason: "unreadable" });
+    return null;
+  }
 
   const { data, mimeType } = asset;
-  if (!ALLOWED_MIME_TYPES.some((allowed) => mimeType.startsWith(allowed))) return null;
-  if (data.byteLength === 0 || data.byteLength > MAX_BYTES) return null;
+  if (!ALLOWED_MIME_TYPES.some((allowed) => mimeType.startsWith(allowed))) {
+    console.warn("[outbound:attachment.rejected]", {
+      mimeType,
+      reason: "unsupported-mime-type",
+    });
+    return null;
+  }
+  if (data.byteLength === 0 || data.byteLength > MAX_BYTES) {
+    console.warn("[outbound:attachment.rejected]", {
+      bytes: data.byteLength,
+      reason: "invalid-size",
+    });
+    return null;
+  }
 
   return { data, filename: filenameFor(url, mimeType), mimeType };
 }
@@ -101,7 +126,10 @@ export async function renderOutbound(message: string): Promise<OutboundMessage> 
   let text = message;
 
   for (const match of matches) {
-    const file = await fetchAttachment(match[1]).catch(() => null);
+    const file = await fetchAttachment(match[1]).catch((error: unknown) => {
+      console.error("[outbound:attachment.error]", errorForLog(error));
+      return null;
+    });
     // Unreachable or disallowed media degrades to its raw URL rather than vanishing.
     text = text.replace(match[0], file ? "" : match[1]);
     if (file) {

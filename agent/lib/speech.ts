@@ -17,5 +17,5 @@ export async function synthesizeSpeech(text: string, voice?: string): Promise<Sp
     outputFormat: "aac",
   });
 
-  return { data: audio.uint8Array, mimeType: audio.mediaType || "audio/aac" };
+  return { data: audio.uint8Array, mimeType: "audio/aac" };
 }
