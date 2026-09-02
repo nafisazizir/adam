@@ -20,7 +20,7 @@ export default defineTool({
   }),
   async execute({ text, voice }) {
     const { data, mimeType } = await synthesizeSpeech(text, voice);
-    const url = await publishAsset({ data, filename: "voice-note.mp3", mimeType });
+    const url = await publishAsset({ data, filename: "voice-note.aac", mimeType });
 
     return { url };
   },
