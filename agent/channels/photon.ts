@@ -1,5 +1,6 @@
 import { photonIMessageChannel } from "eve/channels/photon";
 
+import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { currentTimeContext } from "#lib/time.js";
@@ -42,12 +43,14 @@ export default photonIMessageChannel({
 
       let posted = 0;
       for (const bubble of splitBubbles(event.message)) {
-        const { text, files } = await renderOutbound(bubble);
+        const { text, files, sources } = await renderOutbound(bubble);
         if (text.length === 0 && files.length === 0) continue;
 
         if (posted > 0) await pause(BUBBLE_GAP_MS);
         await channel.thread.post({ markdown: text, files });
         posted += 1;
+        // iMessage holds its own copy now, so nothing we generated stays hosted.
+        await releaseAssets(sources).catch(() => {});
       }
     },
   },

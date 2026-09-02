@@ -25,6 +25,20 @@ const schema = z.object({
   IMESSAGE_PROJECT_SECRET: z.string().min(1),
   IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
+  SPEECH_MODEL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).default("openai/tts-1"),
+  ),
+  SPEECH_VOICE: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).default("alloy"),
+  ),
+  // Vercel injects this only once a Blob store is connected, so a project
+  // without one still boots; publishAsset is what fails.
+  BLOB_READ_WRITE_TOKEN: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
   QSTASH_URL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).optional(),

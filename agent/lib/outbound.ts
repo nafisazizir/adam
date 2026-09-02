@@ -1,4 +1,6 @@
-const IMAGE_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
+import { readAsset, type StoredAsset } from "#lib/assets.js";
+
+const MEDIA_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
 const BUBBLE_BREAK = /^[ \t]*---[ \t]*$/m;
 const MAX_BYTES = 10 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -12,19 +14,55 @@ export interface OutboundFile {
 export interface OutboundMessage {
   text: string;
   files: OutboundFile[];
+  // Where the attached bytes came from, so a caller can drop what it hosted.
+  sources: string[];
 }
 
+const ALLOWED_MIME_TYPES = [
+  "image/",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/aac",
+  "audio/ogg",
+];
+
+const EXTENSIONS: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/aac": "aac",
+  "audio/ogg": "ogg",
+};
+
 function extensionFor(mimeType: string): string {
-  const subtype = mimeType.slice("image/".length).split("+")[0];
-  return subtype === "jpeg" ? "jpg" : subtype;
+  return EXTENSIONS[mimeType] ?? mimeType.split("/")[1].split("+")[0];
 }
 
 function filenameFor(url: URL, mimeType: string): string {
   const base = url.pathname.split("/").pop() ?? "";
-  return base.includes(".") ? base : `image.${extensionFor(mimeType)}`;
+  if (base.includes(".")) return base;
+  const stem = mimeType.startsWith("audio/") ? "audio" : "image";
+  return `${stem}.${extensionFor(mimeType)}`;
 }
 
-async function fetchImage(rawUrl: string): Promise<OutboundFile | null> {
+async function fetchPublic(
+  url: URL,
+  signal: AbortSignal,
+): Promise<StoredAsset | null> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) return null;
+
+  return {
+    data: new Uint8Array(await response.arrayBuffer()),
+    mimeType: (response.headers.get("content-type") ?? "").split(";")[0].trim(),
+  };
+}
+
+async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -33,13 +71,14 @@ async function fetchImage(rawUrl: string): Promise<OutboundFile | null> {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!response.ok) return null;
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  // What Adam hosts is private, so it can only be read back through the seam.
+  const asset =
+    (await readAsset(rawUrl, signal)) ?? (await fetchPublic(url, signal));
+  if (!asset) return null;
 
-  const mimeType = (response.headers.get("content-type") ?? "").split(";")[0].trim();
-  if (!mimeType.startsWith("image/")) return null;
-
-  const data = new Uint8Array(await response.arrayBuffer());
+  const { data, mimeType } = asset;
+  if (!ALLOWED_MIME_TYPES.some((allowed) => mimeType.startsWith(allowed))) return null;
   if (data.byteLength === 0 || data.byteLength > MAX_BYTES) return null;
 
   return { data, filename: filenameFor(url, mimeType), mimeType };
@@ -54,18 +93,22 @@ export function splitBubbles(message: string): string[] {
 }
 
 export async function renderOutbound(message: string): Promise<OutboundMessage> {
-  const matches = [...message.matchAll(IMAGE_LINK)];
-  if (matches.length === 0) return { text: message, files: [] };
+  const matches = [...message.matchAll(MEDIA_LINK)];
+  if (matches.length === 0) return { text: message, files: [], sources: [] };
 
   const files: OutboundFile[] = [];
+  const sources: string[] = [];
   let text = message;
 
   for (const match of matches) {
-    const file = await fetchImage(match[1]).catch(() => null);
-    // An unreachable image degrades to its raw URL rather than vanishing.
+    const file = await fetchAttachment(match[1]).catch(() => null);
+    // Unreachable or disallowed media degrades to its raw URL rather than vanishing.
     text = text.replace(match[0], file ? "" : match[1]);
-    if (file) files.push(file);
+    if (file) {
+      files.push(file);
+      sources.push(match[1]);
+    }
   }
 
-  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), files };
+  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), files, sources };
 }
