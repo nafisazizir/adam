@@ -116,11 +116,13 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
   the allowlist (`image/*` plus common audio types), and hands the bytes to the channel as a file.
   Attachment kinds are an allowlist entry, not a code path, and an unreachable or disallowed url
   degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI Gateway) and
-  `lib/assets.ts` (bytes → public https url, via Vercel Blob) are the two seams behind
+  `lib/assets.ts` (bytes → url, via a **private** Vercel Blob store) are the two seams behind
   `generate_speech`; a different TTS provider or blob store is a one-file change.
-  Hosting is a handoff, not storage: `renderOutbound` reports the urls it turned into files, and the
-  channel calls `releaseAssets` once iMessage has its own copy, so a generated clip is public for
-  the seconds it takes to deliver rather than forever. Urls Adam did not publish are left alone.
+  Nothing Adam generates is ever world-readable: the url is only a handle, and `readAsset` is the
+  one thing that can turn it back into bytes (authenticated, server-side). Hosting is also a
+  handoff rather than storage — `renderOutbound` reports the urls it turned into files and the
+  channel calls `releaseAssets` once iMessage has its own copy. Urls Adam did not publish are
+  fetched plainly and never deleted.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -145,7 +147,7 @@ adam/
 │   │   ├── delivery.ts        # delivery-channel registry: auth → { channel, target } → receive
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
-│   │   ├── assets.ts          # bytes → public https url (Vercel Blob), dropped after delivery
+│   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   └── qstash.ts          # publish / list / cancel + signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -195,7 +197,7 @@ QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # optional; injected by Vercel once a Blob store is connected, hosts generated audio
+BLOB_READ_WRITE_TOKEN=...           # optional; from a private Vercel Blob store ("add a read-write token env var"), holds generated audio
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
 ```

@@ -6,7 +6,7 @@ import { synthesizeSpeech } from "#lib/speech.js";
 
 export default defineTool({
   description:
-    "Turn text into a spoken audio clip and return a public https url for it. " +
+    "Turn text into a spoken audio clip and return a url standing in for it. " +
     "Embed that url as ![](url) in your reply and it arrives as a voice message; " +
     "the clip says exactly the text you pass, so write it the way you want it heard. " +
     "Use it only when hearing it beats reading it, never for a routine reply.",

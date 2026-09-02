@@ -1,3 +1,5 @@
+import { readAsset, type StoredAsset } from "#lib/assets.js";
+
 const MEDIA_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
 const BUBBLE_BREAK = /^[ \t]*---[ \t]*$/m;
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -47,6 +49,19 @@ function filenameFor(url: URL, mimeType: string): string {
   return `${stem}.${extensionFor(mimeType)}`;
 }
 
+async function fetchPublic(
+  url: URL,
+  signal: AbortSignal,
+): Promise<StoredAsset | null> {
+  const response = await fetch(url, { signal });
+  if (!response.ok) return null;
+
+  return {
+    data: new Uint8Array(await response.arrayBuffer()),
+    mimeType: (response.headers.get("content-type") ?? "").split(";")[0].trim(),
+  };
+}
+
 async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   let url: URL;
   try {
@@ -56,13 +71,14 @@ async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") return null;
 
-  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
-  if (!response.ok) return null;
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  // What Adam hosts is private, so it can only be read back through the seam.
+  const asset =
+    (await readAsset(rawUrl, signal)) ?? (await fetchPublic(url, signal));
+  if (!asset) return null;
 
-  const mimeType = (response.headers.get("content-type") ?? "").split(";")[0].trim();
+  const { data, mimeType } = asset;
   if (!ALLOWED_MIME_TYPES.some((allowed) => mimeType.startsWith(allowed))) return null;
-
-  const data = new Uint8Array(await response.arrayBuffer());
   if (data.byteLength === 0 || data.byteLength > MAX_BYTES) return null;
 
   return { data, filename: filenameFor(url, mimeType), mimeType };
