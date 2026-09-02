@@ -14,8 +14,8 @@ export async function synthesizeSpeech(text: string, voice?: string): Promise<Sp
     model: env.SPEECH_MODEL,
     text,
     voice: voice ?? env.SPEECH_VOICE,
-    outputFormat: "mp3",
+    outputFormat: "aac",
   });
 
-  return { data: audio.uint8Array, mimeType: audio.mediaType || "audio/mpeg" };
+  return { data: audio.uint8Array, mimeType: audio.mediaType || "audio/aac" };
 }
