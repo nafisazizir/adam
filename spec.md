@@ -113,11 +113,12 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
-  the allowlist (`image/*` plus common audio types), and hands the bytes to the channel as a file.
-  Attachment kinds are an allowlist entry, not a code path, and an unreachable or disallowed url
-  degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI Gateway) and
-  `lib/assets.ts` (bytes → url, via a **private** Vercel Blob store) are the two seams behind
-  `generate_speech`; a different TTS provider or blob store is a one-file change.
+  the allowlist (`image/*` plus common audio types), and hands the bytes to the channel. The Photon
+  channel sends audio through its native voice-note path and everything else as an attachment, so
+  generated speech gets iMessage's waveform UI instead of a downloadable file. An unreachable or
+  disallowed url degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI
+  Gateway) and `lib/assets.ts` (bytes → url, via a **private** Vercel Blob store) are the two seams
+  behind `generate_speech`; a different TTS provider or blob store is a one-file change.
   Nothing Adam generates is ever world-readable: the url is only a handle, and `readAsset` is the
   one thing that can turn it back into bytes (authenticated, server-side). Hosting is also a
   handoff rather than storage — `renderOutbound` reports the urls it turned into files and the

@@ -44,11 +44,26 @@ export default photonIMessageChannel({
       let posted = 0;
       for (const bubble of splitBubbles(event.message)) {
         const { text, files, sources } = await renderOutbound(bubble);
-        if (text.length === 0 && files.length === 0) continue;
+        const voiceNotes = files.filter((file) => file.mimeType.startsWith("audio/"));
+        const attachments = files.filter((file) => !file.mimeType.startsWith("audio/"));
+        if (text.length === 0 && attachments.length === 0 && voiceNotes.length === 0) continue;
 
-        if (posted > 0) await pause(BUBBLE_GAP_MS);
-        await channel.thread.post({ markdown: text, files });
-        posted += 1;
+        if (text.length > 0 || attachments.length > 0) {
+          if (posted > 0) await pause(BUBBLE_GAP_MS);
+          await channel.thread.post({ markdown: text, files: attachments });
+          posted += 1;
+        }
+
+        const adapter = channel.bot.getAdapter(photonAdapterName);
+        for (const voiceNote of voiceNotes) {
+          if (posted > 0) await pause(BUBBLE_GAP_MS);
+          await adapter.sendVoice(channel.thread.id, voiceNote.data, {
+            mimeType: voiceNote.mimeType,
+            name: voiceNote.filename,
+          });
+          posted += 1;
+        }
+
         // iMessage holds its own copy now, so nothing we generated stays hosted.
         await releaseAssets(sources).catch(() => {});
       }
