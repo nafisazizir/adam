@@ -117,15 +117,17 @@ stub the route).
   deduplication IDs, retained for 90 days, for at most one analysis and one message per workout.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
-  knows how to `receive` back into it. `homeDelivery()` provides the configured iMessage home thread
-  for workout debriefs. Adding a messaging surface is a channel file plus one entry here.
+  knows how to `receive` back into it. `homeDelivery()` provides the last chat the user messaged
+  from, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging surface is a channel
+  file plus one entry here.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and an
   app-scoped Notion connection, plus the vendored riz-mcp skill and `workout-debrief` skill. The
   model choice suits focused coaching; keeping raw workout data in the coach's context avoids
   dumping it into the user's chat; and the Notion connection is available only to the coach.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
-  `homeDelivery` in `lib/delivery.ts`; `callRizMcpTool` in `lib/riz-mcp.ts`; and workout auth,
-  message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
+  `homeDelivery` in `lib/delivery.ts`; the single delivery-routing pointer in `lib/home-target.ts`;
+  `callRizMcpTool` in `lib/riz-mcp.ts`; and workout auth, message builders, sport skips, and the
+  shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`.
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -177,6 +179,7 @@ adam/
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry plus homeDelivery
+│   │   ├── home-target.ts     # last chat the user messaged from, in private Vercel Blob
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
@@ -230,12 +233,11 @@ BASE_URL=...                        # app's public origin, e.g. https://adam.ver
 IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
 IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
-IMESSAGE_HOME_THREAD_ID=...         # Photon thread_id for the user's home iMessage thread
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # optional; from a private Vercel Blob store ("add a read-write token env var"), holds generated audio
+BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio and the home delivery target
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
 STRAVA_WEBHOOK_VERIFY_TOKEN=...     # Strava GET handshake
@@ -257,7 +259,8 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 - Set the Hevy webhook URL to `${BASE_URL}/eve/v1/workouts/hevy`.
 - Set up the coach's app-scoped Notion connection with `eve add connection/notion --skip-install`.
   Configure both Notion data source IDs in Adam's environment.
-- `IMESSAGE_HOME_THREAD_ID` is the Photon `thread_id` of the user's iMessage thread.
+- Workout nudges require a connected private Vercel Blob store and are skipped until the user has
+  texted Adam once after deploy; that chat becomes the remembered home delivery target.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.

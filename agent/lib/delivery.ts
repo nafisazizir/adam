@@ -2,7 +2,7 @@ import type { RouteHandlerArgs, TurnPolicy } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
-import { env } from "#lib/env.js";
+import { readHomeTarget } from "#lib/home-target.js";
 
 type To = RouteHandlerArgs["to"];
 
@@ -55,9 +55,13 @@ export function deliveryChannelByName(name: string): DeliveryChannel | undefined
   return deliveryChannels.find((channel) => channel.name === name);
 }
 
-export function homeDelivery(): { channel: DeliveryChannel; target: Record<string, unknown> } {
-  return {
-    channel: photonDelivery,
-    target: { threadId: env.IMESSAGE_HOME_THREAD_ID, adapterName: photonAdapterName },
-  };
+export async function homeDelivery(): Promise<{
+  channel: DeliveryChannel;
+  target: Record<string, unknown>;
+} | null> {
+  const home = await readHomeTarget();
+  if (!home) return null;
+
+  const channel = deliveryChannelByName(home.channel);
+  return channel ? { channel, target: home.target } : null;
 }

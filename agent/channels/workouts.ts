@@ -221,7 +221,12 @@ export default defineChannel({
 
       const { source, id, debrief } = parsed.data;
       const ref = { source, id };
-      const { channel, target } = homeDelivery();
+      const home = await homeDelivery();
+      if (!home) {
+        console.warn("[workouts] skipping debrief; no home delivery target is stored");
+        return Response.json({ ok: true, ignored: "no_home_target" });
+      }
+      const { channel, target } = home;
 
       try {
         await channel.deliver({

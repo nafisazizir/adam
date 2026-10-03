@@ -2,6 +2,7 @@ import { photonIMessageChannel } from "eve/channels/photon";
 
 import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
+import { rememberHomeTarget } from "#lib/home-target.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { currentTimeContext } from "#lib/time.js";
 
@@ -69,8 +70,17 @@ export default photonIMessageChannel({
       }
     },
   },
-  onMessage(_ctx, message) {
+  async onMessage(_ctx, message) {
     if (message.author.isMe) return null;
+
+    try {
+      await rememberHomeTarget({
+        channel: "photon",
+        target: { threadId: message.threadId, adapterName: photonAdapterName },
+      });
+    } catch (error) {
+      console.warn("[photon] failed to remember home target", error);
+    }
 
     return {
       auth: {

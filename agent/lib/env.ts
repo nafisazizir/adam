@@ -28,7 +28,6 @@ const schema = z.object({
   IMESSAGE_PROJECT_ID: z.string().min(1),
   IMESSAGE_PROJECT_SECRET: z.string().min(1),
   IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
-  IMESSAGE_HOME_THREAD_ID: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
   STRAVA_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   STRAVA_WEBHOOK_SUBSCRIPTION_ID: z.preprocess(
