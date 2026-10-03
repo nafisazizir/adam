@@ -1,7 +1,8 @@
-import type { RouteHandlerArgs } from "eve/channels";
+import type { RouteHandlerArgs, TurnPolicy } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
+import { env } from "#lib/env.js";
 
 type To = RouteHandlerArgs["to"];
 
@@ -13,6 +14,7 @@ export interface DeliveryChannel {
     message: string;
     target: Record<string, unknown>;
     auth: SessionAuthContext;
+    turnPolicy?: TurnPolicy;
   }): Promise<unknown>;
 }
 
@@ -29,8 +31,11 @@ const photonDelivery: DeliveryChannel = {
     const threadId = attribute(auth, "thread_id");
     return threadId ? { threadId, adapterName: photonAdapterName } : null;
   },
-  deliver({ to, message, target, auth }) {
-    return to(photon, target as { threadId: string; adapterName: string }).send(message, { auth });
+  deliver({ to, message, target, auth, turnPolicy }) {
+    return to(photon, target as { threadId: string; adapterName: string }).send(message, {
+      auth,
+      turnPolicy,
+    });
   },
 };
 
@@ -48,4 +53,11 @@ export function deliveryChannelForAuth(
 
 export function deliveryChannelByName(name: string): DeliveryChannel | undefined {
   return deliveryChannels.find((channel) => channel.name === name);
+}
+
+export function homeDelivery(): { channel: DeliveryChannel; target: Record<string, unknown> } {
+  return {
+    channel: photonDelivery,
+    target: { threadId: env.IMESSAGE_HOME_THREAD_ID, adapterName: photonAdapterName },
+  };
 }
