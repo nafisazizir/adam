@@ -18,9 +18,6 @@ export const workoutRefSchema = z.object({
 
 export const workoutAuthenticator = "workouts";
 
-// Garmin syncs well after the activity lands, so the analysis waits for it.
-export const workoutSettleSeconds = 15 * 60;
-
 // Hevy owns strength, so Strava's WeightTraining mirror would analyse the same session twice.
 export const skippedStravaSportTypes: ReadonlySet<string> = new Set(["WeightTraining", "Walk"]);
 
