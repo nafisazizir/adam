@@ -304,7 +304,8 @@ own instructions/tools/connections; inherits nothing from root).
 - **`receive(channel, …)`** — start a session on a channel without an inbound message (proactive send).
 - **Connection** — an external MCP/OpenAPI server surfaced to the model as tools.
 - **Subagent** — a child agent for a focused role, with its own tools/connections.
-- **Right to silence** — the agent's explicit option to do nothing on a trigger.
+- **Right to silence** — the agent's explicit option to do nothing on a trigger. Exercised by replying
+  with Eve's `<eve-empty-delivery/>` marker, never a blank reply (Eve treats that as a model failure).
 
 ---
 
