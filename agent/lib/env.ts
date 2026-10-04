@@ -10,6 +10,10 @@ function isValidTimeZone(value: string): boolean {
 }
 
 export const remindersDeliverPath = "/eve/v1/reminders/deliver";
+export const workoutsStravaPath = "/eve/v1/workouts/strava";
+export const workoutsHevyPath = "/eve/v1/workouts/hevy";
+export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
+export const workoutsNudgePath = "/eve/v1/workouts/nudge";
 
 const schema = z.object({
   USER_TIMEZONE: z
@@ -25,6 +29,14 @@ const schema = z.object({
   IMESSAGE_PROJECT_SECRET: z.string().min(1),
   IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
+  STRAVA_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
+  STRAVA_WEBHOOK_SUBSCRIPTION_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  HEVY_WEBHOOK_SECRET: z.string().min(1),
+  NOTION_PLANS_DATA_SOURCE_ID: z.string().min(1),
+  NOTION_WORKOUTS_DATA_SOURCE_ID: z.string().min(1),
   SPEECH_MODEL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).default("openai/tts-1"),
@@ -65,4 +77,6 @@ if (!parsed.success) {
 export const env = {
   ...parsed.data,
   remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
+  workoutsAnalyzeUrl: `${parsed.data.BASE_URL}${workoutsAnalyzePath}`,
+  workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
 };

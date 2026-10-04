@@ -43,6 +43,11 @@ regress.
 | reminder-absolute-time        | works out relative timing, no silent assumption |
 | voice-note-restraint          | text by default, no unasked-for voice note |
 | voice-note-on-request         | speaks when asked, and embeds the clip as `![](url)` |
+| workouts/silent-on-plan       | workout debrief follows the plan without interrupting |
+| workouts/noteworthy-pr        | workout debrief surfaces a noteworthy personal record |
+
+The workout evals live under `evals/workouts/` and run with
+`pnpm eve eval workouts`.
 
 ## Running
 

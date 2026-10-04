@@ -77,5 +77,6 @@ URL is computed from `BASE_URL`, not its own env var.
   _what_ something does, refactor until it isn't.
 - **Scope discipline:** v1 is single-user, no Redis, and messaging is iMessage (Photon)
   only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
-  Cross-session memory, multi-user, and specialist subagents (`coach`, `inbox`, `finance`) are
-  explicitly deferred — see `spec.md` §7–8 before adding any of them.
+  The `coach` subagent handles post-workout debriefs; `inbox` and `finance` remain deferred.
+  Cross-session memory and multi-user support are also deferred — see `spec.md` §7–8.
+  The home target in Vercel Blob is a single delivery-routing pointer, not memory.

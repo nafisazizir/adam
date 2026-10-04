@@ -84,8 +84,9 @@ schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, not
 list_reminders / cancel_reminder ───────> QStash messages API
 ```
 
-The URL QStash hits is **our own deployment's public route** (the `reminders` custom channel). It
-must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local e2e, or stub the route).
+The URL QStash hits is **our own deployment's public route** (the `reminders` or `workouts` custom
+channel). It must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local e2e, or
+stub the route).
 
 ---
 
@@ -94,9 +95,10 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
 ```
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
-   QStash callback  ──▶│ one-shot reminder (self-scheduled)     │──▶ Eve session ──▶ (maybe) reply
+   QStash callback  ──▶│ one-shot reminder / workout callbacks  │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
-   (future) webhooks──▶│ external events (Strava, email)        │
+   Strava/Hevy      ──▶│ completed workout (workouts channel)   │
+   (future) webhooks──▶│ external events (email)                 │
                        └────────────────────────────────────────┘
                                          │
                  every trigger's payload becomes the session's first message
@@ -104,11 +106,28 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
 
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
-  the reminder was scheduled from, via `receive`).
+  the reminder was scheduled from, via `receive`), and `workouts` (Strava/Hevy webhooks plus
+  QStash analysis and nudge callbacks). A completed workout waits 15 minutes for Garmin sync, then
+  starts an independent session at `strava:<id>` or `hevy:<id>`. Strava activity details are fetched
+  through riz-mcp; `WeightTraining` and `Walk` activities are deterministically skipped, matching
+  riz-mcp. The session delegates to `coach` and returns its debrief. A completed coach response
+  queues one nudge to the user's home iMessage thread; root Adam applies right-to-silence there.
+  Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
+  workout address doubles as its idempotency key. Ingress and nudge use separate QStash
+  deduplication IDs, retained for 90 days, for at most one analysis and one message per workout.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
-  knows how to `receive` back into it. Adding a messaging surface is a channel file plus one entry
-  here.
+  knows how to `receive` back into it. `homeDelivery()` provides the last chat the user messaged
+  from, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging surface is a channel
+  file plus one entry here.
+- **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and an
+  app-scoped Notion connection, plus the vendored riz-mcp skill and `workout-debrief` skill. The
+  model choice suits focused coaching; keeping raw workout data in the coach's context avoids
+  dumping it into the user's chat; and the Notion connection is available only to the coach.
+- **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
+  `homeDelivery` in `lib/delivery.ts`; the single delivery-routing pointer in `lib/home-target.ts`;
+  `callRizMcpTool` in `lib/riz-mcp.ts`; and workout auth, message builders, sport skips, and the
+  shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`.
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -127,7 +146,8 @@ must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local 
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
-  is the actual product surface.
+  is the actual product surface; right-to-silence is applied to workout debriefs when they re-enter
+  the user's iMessage thread.
 
 ---
 
@@ -138,18 +158,34 @@ adam/
 ├── package.json               # name "adam" → agent name
 ├── spec.md                    # this document
 ├── agent/
-│   ├── agent.ts               # model: anthropic/claude-sonnet-4.6
+│   ├── agent.ts               # model: deepseek/deepseek-v4-flash-0731
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
-│   │   └── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
+│   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
+│   │   └── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
+│   ├── connections/
+│   │   └── riz-mcp.ts
+│   ├── subagents/
+│   │   └── coach/
+│   │       ├── agent.ts
+│   │       ├── instructions.md
+│   │       ├── connections/
+│   │       │   ├── notion.ts  # app-scoped; coach only
+│   │       │   └── riz-mcp.ts
+│   │       └── skills/
+│   │           ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
+│   │           └── workout-debrief/
 │   ├── lib/
-│   │   ├── env.ts             # single source of truth: parse/validate/sanitise env (zod); derive remindersDeliverUrl from BASE_URL
-│   │   ├── delivery.ts        # delivery-channel registry: auth → { channel, target } → receive
+│   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
+│   │   ├── delivery.ts        # delivery registry plus homeDelivery
+│   │   ├── home-target.ts     # last chat the user messaged from, in private Vercel Blob
+│   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
+│   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
-│   │   └── qstash.ts          # publish / list / cancel + signature verify
+│   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
 │   │   ├── cancel_reminder.ts
@@ -157,6 +193,9 @@ adam/
 │   │   └── generate_speech.ts # speak text, upload, return the url the model embeds
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
+├── scripts/
+│   ├── sync-riz-mcp-skill.ts
+│   └── riz-mcp-skill.lock.json
 └── .env
 ```
 
@@ -175,12 +214,12 @@ adam/
 ## 7. v1 scope & non-goals
 
 **In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
-`briefing` cron · right-to-silence instructions · outbound image and audio attachments, with
-`generate_speech` for the occasional voice note (text stays the default; see
-`agent/instructions.md`).
+`briefing` cron · Strava/Hevy workout debriefs via the `coach` subagent · right-to-silence
+instructions · outbound image and audio attachments, with `generate_speech` for the occasional
+voice note (text stays the default; see `agent/instructions.md`).
 
-**Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · specialist subagents
-· external-event webhooks · inbound burst debouncing (low-risk single-user; add a Photon
+**Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
+subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
 ### Environment variables
@@ -198,9 +237,14 @@ QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # optional; from a private Vercel Blob store ("add a read-write token env var"), holds generated audio
+BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio and the home delivery target
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
+STRAVA_WEBHOOK_VERIFY_TOKEN=...     # Strava GET handshake
+STRAVA_WEBHOOK_SUBSCRIPTION_ID=...  # optional; unset fails closed and ignores events
+HEVY_WEBHOOK_SECRET=...             # Hevy Authorization header
+NOTION_PLANS_DATA_SOURCE_ID=...     # coach's training plan data source
+NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 ```
 
 ### Deployment notes
@@ -208,6 +252,18 @@ SPEECH_VOICE=...                    # optional, defaults to alloy
 - Deploy to Vercel; schedules become Vercel Cron (verify under Settings → Cron Jobs).
 - Point the Photon project's webhook at the deployed `photon` channel route after deploy. Re-run if
   the URL changes.
+- Strava allows one webhook subscription per app, so the old and new flows cannot receive events
+  simultaneously. In riz-mcp, run `npm run webhook:strava delete <old>` and then
+  `npm run webhook:strava create ${BASE_URL}/eve/v1/workouts/strava`; set the returned
+  `STRAVA_WEBHOOK_SUBSCRIPTION_ID` in Adam's environment.
+- Set the Hevy webhook URL to `${BASE_URL}/eve/v1/workouts/hevy`.
+- Set up the coach's app-scoped Notion connection with `eve add connection/notion --skip-install`.
+  Configure both Notion data source IDs in Adam's environment.
+- Workout nudges require a connected private Vercel Blob store and are skipped until the user has
+  texted Adam once after deploy; that chat becomes the remembered home delivery target.
+- The coach is billed per token through AI Gateway.
+- Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
+  `pnpm sync:riz-mcp-skill --check`.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -222,8 +278,8 @@ own instructions/tools/connections; inherits nothing from root).
    history:** durable per-user facts keyed `user:<id>` that span sessions/channels, plus mapping an
    iMessage handle + a WhatsApp number to the same logical user. (Postgres/pgvector if memory needs
    semantic recall.)
-2. **`coach` (flagship subagent).** riz-mcp + Strava connections. On a new analyzed workout, computes
-   next-session recs and calls `schedule_reminder` for ~15 min before the next session. Will still need a bit more work to fit into this architecture, but you'll get the vision.
+2. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Pre-session reminders
+   based on its recommendations, about 15 minutes before the next workout, remain roadmap.
 3. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
    plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
    (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
@@ -231,7 +287,8 @@ own instructions/tools/connections; inherits nothing from root).
 5. **`finance`.** Spend tracking, anomaly surfacing, weekly summary (cron).
 6. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
    "life review" running `coach` + `finance` in parallel and merging).
-7. **External event triggers.** Strava/email webhook → custom channel route → `receive` a session.
+7. **External event triggers.** Strava/Hevy workout webhooks are built in `workouts`; email
+   integration remains roadmap.
 8. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
    auth on inbound routes.
 

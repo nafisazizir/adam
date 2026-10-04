@@ -10,9 +10,11 @@
     "build": "eve build",
     "dev": "eve dev",
     "start": "eve start",
-    "typecheck": "tsgo"
+    "typecheck": "tsgo",
+    "sync:riz-mcp-skill": "node scripts/sync-riz-mcp-skill.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
     "@upstash/qstash": "^2.11.1",
     "@vercel/blob": "2.8.0",
     "@vercel/connect": "0.2.2",
