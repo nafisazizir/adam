@@ -122,13 +122,13 @@ stub the route).
   from, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging surface is a channel
   file plus one entry here.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and an
-  app-scoped Notion connection, plus the vendored riz-mcp skill and `workout-debrief` skill. The
-  model choice suits focused coaching; keeping raw workout data in the coach's context avoids
-  dumping it into the user's chat; and the Notion connection is available only to the coach.
+  app-scoped Notion connection shared with root Adam via `lib/notion.ts`, plus the vendored riz-mcp
+  skill and `workout-debrief` skill. The model choice suits focused coaching; keeping raw workout
+  data in the coach's context avoids dumping it into the user's chat.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single delivery-routing pointer in `lib/home-target.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; and workout auth, message builders, sport skips, and the
-  shared workout reference schema in `lib/workouts.ts`.
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`.
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -166,13 +166,14 @@ adam/
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
 │   │   └── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
 │   ├── connections/
+│   │   ├── notion.ts
 │   │   └── riz-mcp.ts
 │   ├── subagents/
 │   │   └── coach/
 │   │       ├── agent.ts
 │   │       ├── instructions.md
 │   │       ├── connections/
-│   │       │   ├── notion.ts  # app-scoped; coach only
+│   │       │   ├── notion.ts  # shared Notion connection config
 │   │       │   └── riz-mcp.ts
 │   │       └── skills/
 │   │           ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
@@ -181,6 +182,7 @@ adam/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry plus homeDelivery
 │   │   ├── home-target.ts     # last chat the user messaged from, in private Vercel Blob
+│   │   ├── notion.ts          # shared Notion connection config
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
