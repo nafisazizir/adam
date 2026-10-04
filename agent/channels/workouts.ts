@@ -14,7 +14,6 @@ import {
   workoutAuth,
   workoutAuthenticator,
   workoutRefSchema,
-  workoutSettleSeconds,
 } from "#lib/workouts.js";
 import { callRizMcpTool } from "#lib/riz-mcp.js";
 import { publishCallback, verifyCallbackSignature } from "#lib/qstash.js";
@@ -109,7 +108,6 @@ export default defineChannel({
         await publishCallback({
           url: env.workoutsAnalyzeUrl,
           body: ref,
-          delaySeconds: workoutSettleSeconds,
           deduplicationId: `${ref.source}-${ref.id}`,
         });
       } catch (error) {
@@ -137,7 +135,6 @@ export default defineChannel({
         await publishCallback({
           url: env.workoutsAnalyzeUrl,
           body: ref,
-          delaySeconds: workoutSettleSeconds,
           deduplicationId: `${ref.source}-${ref.id}`,
         });
       } catch (error) {

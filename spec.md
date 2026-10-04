@@ -107,11 +107,12 @@ stub the route).
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
   the reminder was scheduled from, via `receive`), and `workouts` (Strava/Hevy webhooks plus
-  QStash analysis and nudge callbacks). A completed workout waits 15 minutes for Garmin sync, then
-  starts an independent session at `strava:<id>` or `hevy:<id>`. Strava activity details are fetched
-  through riz-mcp; `WeightTraining` and `Walk` activities are deterministically skipped, matching
-  riz-mcp. The session delegates to `coach` and returns its debrief. A completed coach response
-  queues one nudge to the user's home iMessage thread; root Adam applies right-to-silence there.
+  QStash analysis and nudge callbacks). Analysis is queued immediately on webhook arrival, matching
+  riz-mcp, while QStash still provides deduplication and retries; it starts an independent session at
+  `strava:<id>` or `hevy:<id>`. Strava activity details are fetched through riz-mcp; `WeightTraining`
+  and `Walk` activities are deterministically skipped, matching riz-mcp. The session delegates to
+  `coach` and returns its debrief. A completed coach response queues one nudge to the user's home
+  iMessage thread; root Adam applies right-to-silence there.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs, retained for 90 days, for at most one analysis and one message per workout.
