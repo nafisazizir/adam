@@ -2,7 +2,7 @@ import type { RouteHandlerArgs, TurnPolicy } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
-import { readHomeTarget } from "#lib/home-target.js";
+import { readHomeTarget, type HomeOwner } from "#lib/home-target.js";
 
 type To = RouteHandlerArgs["to"];
 
@@ -58,10 +58,11 @@ export function deliveryChannelByName(name: string): DeliveryChannel | undefined
 export async function homeDelivery(): Promise<{
   channel: DeliveryChannel;
   target: Record<string, unknown>;
+  owner: HomeOwner;
 } | null> {
   const home = await readHomeTarget();
   if (!home) return null;
 
   const channel = deliveryChannelByName(home.channel);
-  return channel ? { channel, target: home.target } : null;
+  return channel ? { channel, target: home.target, owner: home.owner } : null;
 }
