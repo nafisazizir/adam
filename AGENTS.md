@@ -79,4 +79,4 @@ URL is computed from `BASE_URL`, not its own env var.
   only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
   The `coach` subagent handles post-workout debriefs; `inbox` and `finance` remain deferred.
   Cross-session memory and multi-user support are also deferred — see `spec.md` §7–8.
-  The home target in Vercel Blob is a single delivery-routing pointer, not memory.
+  The home target in Vercel Blob is a single pointer (where to reach the owner and who they are), not memory.

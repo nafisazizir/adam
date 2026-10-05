@@ -4,15 +4,20 @@ import { z } from "zod";
 import { env } from "#lib/env.js";
 
 const pathname = "home-target.json";
+const homeOwnerSchema = z.object({
+  issuer: z.string(),
+  principalId: z.string(),
+});
+
 const homeTargetSchema = z.object({
   channel: z.string(),
   target: z.record(z.string(), z.unknown()),
+  owner: homeOwnerSchema,
 });
 
-export interface HomeTarget {
-  channel: string;
-  target: Record<string, unknown>;
-}
+export type HomeOwner = z.infer<typeof homeOwnerSchema>;
+
+export type HomeTarget = z.infer<typeof homeTargetSchema>;
 
 let lastWrittenJson: string | undefined;
 let warnedMissingToken = false;

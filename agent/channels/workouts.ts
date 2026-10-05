@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { env, workoutsAnalyzePath, workoutsHevyPath, workoutsNudgePath, workoutsStravaPath } from "#lib/env.js";
 import { homeDelivery } from "#lib/delivery.js";
+import { readHomeTarget } from "#lib/home-target.js";
 import {
   alreadyAnalysedMarker,
   analysisMessage,
@@ -170,6 +171,12 @@ export default defineChannel({
         return Response.json({ ok: true, ignored: "already_analysed" });
       }
 
+      const home = await readHomeTarget();
+      if (!home) {
+        console.warn(`[workouts] skipping ${address}; no home owner is stored to act as`);
+        return Response.json({ ok: true, ignored: "no_home_target" });
+      }
+
       try {
         if (ref.source === "strava") {
           const result = await callRizMcpTool("strava_get_activity", {
@@ -189,7 +196,7 @@ export default defineChannel({
           }
         }
 
-        await from(address).send(analysisMessage(ref), { auth: workoutAuth(ref) });
+        await from(address).send(analysisMessage(ref), { auth: workoutAuth(ref, home.owner) });
       } catch (error) {
         console.error(`[workouts] failed to analyse workout ${address}`, error);
         return Response.json({ ok: false, error: "analysis_failed" }, { status: 500 });
@@ -223,14 +230,14 @@ export default defineChannel({
         console.warn("[workouts] skipping debrief; no home delivery target is stored");
         return Response.json({ ok: true, ignored: "no_home_target" });
       }
-      const { channel, target } = home;
+      const { channel, target, owner } = home;
 
       try {
         await channel.deliver({
           to,
           message: debriefMessage(debrief),
           target,
-          auth: workoutAuth(ref),
+          auth: workoutAuth(ref, owner),
           turnPolicy: "queue",
         });
       } catch (error) {

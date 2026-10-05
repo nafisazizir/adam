@@ -2,6 +2,8 @@ import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
 import { env } from "#lib/env.js";
+import type { HomeOwner } from "#lib/home-target.js";
+import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
 
 export type WorkoutSource = "strava" | "hevy";
@@ -73,11 +75,9 @@ export function workoutAddress(ref: WorkoutRef): string {
   return `${ref.source}:${ref.id}`;
 }
 
-export function workoutAuth(ref: WorkoutRef): SessionAuthContext {
-  return {
+export function workoutAuth(ref: WorkoutRef, owner: HomeOwner): SessionAuthContext {
+  return ownerAuth(owner, {
     attributes: { source: ref.source, id: ref.id },
     authenticator: workoutAuthenticator,
-    principalId: workoutAddress(ref),
-    principalType: "service",
-  };
+  });
 }

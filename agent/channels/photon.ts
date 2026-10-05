@@ -4,6 +4,7 @@ import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { rememberHomeTarget } from "#lib/home-target.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
+import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
 
 export const photonAdapterName = "imessage";
@@ -28,6 +29,19 @@ export default photonIMessageChannel({
   }),
   webhookSecret: env.IMESSAGE_WEBHOOK_SECRET,
   events: {
+    // A Photon thread is a 1:1 chat with the owner, so the sign-in link can go straight into it.
+    async "authorization.required"(event, channel) {
+      const { url, instructions, userCode, displayName } = event.authorization ?? {};
+      if (!channel.thread || (!url && !instructions)) return;
+
+      const lines = [
+        `I need you to connect ${displayName ?? event.name} before I can carry on.`,
+        url,
+        userCode && `Code: ${userCode}`,
+        instructions,
+      ].filter(Boolean);
+      await channel.thread.post({ markdown: lines.join("\n\n") });
+    },
     // Replaces the default text-only post so image links become real iMessage
     // attachments and a reply lands as a few bubbles. Streaming is off for this
     // channel, so a turn is delivered once here.
@@ -73,22 +87,22 @@ export default photonIMessageChannel({
   async onMessage(_ctx, message) {
     if (message.author.isMe) return null;
 
+    const owner = { issuer: photonAuthenticator, principalId: message.author.userId };
     try {
       await rememberHomeTarget({
         channel: "photon",
         target: { threadId: message.threadId, adapterName: photonAdapterName },
+        owner,
       });
     } catch (error) {
       console.warn("[photon] failed to remember home target", error);
     }
 
     return {
-      auth: {
+      auth: ownerAuth(owner, {
         attributes: { thread_id: message.threadId },
         authenticator: photonAuthenticator,
-        principalId: message.author.userId,
-        principalType: "user",
-      },
+      }),
       context: [currentTimeContext()],
     };
   },
