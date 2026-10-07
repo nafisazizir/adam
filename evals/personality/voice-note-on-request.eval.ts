@@ -13,9 +13,9 @@ export default defineEval({
   description: "Voice on request: an explicit ask for a voice note produces an embedded clip.",
   tags: ["personality", "voice"],
   async test(t) {
-    await t.send("send me that as a voice note: good luck at the race tomorrow");
+    const turn = await t.send("send me that as a voice note: good luck at the race tomorrow");
     t.succeeded();
     t.calledTool("generate_speech");
-    t.check(t.reply ?? "", matches(attachesAudio));
+    t.check(turn.message ?? "", matches(attachesAudio));
   },
 });

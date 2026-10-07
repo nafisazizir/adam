@@ -15,7 +15,7 @@ Adam exhibit the *traits* of the target personality. So:
 2. **Each eval grades a trait, not a string.** Two layers:
    - Deterministic gates for the mechanical voice rules (no em-dash, no markdown, no
      "not just X, but Y"), in `personality/style.ts`.
-   - LLM-judge (`t.judge.autoevals.closedQA`) for the soft traits: casual non-corporate
+   - LLM-judge (`t.judge`) for the soft traits: casual non-corporate
      voice, playful roasts, confident mystery about internals, right-to-silence,
      proactive concrete offers, best-friend-no-moralizing.
 

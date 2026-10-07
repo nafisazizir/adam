@@ -6,10 +6,11 @@ export default defineEval({
   description: "Bubbles: a closing turn stays a single short bubble, never split.",
   tags: ["personality", "style"],
   async test(t) {
-    await t.send("ok cool, night");
+    const turn = await t.send("ok cool, night");
     t.succeeded();
     t.usedNoTools();
-    assertHouseStyle(t);
-    t.check(t.reply ?? "", singleShortBubble);
+    const reply = turn.message ?? "";
+    assertHouseStyle(t, reply);
+    t.check(reply, singleShortBubble);
   },
 });
