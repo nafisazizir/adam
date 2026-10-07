@@ -14,12 +14,12 @@
     "sync:riz-mcp-skill": "node scripts/sync-riz-mcp-skill.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@upstash/qstash": "^2.11.1",
     "@vercel/blob": "2.8.0",
-    "@vercel/connect": "0.2.2",
-    "ai": "7.0.68",
-    "eve": "^0.39.1",
+    "@vercel/connect": "2.4.1",
+    "ai": "7.0.131",
+    "eve": "^0.73.0",
     "zod": "4.4.3"
   },
   "devDependencies": {

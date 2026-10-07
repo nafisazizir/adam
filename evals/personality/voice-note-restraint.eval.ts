@@ -12,10 +12,11 @@ export default defineEval({
   description: "Voice is sparing: an ordinary ask stays plain text, no speech generated.",
   tags: ["personality", "style", "voice"],
   async test(t) {
-    await t.send("any tips for actually waking up at 5am?");
+    const turn = await t.send("any tips for actually waking up at 5am?");
     t.succeeded();
     t.notCalledTool("generate_speech");
-    t.check(t.reply ?? "", matches(noAttachment));
-    assertHouseStyle(t);
+    const reply = turn.message ?? "";
+    t.check(reply, matches(noAttachment));
+    assertHouseStyle(t, reply);
   },
 });

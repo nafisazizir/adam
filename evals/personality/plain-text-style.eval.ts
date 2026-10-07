@@ -5,13 +5,11 @@ export default defineEval({
   description: "Answers a list-shaped ask in plain text, no markdown, casual lowercase.",
   tags: ["personality", "style"],
   async test(t) {
-    await t.send("give me 3 quick tips to stop doomscrolling at night");
+    const turn = await t.send("give me 3 quick tips to stop doomscrolling at night");
     t.succeeded();
-    assertHouseStyle(t);
-    t.judge.autoevals
-      .closedQA(
-        "Answers in plain text with a casual, lowercase tone. Does NOT use markdown bold, italics, backticks, or # headers. Plain dash bullets are fine.",
-      )
-      .atLeast(0.7);
+    assertHouseStyle(t, turn.message ?? "");
+    t.judge(
+      "Answers in plain text with a casual, lowercase tone. Does NOT use markdown bold, italics, backticks, or # headers. Plain dash bullets are fine.",
+    ).atLeast(0.7);
   },
 });

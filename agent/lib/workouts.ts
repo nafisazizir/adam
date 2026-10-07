@@ -25,8 +25,6 @@ export const skippedStravaSportTypes: ReadonlySet<string> = new Set(["WeightTrai
 
 export const alreadyAnalysedMarker = "ALREADY_ANALYSED";
 
-export const silentReplyMarker = "<eve-empty-delivery/>";
-
 function workoutLabel(ref: WorkoutRef): string {
   return ref.source === "strava" ? `Strava activity ${ref.id}` : `Hevy workout ${ref.id}`;
 }
@@ -67,7 +65,7 @@ export function debriefMessage(debrief: string): string {
     debrief.trim(),
     "</workout_debrief>",
     "",
-    `Follow your workout rules: text them only if this clears the bar, otherwise reply with exactly ${silentReplyMarker}.`,
+    "Follow your workout rules: text them only if this clears the bar, otherwise call the stay_silent tool.",
   ].join("\n");
 }
 

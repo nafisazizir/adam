@@ -5,14 +5,12 @@ export default defineEval({
   description: "Right to silence: a low-signal acknowledgement gets a minimal reply, not a paragraph.",
   tags: ["personality"],
   async test(t) {
-    await t.send("cool, thanks 🙏");
+    const turn = await t.send("cool, thanks 🙏");
     t.succeeded();
     t.usedNoTools();
-    assertHouseStyle(t);
-    t.judge.autoevals
-      .closedQA(
-        "Keeps it minimal: at most a brief acknowledgement. Does NOT restate what was discussed, add a status report, or pad the reply with extra offers.",
-      )
-      .atLeast(0.7);
+    assertHouseStyle(t, turn.message ?? "");
+    t.judge(
+      "Keeps it minimal: at most a brief acknowledgement. Does NOT restate what was discussed, add a status report, or pad the reply with extra offers.",
+    ).atLeast(0.7);
   },
 });

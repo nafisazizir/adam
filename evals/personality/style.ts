@@ -23,8 +23,7 @@ const noMarkdown = z
  * Em-dash and the contrastive structure are hard gates (the prompt bans them
  * outright); markdown is soft because URLs and snake_case can trip the regex.
  */
-export function assertHouseStyle(t: EveEvalContext): void {
-  const reply = t.reply ?? "";
+export function assertHouseStyle(t: EveEvalContext, reply: string): void {
   t.check(reply, matches(noEmDash));
   t.check(reply, matches(noContrastive));
   t.check(reply, matches(noMarkdown)).soft();

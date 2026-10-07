@@ -10,9 +10,9 @@ export default defineEval({
   description: "Workout debrief: an unremarkable session that went to plan gets no text at all.",
   tags: ["workouts"],
   async test(t) {
-    await t.send(debriefMessage(onPlanRunDebrief));
+    const turn = await t.send(debriefMessage(onPlanRunDebrief));
     t.succeeded();
-    t.usedNoTools();
-    t.check(t.reply ?? "", silent);
+    t.calledTool("stay_silent");
+    t.check(turn.message ?? "", silent);
   },
 });
