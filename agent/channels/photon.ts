@@ -4,6 +4,7 @@ import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { rememberHomeTarget } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
+import { unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
@@ -87,6 +88,9 @@ export default withInboundMediaNormalization(photonIMessageChannel({
   },
   async onMessage(_ctx, message) {
     if (message.author.isMe) return null;
+
+    const unreadable = unreadableInbound(message);
+    if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);
 
     const owner = { issuer: photonAuthenticator, principalId: message.author.userId };
     try {
