@@ -125,20 +125,26 @@ stub the route).
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
   User-scoped connections key grants by issuer and principal id, so workout runs reuse the grant the
   owner approved over iMessage instead of failing with `principal_required`.
-- **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam and
-  the coach. The first Notion call parks the turn and the Photon channel's `authorization.required`
+- **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam,
+  the coach and the deep worker. The first Notion call parks the turn and the Photon channel's `authorization.required`
   handler texts the sign-in link; the turn resumes after consent. Runs started by a trigger without
   the owner's identity (reminders today) cannot use Notion.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and the shared
   Notion connection, plus the vendored riz-mcp
   skill and `workout-debrief` skill. The model choice suits focused coaching; keeping raw workout
   data in the coach's context avoids dumping it into the user's chat.
+- **Deep worker** (`agent/subagents/deep/`): uses `openai/gpt-6.1-sol`, Eve's default web/sandbox
+  tools and the shared Notion connection. Root delegates heavy multi-step work to it as an Eve task,
+  so luna acknowledges, keeps replying (new iMessages steer the turn without stopping the task),
+  and relays the result. It cannot message or schedule, so right-to-silence stays with root. The
+  built-in root-copy `agent` tool is disabled via `agent/tools/agent.ts`.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
-- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`.
+- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
+  `agent` (disables the built-in root-copy tool).
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -185,15 +191,20 @@ adam/
 │   │   ├── notion.ts
 │   │   └── riz-mcp.ts
 │   ├── subagents/
-│   │   └── coach/
+│   │   ├── coach/
+│   │   │   ├── agent.ts
+│   │   │   ├── instructions.md
+│   │   │   ├── connections/
+│   │   │   │   ├── notion.ts  # shared Notion connection config
+│   │   │   │   └── riz-mcp.ts
+│   │   │   └── skills/
+│   │   │       ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
+│   │   │       └── workout-debrief/
+│   │   └── deep/
 │   │       ├── agent.ts
 │   │       ├── instructions.md
-│   │       ├── connections/
-│   │       │   ├── notion.ts  # shared Notion connection config
-│   │       │   └── riz-mcp.ts
-│   │       └── skills/
-│   │           ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
-│   │           └── workout-debrief/
+│   │       └── connections/
+│   │           └── notion.ts  # shared Notion connection config
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry plus homeDelivery
@@ -211,7 +222,8 @@ adam/
 │   │   ├── schedule_reminder.ts
 │   │   ├── cancel_reminder.ts
 │   │   ├── list_reminders.ts
-│   │   └── generate_speech.ts # speak text, upload, return the url the model embeds
+│   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
+│   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
 ├── scripts/
@@ -235,7 +247,8 @@ adam/
 ## 7. v1 scope & non-goals
 
 **In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
-`briefing` cron · Strava/Hevy workout debriefs via the `coach` subagent · right-to-silence
+`briefing` cron · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
+to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`).
 
