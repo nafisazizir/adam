@@ -175,7 +175,7 @@ adam/
 ├── package.json               # name "adam" → agent name
 ├── spec.md                    # this document
 ├── agent/
-│   ├── agent.ts               # model: deepseek/deepseek-v4.1-flash (vision-capable)
+│   ├── agent.ts               # model: openai/gpt-6-luna (vision-capable)
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
