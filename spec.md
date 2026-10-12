@@ -163,9 +163,10 @@ stub the route).
   the channel fetches, wrapped onto the Photon adapter's `fetchFile` by
   `withInboundMediaNormalization`. Providers reject iPhone `image/heic*` and Eve only inlines
   inbound images up to 3 MiB, so anything that isn't already a provider-safe type under that limit
-  is decoded (HEIC via `heic-decode`), EXIF-rotated, resized inside 2048px, and re-encoded as JPEG
-  before it can poison the long-lived session's history. An undecodable file throws, which Eve
-  degrades to a model-visible note instead of passing an unusable image to the provider.
+  is decoded (HEIC via `heic-decode`), EXIF-rotated, resized inside 2048px, and re-encoded as JPEG.
+  An undecodable fetched file throws, which Eve degrades to a model-visible note. `provider-safe-model.ts`
+  repeats this check at the model boundary because durable history replays staged image bytes on every
+  call; a raw image already staged before normalization shipped could otherwise wedge the session.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -181,7 +182,7 @@ adam/
 ├── package.json               # name "adam" → agent name
 ├── spec.md                    # this document
 ├── agent/
-│   ├── agent.ts               # model: openai/gpt-6-luna (vision-capable)
+│   ├── agent.ts               # gateway model: openai/gpt-6-luna
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
@@ -215,6 +216,7 @@ adam/
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
 │   │   ├── inbound-media.ts   # fetchFile wrapper: provider-safe JPEGs from HEIC/oversized images
+│   │   ├── provider-safe-model.ts # model-boundary normalization for replayed inline images
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
