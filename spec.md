@@ -153,6 +153,13 @@ stub the route).
   handoff rather than storage — `renderOutbound` reports the urls it turned into files and the
   channel calls `releaseAssets` once iMessage has its own copy. Urls Adam did not publish are
   fetched plainly and never deleted.
+- **Inbound media** (`agent/lib/inbound-media.ts`): one primitive that normalises every attachment
+  the channel fetches, wrapped onto the Photon adapter's `fetchFile` by
+  `withInboundMediaNormalization`. Providers reject iPhone `image/heic*` and Eve only inlines
+  inbound images up to 3 MiB, so anything that isn't already a provider-safe type under that limit
+  is decoded (HEIC via `heic-decode`), EXIF-rotated, resized inside 2048px, and re-encoded as JPEG
+  before it can poison the long-lived session's history. An undecodable file throws, which Eve
+  degrades to a model-visible note instead of passing an unusable image to the provider.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -168,7 +175,7 @@ adam/
 ├── package.json               # name "adam" → agent name
 ├── spec.md                    # this document
 ├── agent/
-│   ├── agent.ts               # model: deepseek/deepseek-v4-flash-0731
+│   ├── agent.ts               # model: deepseek/deepseek-v4.1-flash (vision-capable)
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
@@ -196,6 +203,7 @@ adam/
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
+│   │   ├── inbound-media.ts   # fetchFile wrapper: provider-safe JPEGs from HEIC/oversized images
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
