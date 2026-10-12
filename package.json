@@ -14,6 +14,7 @@
     "sync:riz-mcp-skill": "node scripts/sync-riz-mcp-skill.ts"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@upstash/qstash": "^2.11.1",
     "@vercel/blob": "2.8.0",

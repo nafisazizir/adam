@@ -4,5 +4,5 @@ import { providerSafeModel } from "./lib/provider-safe-model.js";
 export default defineAgent({
   model: providerSafeModel("openai/gpt-6-luna"),
   modelContextWindowTokens: 1_050_000,
-  build: { externalDependencies: ["sharp"] },
+  build: { externalDependencies: ["sharp", "@ffmpeg-installer/ffmpeg"] },
 });
