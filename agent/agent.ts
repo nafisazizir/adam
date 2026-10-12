@@ -1,6 +1,6 @@
 import { defineAgent } from "eve";
 
 export default defineAgent({
-  model: "deepseek/deepseek-v4.1-flash",
+  model: "openai/gpt-6-luna",
   build: { externalDependencies: ["sharp"] },
 });
