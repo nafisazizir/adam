@@ -3,6 +3,7 @@ import { photonIMessageChannel } from "eve/channels/photon";
 import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { rememberHomeTarget } from "#lib/home-target.js";
+import { withInboundMediaNormalization } from "#lib/inbound-media.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
@@ -22,7 +23,7 @@ function firstNonEmptyLine(message: string): string | null {
   return null;
 }
 
-export default photonIMessageChannel({
+export default withInboundMediaNormalization(photonIMessageChannel({
   credentials: () => ({
     projectId: env.IMESSAGE_PROJECT_ID,
     projectSecret: env.IMESSAGE_PROJECT_SECRET,
@@ -106,4 +107,4 @@ export default photonIMessageChannel({
       context: [currentTimeContext()],
     };
   },
-});
+}));
