@@ -37,6 +37,10 @@ const schema = z.object({
   HEVY_WEBHOOK_SECRET: z.string().min(1),
   NOTION_PLANS_DATA_SOURCE_ID: z.string().min(1),
   NOTION_WORKOUTS_DATA_SOURCE_ID: z.string().min(1),
+  TRANSCRIPTION_MODEL: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).default("microsoft/mai-transcribe-2"),
+  ),
   SPEECH_MODEL: z.preprocess(
     (value) => (value === "" ? undefined : value),
     z.string().min(1).default("openai/tts-1"),

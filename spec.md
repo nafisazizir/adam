@@ -144,7 +144,7 @@ stub the route).
   `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
-  `agent` (disables the built-in root-copy tool).
+  `transcribe_audio`, `agent` (disables the built-in root-copy tool).
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -167,6 +167,9 @@ stub the route).
   An undecodable fetched file throws, which Eve degrades to a model-visible note. `provider-safe-model.ts`
   repeats this check at the model boundary because durable history replays staged image bytes on every
   call; a raw image already staged before normalization shipped could otherwise wedge the session.
+- **Inbound voice notes**: `transcribe_audio` reads the staged audio file from the sandbox and calls
+  `lib/transcription.ts`, the STT seam. `lib/transcribable-audio.ts` uses ffmpeg to convert CAF and
+  other unsupported types to 16 kHz mono WAV before sending audio through the AI Gateway.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
   reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
@@ -218,6 +221,8 @@ adam/
 │   │   ├── inbound-media.ts   # fetchFile wrapper: provider-safe JPEGs from HEIC/oversized images
 │   │   ├── provider-safe-model.ts # model-boundary normalization for replayed inline images
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
+│   │   ├── transcription.ts   # audio → transcript (AI Gateway transcription model)
+│   │   ├── transcribable-audio.ts # normalize audio formats with ffmpeg
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
@@ -225,6 +230,7 @@ adam/
 │   │   ├── cancel_reminder.ts
 │   │   ├── list_reminders.ts
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
+│   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
@@ -252,7 +258,8 @@ adam/
 `briefing` cron · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
-voice note (text stays the default; see `agent/instructions.md`).
+voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
+with `transcribe_audio`.
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
@@ -274,6 +281,7 @@ QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
 BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio and the home delivery target
+TRANSCRIPTION_MODEL=...             # optional, defaults to microsoft/mai-transcribe-2
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
 STRAVA_WEBHOOK_VERIFY_TOKEN=...     # Strava GET handshake
