@@ -4,7 +4,7 @@ import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { rememberHomeTarget } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
-import { unreadableInbound } from "#lib/photon-inbound.js";
+import { resolveAttachmentIds, unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
@@ -86,8 +86,14 @@ export default withInboundMediaNormalization(photonIMessageChannel({
       }
     },
   },
-  async onMessage(_ctx, message) {
+  async onMessage(ctx, message) {
     if (message.author.isMe) return null;
+
+    try {
+      await resolveAttachmentIds(message.raw, (ctx.thread.adapter as { app?: unknown }).app);
+    } catch (error) {
+      console.warn("[photon] failed to resolve attachment ids", error);
+    }
 
     const unreadable = unreadableInbound(message);
     if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);

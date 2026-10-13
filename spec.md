@@ -167,7 +167,9 @@ stub the route).
   An undecodable fetched file throws, which Eve degrades to a model-visible note. `provider-safe-model.ts`
   repeats this check at the model boundary because durable history replays staged image bytes on every
   call; a raw image already staged before normalization shipped could otherwise wedge the session.
-- **Inbound voice notes**: `transcribe_audio` reads the staged audio file from the sandbox and calls
+- **Inbound voice notes**: Photon's webhook omits the voice note's attachment GUID, so the photon
+  channel resolves it with Spectrum's `getMessage` before Eve wires the download
+  (`lib/photon-inbound.ts`). `transcribe_audio` reads the staged audio file from the sandbox and calls
   `lib/transcription.ts`, the STT seam. `lib/transcribable-audio.ts` uses ffmpeg to convert CAF and
   other unsupported types to 16 kHz mono WAV before sending audio through the AI Gateway.
 - **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
