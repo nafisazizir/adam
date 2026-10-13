@@ -17,6 +17,52 @@ function hasDownloadId(node: ContentNode): boolean {
   return typeof node.id === "string" && node.id.length > 0;
 }
 
+type SpectrumPlatform = {
+  client?: unknown;
+  config?: unknown;
+  store?: unknown;
+  definition?: { actions?: { getMessage?: unknown } };
+};
+
+type SpectrumApp = {
+  __internal?: { platforms?: { get?: (name: string) => SpectrumPlatform | undefined } };
+};
+
+type GetMessage = (
+  ctx: { client?: unknown; config?: unknown; store?: unknown },
+  space: unknown,
+  messageId: string,
+) => Promise<{ content?: unknown } | undefined>;
+
+// Spectrum's webhook voice payload omits the attachment GUID, so Eve can't wire fetchData.
+export async function resolveAttachmentIds(raw: unknown, spectrumApp: unknown): Promise<void> {
+  if (typeof raw !== "object" || raw === null) return;
+  const record = raw as ContentNode;
+  const nodes = attachmentNodes(record.content);
+  if (nodes.every(hasDownloadId)) return;
+  if (typeof record.id !== "string" || record.id.length === 0) return;
+  if (typeof record.space !== "object" || record.space === null) return;
+
+  const platform = (spectrumApp as SpectrumApp | null | undefined)?.__internal?.platforms?.get?.(
+    "iMessage",
+  );
+  const getMessage = platform?.definition?.actions?.getMessage;
+  if (typeof getMessage !== "function" || platform === undefined) return;
+
+  const resolved = await (getMessage as GetMessage)(
+    { client: platform.client, config: platform.config, store: platform.store },
+    record.space,
+    record.id,
+  );
+  const resolvedNodes = attachmentNodes(resolved?.content);
+  nodes.forEach((node, index) => {
+    const resolvedNode = resolvedNodes[index];
+    if (!hasDownloadId(node) && resolvedNode !== undefined && hasDownloadId(resolvedNode)) {
+      node.id = resolvedNode.id;
+    }
+  });
+}
+
 export function unreadableInbound(message: {
   text: string;
   attachments: readonly unknown[];
