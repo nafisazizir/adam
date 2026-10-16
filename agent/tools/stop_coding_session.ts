@@ -11,6 +11,7 @@ export default defineTool({
   inputSchema: z.object({
     sessionId: z.string().min(1).describe("The session id."),
   }),
+  label: { start: () => "Stop coding session" },
   async execute({ sessionId }) {
     return describeCodingSession(await archiveCodingSession(sessionId));
   },

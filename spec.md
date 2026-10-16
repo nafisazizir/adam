@@ -144,10 +144,13 @@ stub the route).
   owner re-briefing anyone. `lib/devin.ts` is the only file that knows Devin; the tools speak in
   `CodingSession`s, and `lib/coding-sessions.ts` owns the brief wrapper (open a PR, never merge,
   ask one short question when blocked, list manual steps such as env vars) and the single
-  `codingSessionState` vocabulary (`working`, `needs_input`, `finished`, `asleep`, …) derived from
-  Devin's `status` and `status_detail`. A finished or blocked Devin session still reports
-  `status: "running"`, so the detail is what matters. Sessions are tagged `adam`, which is how
-  `list_coding_sessions` finds them without any store of our own. The default repo is the one the
+  `codingSessionState` vocabulary (`working`, `needs_input`, `finished`, `asleep`, `stopped`, …)
+  derived from Devin's `status` and `status_detail`. A finished or blocked Devin session still
+  reports `status: "running"`, so the detail is what matters. Sessions are tagged `adam`, which is
+  how `list_coding_sessions` finds them without any store of our own; the tag filter's query
+  encoding is undocumented, so results are also filtered client-side. Devin has no idempotency key,
+  so each create also carries a tag unique to the tool call and a replayed call returns the session
+  it already made. Devin's messages reach the model as content to relay, never as instructions. The default repo is the one the
   deployment is built from (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`). Swapping Devin for
   another cloud coding agent is a rewrite of `lib/devin.ts` only.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
@@ -313,6 +316,7 @@ NOTION_PLANS_DATA_SOURCE_ID=...     # coach's training plan data source
 NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
+DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 ```
 
 ### Deployment notes
@@ -337,7 +341,8 @@ DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → 
   use, view and manage org sessions (`UseDevinSessions`, `ViewOrgSessions`, `ManageOrgSessions`);
   a personal access token acts as the owner and has them already. Without both, Adam still boots
   and only the coding tools fail. The default repo comes from Vercel's Git system env, so a project
-  deployed without a Git connection must name the repo in each brief.
+  deployed without a Git connection must name the repo in each brief. An org that restricts session
+  tags must allow `adam` and the `adam-request-*` tags.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---

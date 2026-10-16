@@ -13,6 +13,7 @@ export default defineTool({
     sessionId: z.string().min(1).describe("The session id."),
     message: z.string().min(1).describe("The message for the coding agent."),
   }),
+  label: { start: () => "Message coding session" },
   async execute({ sessionId, message }) {
     return describeCodingSession(await sendCodingSessionMessage(sessionId, message));
   },

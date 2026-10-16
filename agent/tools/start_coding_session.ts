@@ -24,12 +24,17 @@ export default defineTool({
       .describe("GitHub repo as owner/name. Omit it to work on your own codebase."),
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
-  async execute({ brief, title, repo }) {
+  async execute({ brief, title, repo }, ctx) {
     const target = resolveRepo(repo);
+    if (!target) {
+      throw new Error("This deployment does not know its own repo; name the repo as owner/name.");
+    }
+
     const session = await createCodingSession({
       prompt: codingBrief(brief, target),
       title,
-      repos: target ? [target] : undefined,
+      repo: target,
+      idempotencyKey: ctx.callId,
     });
 
     return describeCodingSession(session);

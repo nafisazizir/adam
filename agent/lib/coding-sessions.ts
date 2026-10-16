@@ -9,6 +9,7 @@ export type CodingSessionState =
   | "needs_approval"
   | "finished"
   | "asleep"
+  | "stopped"
   | "halted"
   | "failed"
   | "ended";
@@ -27,6 +28,7 @@ export function codingSessionState(session: CodingSession): CodingSessionState {
       if (session.statusDetail === "finished") return "finished";
       return "working";
     case "suspended":
+      if (session.archived) return "stopped";
       if (session.statusDetail === "error") return "failed";
       return session.statusDetail && !sleepReasons.has(session.statusDetail) ? "halted" : "asleep";
     case "exit":
@@ -42,19 +44,17 @@ export function resolveRepo(repo: string | undefined): string | undefined {
   return repo ?? env.selfRepo;
 }
 
-export function codingBrief(brief: string, repo: string | undefined): string {
+export function codingBrief(brief: string, repo: string): string {
   return [
     brief.trim(),
     "",
     "---",
     "You were started by Adam, the owner's personal agent, on the owner's behalf. The brief above is Adam's account of what the owner asked for in chat.",
-    repo ? `Repository: ${repo}` : null,
+    `Repository: ${repo}`,
     "- Open a pull request with your change. Do not merge it; the owner reviews and decides.",
     "- If you need a decision only the owner can make, ask one clear question and wait. It is relayed to them by text message, so keep it short and self-contained.",
     "- When you finish, end with a short summary: what changed, how you verified it, and anything the owner must do by hand, such as environment variables to set or settings to change.",
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
+  ].join("\n");
 }
 
 export function describeCodingSession(session: CodingSession) {

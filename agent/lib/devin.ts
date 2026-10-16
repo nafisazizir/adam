@@ -6,7 +6,7 @@ const apiBase = "https://api.devin.ai/v3/organizations";
 const messagePageSize = 200;
 const maxMessagePages = 10;
 
-export const adamSessionTag = "adam";
+const adamSessionTag = "adam";
 
 const sessionSchema = z.object({
   session_id: z.string(),
@@ -14,6 +14,8 @@ const sessionSchema = z.object({
   title: z.string().nullish(),
   status: z.string(),
   status_detail: z.string().nullish(),
+  is_archived: z.boolean().default(false),
+  tags: z.array(z.string()).default([]),
   created_at: z.number(),
   updated_at: z.number(),
   pull_requests: z
@@ -47,6 +49,7 @@ export interface CodingSession {
   readonly title: string | null;
   readonly status: string;
   readonly statusDetail: string | null;
+  readonly archived: boolean;
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly pullRequests: readonly CodingPullRequest[];
@@ -71,6 +74,7 @@ function toSession(raw: z.infer<typeof sessionSchema>): CodingSession {
     title: raw.title ?? null,
     status: raw.status,
     statusDetail: raw.status_detail ?? null,
+    archived: raw.is_archived,
     createdAt: fromTimestamp(raw.created_at),
     updatedAt: fromTimestamp(raw.updated_at),
     pullRequests: raw.pull_requests.map((pr) => ({ url: pr.pr_url, state: pr.pr_state ?? null })),
@@ -84,6 +88,19 @@ function toMessage(raw: z.infer<typeof messageSchema>): CodingSessionMessage {
     text: raw.message,
     at: fromTimestamp(raw.created_at),
   };
+}
+
+export class DevinApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+
+  get isPermanent(): boolean {
+    return this.status >= 400 && this.status < 500 && this.status !== 408 && this.status !== 429;
+  }
 }
 
 function credentials(): { apiKey: string; orgId: string } {
@@ -113,7 +130,10 @@ async function devinRequest<T extends z.ZodType>(
 
   if (!response.ok) {
     const detail = (await response.text().catch(() => "")).slice(0, 500);
-    throw new Error(`Devin API ${init.method ?? "GET"} ${path} failed with ${response.status}: ${detail}`);
+    throw new DevinApiError(
+      `Devin API ${init.method ?? "GET"} ${path} failed with ${response.status}: ${detail}`,
+      response.status,
+    );
   }
 
   return schema.parse(await response.json());
@@ -123,22 +143,33 @@ function sessionPath(id: string): string {
   return `/sessions/${encodeURIComponent(id)}`;
 }
 
-export function isDevinConfigured(): boolean {
-  return Boolean(env.DEVIN_API_KEY && env.DEVIN_ORG_ID);
+async function listTaggedSessions(tag: string, limit: number): Promise<CodingSession[]> {
+  const query = new URLSearchParams({ tags: tag, first: String(limit) });
+  const page = await devinRequest("/sessions", pageSchema(sessionSchema), { query });
+  // The tag filter's query encoding is undocumented, so never trust it to have applied.
+  return page.items.filter((raw) => raw.tags.includes(tag)).map(toSession);
 }
 
+// Devin has no idempotency key, so a replayed create finds the session it already made by a tag
+// unique to the request instead of starting, and paying for, a second one.
 export async function createCodingSession(input: {
   prompt: string;
-  title?: string;
-  repos?: readonly string[];
+  title: string;
+  repo: string;
+  idempotencyKey: string;
 }): Promise<CodingSession> {
+  const requestTag = `adam-request-${input.idempotencyKey.replace(/[^\w-]/gu, "_")}`;
+  const [existing] = await listTaggedSessions(requestTag, 1);
+  if (existing) return existing;
+
   const raw = await devinRequest("/sessions", sessionSchema, {
     method: "POST",
     body: {
       prompt: input.prompt,
       title: input.title,
-      tags: [adamSessionTag],
-      ...(input.repos?.length ? { repos: input.repos } : {}),
+      tags: [adamSessionTag, requestTag],
+      repos: [input.repo],
+      ...(env.DEVIN_MAX_ACU_LIMIT === undefined ? {} : { max_acu_limit: env.DEVIN_MAX_ACU_LIMIT }),
     },
   });
   return toSession(raw);
@@ -149,9 +180,8 @@ export async function getCodingSession(id: string): Promise<CodingSession> {
 }
 
 export async function listCodingSessions(limit: number): Promise<CodingSession[]> {
-  const query = new URLSearchParams({ tags: adamSessionTag, first: String(limit) });
-  const page = await devinRequest("/sessions", pageSchema(sessionSchema), { query });
-  return page.items.map(toSession).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+  const sessions = await listTaggedSessions(adamSessionTag, limit);
+  return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
 export async function listCodingSessionMessages(id: string): Promise<CodingSessionMessage[]> {
@@ -181,8 +211,6 @@ export async function sendCodingSessionMessage(id: string, message: string): Pro
   return toSession(raw);
 }
 
-// Archiving puts the session to sleep instead of terminating it, so a later message can still
-// resume it.
 export async function archiveCodingSession(id: string): Promise<CodingSession> {
   return toSession(
     await devinRequest(`${sessionPath(id)}/archive`, sessionSchema, { method: "POST" }),
