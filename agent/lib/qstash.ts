@@ -35,6 +35,18 @@ export function verifyCallbackSignature(input: {
   return receiver.verify(input);
 }
 
+export async function hasValidCallbackSignature(request: Request, body: string, url: string): Promise<boolean> {
+  try {
+    return await verifyCallbackSignature({
+      signature: request.headers.get("upstash-signature") ?? "",
+      body,
+      url,
+    });
+  } catch {
+    return false;
+  }
+}
+
 export async function publishReminder(input: {
   message: string;
   channel: string;

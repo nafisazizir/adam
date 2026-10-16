@@ -14,6 +14,8 @@ export const workoutsStravaPath = "/eve/v1/workouts/strava";
 export const workoutsHevyPath = "/eve/v1/workouts/hevy";
 export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
 export const workoutsNudgePath = "/eve/v1/workouts/nudge";
+export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
+export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
@@ -83,4 +85,6 @@ export const env = {
   remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
   workoutsAnalyzeUrl: `${parsed.data.BASE_URL}${workoutsAnalyzePath}`,
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
+  codingSessionsWatchUrl: `${parsed.data.BASE_URL}${codingSessionsWatchPath}`,
+  codingSessionsNotifyUrl: `${parsed.data.BASE_URL}${codingSessionsNotifyPath}`,
 };
