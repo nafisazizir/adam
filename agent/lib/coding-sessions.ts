@@ -79,13 +79,15 @@ export const codingSessionsAuthenticator = "coding-sessions";
 
 const minuteMs = 60 * 1000;
 const maxIdleMs = 24 * 60 * minuteMs;
-const maxFailedChecks = 10;
+const maxFailedChecks = 30;
+const unreadMessageGraceMs = 5 * minuteMs;
 const maxRelayedMessageChars = 4000;
 
 export const watchTickSchema = z.object({
   sessionId: z.string().min(1),
   notified: z.string().nullable(),
   failures: z.number().int().nonnegative(),
+  slot: z.number().int().nonnegative(),
 });
 
 export type WatchTick = z.infer<typeof watchTickSchema>;
@@ -143,10 +145,13 @@ export async function watchCodingSession(
   now: number = Date.now(),
 ): Promise<void> {
   const stepMs = watchStepMs(session, now);
-  const slot = (Math.floor(now / stepMs) + 1) * stepMs;
+  // Past the slot this tick was due at even if this instance's clock runs behind, or the next
+  // publish would reuse its own id and be dropped.
+  const from = Math.max(now, tick.slot + 1);
+  const slot = (Math.floor(from / stepMs) + 1) * stepMs;
   await publishCallback({
     url: env.codingSessionsWatchUrl,
-    body: tick,
+    body: { ...tick, slot },
     delaySeconds: Math.max(1, Math.ceil((slot - now) / 1000)),
     deduplicationId: deduplicationId("coding-watch", tick.sessionId, slot),
   });
@@ -155,7 +160,7 @@ export async function watchCodingSession(
 // The session already exists by now, so a failure to watch it must not read as a failed tool call.
 export async function tryWatchCodingSession(session: CodingSession): Promise<boolean> {
   try {
-    await watchCodingSession({ sessionId: session.id, notified: null, failures: 0 }, session);
+    await watchCodingSession({ sessionId: session.id, notified: null, failures: 0, slot: 0 }, session);
     return true;
   } catch (error) {
     console.error(`[coding-sessions] failed to start watching ${session.id}`, error);
@@ -163,9 +168,21 @@ export async function tryWatchCodingSession(session: CodingSession): Promise<boo
   }
 }
 
+// Devin's status lags a message it has not read yet, so for a few minutes after the owner writes
+// the status still describes the turn before it: neither news nor a reason to stop watching.
+function awaitingDevin(messages: readonly CodingSessionMessage[], now: number): boolean {
+  const newest = messages.at(-1);
+  return newest?.from === "user" && now - newest.at.getTime() < unreadMessageGraceMs;
+}
+
 export function nextWatchTick(
   tick: WatchTick,
-  check: { session: CodingSession; notified: string | null; pending: boolean } | null,
+  check: {
+    session: CodingSession;
+    messages: readonly CodingSessionMessage[];
+    notified: string | null;
+    pending: boolean;
+  } | null,
   now: number = Date.now(),
 ): WatchTick | null {
   if (!check) {
@@ -173,40 +190,37 @@ export function nextWatchTick(
     return failures >= maxFailedChecks ? null : { ...tick, failures };
   }
 
-  const { session, notified, pending } = check;
-  if (stoppedStates.has(codingSessionState(session)) && !pending) return null;
+  const { session, messages, notified, pending } = check;
+  const stopped = stoppedStates.has(codingSessionState(session));
+  if (stopped && !pending && !awaitingDevin(messages, now)) return null;
   if (now - session.updatedAt.getTime() > maxIdleMs) return null;
-  return { sessionId: tick.sessionId, notified, failures: 0 };
+  return { ...tick, notified, failures: 0 };
 }
 
 function stripUpdateTags(text: string): string {
-  return text.replace(/<\/?coding_session_update>/giu, "");
+  return text.replace(/<\s*\/?\s*coding_session_update\b[^>]*>/giu, "");
 }
 
 export function codingUpdateFor(
   session: CodingSession,
   messages: readonly CodingSessionMessage[],
+  now: number = Date.now(),
 ): { update: CodingUpdate; key: string } | null {
   const state = codingSessionState(session);
-  if (!isNotable(state)) return null;
+  if (!isNotable(state) || awaitingDevin(messages, now)) return null;
 
-  // Devin's status lags a message it has not read yet, so news from before the owner's latest
-  // message is stale.
-  const newest = messages.at(-1);
-  if (newest?.from === "user") return null;
-
-  const latest = newest?.from === "devin" ? newest : undefined;
+  const latest = [...messages].reverse().find((message) => message.from === "devin");
   return {
     update: {
       sessionId: session.id,
-      title: session.title,
+      title: session.title && stripUpdateTags(session.title),
       url: session.url,
       state,
       statusDetail: session.statusDetail,
       pullRequests: [...session.pullRequests],
       latestMessage: latest ? stripUpdateTags(latest.text).slice(0, maxRelayedMessageChars) : null,
     },
-    key: deduplicationId("coding-notify", session.id, state, latest?.id ?? "no-message"),
+    key: deduplicationId("coding-notify", session.id, state, messages.at(-1)?.id ?? "no-message"),
   };
 }
 

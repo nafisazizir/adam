@@ -33,7 +33,7 @@ async function checkSession(tick: WatchTick) {
     }
   }
 
-  return { session, notified, pending: found !== null && found.key !== notified };
+  return { session, messages, notified, pending: found !== null && found.key !== notified };
 }
 
 export default defineChannel({

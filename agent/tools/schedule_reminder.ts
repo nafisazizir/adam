@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { deliveryChannelForAuth } from "#lib/delivery.js";
+import { deliveryChannelForAuth, homeDelivery } from "#lib/delivery.js";
 import { publishReminder } from "#lib/qstash.js";
 import { scheduledReminders } from "#lib/reminders.js";
 import { formatUserDateTime } from "#lib/time.js";
@@ -29,7 +29,7 @@ export default defineTool({
     const resolved =
       (current && deliveryChannelForAuth(current)) ??
       (initiator && deliveryChannelForAuth(initiator)) ??
-      null;
+      (await homeDelivery());
 
     if (!resolved) {
       throw new Error(

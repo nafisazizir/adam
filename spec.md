@@ -165,27 +165,30 @@ stub the route).
   failure count), so there is no store.
   - **Pacing.** The interval follows the session's own idleness: 1 minute while it is busy, then 2,
     4 and 8 minutes. Watching ends when the session is asleep, stopped, halted, failed or ended,
-    after 24 idle hours, after ten failed checks in a row, or on a permanent Devin API error.
+    after 24 idle hours, after thirty failed checks in a row (about an hour of Devin outage), or on
+    a permanent Devin API error. An update that failed to publish keeps the watch alive until it
+    goes out.
   - **One watch per session.** Each tick lands on a wall-clock slot named in its QStash
     deduplication id, and the steps nest. A second watch on the same session, such as a restart
     from `message_coding_session` or a replayed tool call, collides with the first on a shared slot
     and is dropped, so tools can re-arm the watch freely. QStash deduplicates for only ten minutes,
     which covers one slot ahead but not the life of a state.
-  - **Repeat suppression.** Updates are keyed by session, state and Devin's latest message id, and
-    a tick publishes one only when the key differs from `notified`. A new question, or a new finish
-    after feedback, still gets through. While the owner's latest message is unanswered, Devin's
-    status still reflects the old turn, so nothing is sent.
+  - **Repeat suppression.** Updates are keyed by session, state and the newest message id, and a
+    tick publishes one only when the key differs from `notified`. A new question, or a new finish
+    after feedback (with or without a new Devin message), still gets through. For five minutes after
+    the owner writes, Devin's status still describes the turn before it, so it is neither news nor a
+    reason to stop watching; this keeps a just-woken session from reading as asleep.
   - **Notable states.** `needs_input`, `needs_approval`, `finished`, `halted` and `failed`. Halted
     and failed carry Devin's `status_detail` as the reason.
   - **Delivery.** The notify route delivers a `<coding_session_update>` into the home iMessage
     thread with `turnPolicy: "queue"`, acting as the owner with its own `coding-sessions`
     authenticator, the same way workout debriefs arrive, and root Adam applies right-to-silence.
-    Devin's text is relayed as content, with the wrapper tag stripped from it.
+    Devin's text and title are relayed as content, with anything resembling the wrapper tag stripped.
   - **Turns that never park.** An update turn's principal differs from the owner's own iMessages,
     so Eve queues the owner's replies behind it rather than letting them steer it. Nothing in an
     update turn may therefore wait on the owner. Tools that need the owner's confirmation refuse
-    outside a chat turn, and `schedule_reminder` resolves the current turn's channel before the
-    session initiator's.
+    outside a chat turn, and `schedule_reminder` resolves the current turn's channel, then the
+    session initiator's, then the home thread.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
@@ -382,7 +385,7 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   tags must allow `adam` and the `adam-request-*` tags.
 - A watched coding session costs one QStash message a minute while Devin is busy, backing off to
   one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
-  24 idle hours, about 200 messages.
+  24 idle hours, about 250 messages; two such sessions would use most of the free tier.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
