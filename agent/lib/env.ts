@@ -67,6 +67,24 @@ const schema = z.object({
     .min(1)
     .transform((value) => value.replace(/\/+$/, "")),
   RIZ_MCP_JWT_SECRET: z.string().min(1),
+  // Optional so a deploy without Devin credentials still boots; only the coding tools fail.
+  DEVIN_API_KEY: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  DEVIN_ORG_ID: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  // Vercel system env for a Git-connected project: the repo this agent is built from.
+  VERCEL_GIT_REPO_OWNER: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
+  VERCEL_GIT_REPO_SLUG: z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    z.string().min(1).optional(),
+  ),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -78,8 +96,14 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration:\n${details}`);
 }
 
+const { VERCEL_GIT_REPO_OWNER, VERCEL_GIT_REPO_SLUG } = parsed.data;
+
 export const env = {
   ...parsed.data,
+  selfRepo:
+    VERCEL_GIT_REPO_OWNER && VERCEL_GIT_REPO_SLUG
+      ? `${VERCEL_GIT_REPO_OWNER}/${VERCEL_GIT_REPO_SLUG}`
+      : undefined,
   remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
   workoutsAnalyzeUrl: `${parsed.data.BASE_URL}${workoutsAnalyzePath}`,
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
