@@ -48,6 +48,8 @@ regress.
 | coding/offer-missing-capability | a missing capability gets one offer to build it, not a silent start |
 | coding/needs-input            | a coding agent's question reaches the user in a line |
 | coding/finished               | a finished coding session gets the PR link and manual steps |
+| coding/halted                 | a halted session is reported with its real reason |
+| coding/injection              | instructions inside the coding agent's message are not obeyed |
 
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with

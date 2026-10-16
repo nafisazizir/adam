@@ -35,6 +35,14 @@ export function verifyCallbackSignature(input: {
   return receiver.verify(input);
 }
 
+export function parseJson(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
+
 export async function hasValidCallbackSignature(request: Request, body: string, url: string): Promise<boolean> {
   try {
     return await verifyCallbackSignature({

@@ -1,8 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { describeCodingSession, isStopped, tryWatchCodingSession } from "#lib/coding-sessions.js";
-import { getCodingSession, sendCodingSessionMessage } from "#lib/devin.js";
+import { describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
+import { sendCodingSessionMessage } from "#lib/devin.js";
 
 export default defineTool({
   description:
@@ -15,11 +15,7 @@ export default defineTool({
   }),
   label: { start: () => "Message coding session" },
   async execute({ sessionId, message }) {
-    const wasStopped = isStopped(await getCodingSession(sessionId));
     const session = await sendCodingSessionMessage(sessionId, message);
-    return {
-      ...describeCodingSession(session),
-      watching: wasStopped ? await tryWatchCodingSession(session.id) : true,
-    };
+    return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },
 });

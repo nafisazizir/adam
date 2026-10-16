@@ -9,23 +9,31 @@ import {
   publishCodingUpdate,
   watchCodingSession,
   watchTickSchema,
+  type WatchTick,
 } from "#lib/coding-sessions.js";
 import { homeDelivery } from "#lib/delivery.js";
-import {
-  DevinApiError,
-  getCodingSession,
-  listCodingSessionMessages,
-  type CodingSession,
-} from "#lib/devin.js";
+import { DevinApiError, getCodingSession, listCodingSessionMessages } from "#lib/devin.js";
 import { codingSessionsNotifyPath, codingSessionsWatchPath, env } from "#lib/env.js";
-import { hasValidCallbackSignature } from "#lib/qstash.js";
+import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
 
-function parseJson(body: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch {
-    return null;
+async function checkSession(tick: WatchTick) {
+  const [session, messages] = await Promise.all([
+    getCodingSession(tick.sessionId),
+    listCodingSessionMessages(tick.sessionId),
+  ]);
+
+  const found = codingUpdateFor(session, messages);
+  let notified = tick.notified;
+  if (found && found.key !== tick.notified) {
+    try {
+      await publishCodingUpdate(found.update, found.key);
+      notified = found.key;
+    } catch (error) {
+      console.error(`[coding-sessions] failed to queue an update for ${tick.sessionId}`, error);
+    }
   }
+
+  return { session, notified, pending: found !== null && found.key !== notified };
 }
 
 export default defineChannel({
@@ -43,27 +51,24 @@ export default defineChannel({
       }
 
       const tick = parsed.data;
-      let session: CodingSession | null = null;
+      let check: Awaited<ReturnType<typeof checkSession>> | null = null;
       try {
-        session = await getCodingSession(tick.sessionId);
-        const found = codingUpdateFor(session, await listCodingSessionMessages(tick.sessionId));
-        if (found) await publishCodingUpdate(found.update, found.deduplicationId);
+        check = await checkSession(tick);
       } catch (error) {
         console.error(`[coding-sessions] failed to check ${tick.sessionId}`, error);
         if (error instanceof DevinApiError && error.isPermanent) {
           return Response.json({ ok: true, watching: false });
         }
-        // Anything else may be a passing outage, which should cost one tick, not the watch.
       }
 
-      const next = nextWatchTick(tick, session);
+      const next = nextWatchTick(tick, check);
       if (!next) {
         console.log(`[coding-sessions] stopped watching ${tick.sessionId}`);
         return Response.json({ ok: true, watching: false });
       }
 
       try {
-        await watchCodingSession(tick.sessionId, next);
+        await watchCodingSession(next, check?.session ?? null);
       } catch (error) {
         console.error(`[coding-sessions] failed to schedule the next check of ${tick.sessionId}`, error);
         return Response.json({ ok: false, error: "publish_failed" }, { status: 500 });

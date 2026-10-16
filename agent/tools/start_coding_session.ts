@@ -37,6 +37,6 @@ export default defineTool({
       idempotencyKey: ctx.callId,
     });
 
-    return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session.id) };
+    return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },
 });

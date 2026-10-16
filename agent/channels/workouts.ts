@@ -17,7 +17,7 @@ import {
   workoutRefSchema,
 } from "#lib/workouts.js";
 import { callRizMcpTool } from "#lib/riz-mcp.js";
-import { hasValidCallbackSignature, publishCallback } from "#lib/qstash.js";
+import { hasValidCallbackSignature, parseJson, publishCallback } from "#lib/qstash.js";
 
 const stravaEventSchema = z.object({
   object_type: z.string(),
@@ -41,14 +41,6 @@ function authMatches(provided: string | null, expected: string): boolean {
     providedBytes.length === expectedBytes.length &&
     timingSafeEqual(providedBytes, expectedBytes)
   );
-}
-
-function parseJson(body: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch {
-    return null;
-  }
 }
 
 export default defineChannel({

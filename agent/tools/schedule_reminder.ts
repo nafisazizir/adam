@@ -25,8 +25,11 @@ export default defineTool({
       .describe("Seconds from now until the reminder fires."),
   }),
   async execute({ message, delaySeconds }, ctx) {
-    const auth = ctx.session.auth.initiator ?? ctx.session.auth.current;
-    const resolved = auth ? deliveryChannelForAuth(auth) : null;
+    const { current, initiator } = ctx.session.auth;
+    const resolved =
+      (current && deliveryChannelForAuth(current)) ??
+      (initiator && deliveryChannelForAuth(initiator)) ??
+      null;
 
     if (!resolved) {
       throw new Error(
