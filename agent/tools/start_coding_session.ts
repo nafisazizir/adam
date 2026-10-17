@@ -1,7 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { codingBrief, describeCodingSession } from "#lib/coding-sessions.js";
+import { codingBrief, describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
 import { createCodingSession } from "#lib/devin.js";
 
 export default defineTool({
@@ -37,6 +37,6 @@ export default defineTool({
       idempotencyKey: ctx.callId,
     });
 
-    return describeCodingSession(session);
+    return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },
 });

@@ -17,7 +17,7 @@ import {
   workoutRefSchema,
 } from "#lib/workouts.js";
 import { callRizMcpTool } from "#lib/riz-mcp.js";
-import { publishCallback, verifyCallbackSignature } from "#lib/qstash.js";
+import { hasValidCallbackSignature, parseJson, publishCallback } from "#lib/qstash.js";
 
 const stravaEventSchema = z.object({
   object_type: z.string(),
@@ -41,26 +41,6 @@ function authMatches(provided: string | null, expected: string): boolean {
     providedBytes.length === expectedBytes.length &&
     timingSafeEqual(providedBytes, expectedBytes)
   );
-}
-
-async function hasValidCallbackSignature(
-  signature: string,
-  body: string,
-  url: string,
-): Promise<boolean> {
-  try {
-    return await verifyCallbackSignature({ signature, body, url });
-  } catch {
-    return false;
-  }
-}
-
-function parseJson(body: string): unknown {
-  try {
-    return JSON.parse(body);
-  } catch {
-    return null;
-  }
 }
 
 export default defineChannel({
@@ -148,13 +128,7 @@ export default defineChannel({
     }),
     POST(workoutsAnalyzePath, async (request, { from, resolveSession }) => {
       const body = await request.text();
-      if (
-        !(await hasValidCallbackSignature(
-          request.headers.get("upstash-signature") ?? "",
-          body,
-          env.workoutsAnalyzeUrl,
-        ))
-      ) {
+      if (!(await hasValidCallbackSignature(request, body, env.workoutsAnalyzeUrl))) {
         return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
       }
 
@@ -207,13 +181,7 @@ export default defineChannel({
     }),
     POST(workoutsNudgePath, async (request, { to }) => {
       const body = await request.text();
-      if (
-        !(await hasValidCallbackSignature(
-          request.headers.get("upstash-signature") ?? "",
-          body,
-          env.workoutsNudgeUrl,
-        ))
-      ) {
+      if (!(await hasValidCallbackSignature(request, body, env.workoutsNudgeUrl))) {
         return Response.json({ ok: false, error: "invalid_signature" }, { status: 401 });
       }
 

@@ -95,7 +95,7 @@ stub the route).
 ```
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
-   QStash callback  ──▶│ one-shot reminder / workout callbacks  │──▶ Eve session ──▶ (maybe) reply
+   QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
    (future) webhooks──▶│ external events (email)                 │
@@ -158,7 +158,38 @@ stub the route).
   `list_coding_repos` (Devin's `GET /repositories`) answers what Devin can work on. Adam holds no
   GitHub credentials of its own. Swapping Devin for another cloud coding agent is a rewrite of
   `lib/devin.ts` only.
-- **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
+- **Coding session updates** (`agent/channels/coding-sessions.ts`): Devin has no outbound webhooks,
+  so Adam polls. Starting or messaging a session publishes a QStash watch tick to
+  `/eve/v1/coding-sessions/watch`; each tick reads the session and its messages and publishes the
+  next one. The tick carries all watch state (`notified`, the key of the last update sent, and a
+  failure count), so there is no store.
+  - **Pacing.** The interval follows the session's own idleness: 1 minute while it is busy, then 2,
+    4 and 8 minutes. Watching ends when the session is asleep, stopped, halted, failed or ended,
+    after 24 idle hours, after thirty failed checks in a row (about an hour of Devin outage), or on
+    a permanent Devin API error. An update that failed to publish keeps the watch alive until it
+    goes out.
+  - **One watch per session.** Each tick lands on a wall-clock slot named in its QStash
+    deduplication id, and the steps nest. A second watch on the same session, such as a restart
+    from `message_coding_session` or a replayed tool call, collides with the first on a shared slot
+    and is dropped, so tools can re-arm the watch freely. QStash deduplicates for only ten minutes,
+    which covers one slot ahead but not the life of a state.
+  - **Repeat suppression.** Updates are keyed by session, state and the newest message id, and a
+    tick publishes one only when the key differs from `notified`. A new question, or a new finish
+    after feedback (with or without a new Devin message), still gets through. For five minutes after
+    the owner writes, Devin's status still describes the turn before it, so it is neither news nor a
+    reason to stop watching; this keeps a just-woken session from reading as asleep.
+  - **Notable states.** `needs_input`, `needs_approval`, `finished`, `halted` and `failed`. Halted
+    and failed carry Devin's `status_detail` as the reason.
+  - **Delivery.** The notify route delivers a `<coding_session_update>` into the home iMessage
+    thread with `turnPolicy: "queue"`, acting as the owner with its own `coding-sessions`
+    authenticator, the same way workout debriefs arrive, and root Adam applies right-to-silence.
+    Devin's text and title are relayed as content, with anything resembling the wrapper tag stripped.
+  - **Turns that never park.** An update turn's principal differs from the owner's own iMessages,
+    so Eve queues the owner's replies behind it rather than letting them steer it. Nothing in an
+    update turn may therefore wait on the owner. Tools that need the owner's confirmation refuse
+    outside a chat turn, and `schedule_reminder` resolves the current turn's channel, then the
+    session initiator's, then the home thread.
+- **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
@@ -214,6 +245,7 @@ adam/
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
+│   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
 │   │   └── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
 │   ├── connections/
 │   │   ├── notion.ts
@@ -249,7 +281,7 @@ adam/
 │   │   ├── transcribable-audio.ts # normalize audio formats with ffmpeg
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   ├── devin.ts           # Devin v3 REST client: create/get/list/message/archive sessions
-│   │   ├── coding-sessions.ts # brief wrapper, session state vocabulary, tool-facing summary
+│   │   ├── coding-sessions.ts # brief wrapper, state vocabulary, watch ticks, update messages
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -291,7 +323,8 @@ adam/
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
-with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat.
+with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
+with their questions, finished pull requests and failures texted back as they happen.
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
@@ -350,6 +383,9 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   and only the coding tools fail. Briefs name Adam's own repo from Vercel's Git system env; without a Git
   connection that line is left out and Devin infers it. An org that restricts session
   tags must allow `adam` and the `adam-request-*` tags.
+- A watched coding session costs one QStash message a minute while Devin is busy, backing off to
+  one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
+  24 idle hours, about 250 messages; two such sessions would use most of the free tier.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
