@@ -154,7 +154,8 @@ stub the route).
   default repo is the one the deployment is built from
   (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`); any other repo Devin's GitHub access covers is
   found with `list_coding_repos` (Devin's `GET /repositories`), so Adam needs no GitHub credentials
-  of its own. Swapping Devin for another cloud coding agent is a rewrite of `lib/devin.ts` only.
+  of its own. One session can span several repos (Devin's `repos[]`), for a change that crosses
+  them, with one pull request per repo. Swapping Devin for another cloud coding agent is a rewrite of `lib/devin.ts` only.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
@@ -254,7 +255,7 @@ adam/
 │   │   ├── list_reminders.ts
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
 │   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
-│   │   ├── start_coding_session.ts # brief Devin; it opens a PR against a repo
+│   │   ├── start_coding_session.ts # brief Devin; it opens a PR per repo it changes
 │   │   ├── list_coding_sessions.ts
 │   │   ├── get_coding_session.ts # state, PRs, and the latest messages
 │   │   ├── message_coding_session.ts # answer its question or pass on feedback

@@ -167,7 +167,7 @@ async function listTaggedSessions(tag: string, limit: number): Promise<CodingSes
 export async function createCodingSession(input: {
   prompt: string;
   title: string;
-  repo: string;
+  repos: readonly string[];
   idempotencyKey: string;
 }): Promise<CodingSession> {
   const requestTag = `adam-request-${input.idempotencyKey.replace(/[^\w-]/gu, "_")}`;
@@ -180,7 +180,7 @@ export async function createCodingSession(input: {
       prompt: input.prompt,
       title: input.title,
       tags: [adamSessionTag, requestTag],
-      repos: [input.repo],
+      repos: input.repos,
       ...(env.DEVIN_MAX_ACU_LIMIT === undefined ? {} : { max_acu_limit: env.DEVIN_MAX_ACU_LIMIT }),
     },
   });
