@@ -1,5 +1,5 @@
 import { defineEvalConfig } from "eve/evals";
 
 export default defineEvalConfig({
-  judge: { model: "openai/gpt-5-mini" },
+  judge: { model: "typesafe-ai/jev" },
 });

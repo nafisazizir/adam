@@ -63,5 +63,6 @@ tag also hits the speech model and Vercel Blob, so `BLOB_READ_WRITE_TOKEN` has t
 
 ## Judge model
 
-Set in `evals.config.ts`. Adam runs on a small model; the judge should be a stronger
-one so grading is reliable and not self-flattering. Swap the model string there.
+Set in `evals.config.ts`. Eve's `t.judge` asks a decision model for a probability, so the judge
+must be one (`typesafe-ai/jev`, Eve's default); a plain language model such as
+`openai/gpt-5-mini` fails every judged eval with "is a language model, not a decision model".
