@@ -189,6 +189,21 @@ stub the route).
     update turn may therefore wait on the owner. Tools that need the owner's confirmation refuse
     outside a chat turn, and `schedule_reminder` resolves the current turn's channel, then the
     session initiator's, then the home thread.
+- **Merging** goes through Devin, whose own GitHub access opens the pull requests, so Adam holds no
+  GitHub credentials. `merge_pull_request` is a workflow tool (`defineWorkflowTool`). A step
+  refuses unless the current turn is the owner chatting (`deliveryChannelForAuth` resolves its
+  auth). Another finds the coding session that opened the PR among Adam's tagged sessions; a PR no
+  session of Adam's opened is refused, and a merged or closed one is reported, all without
+  prompting. Otherwise it asks with `ctx.ask`, a plain-text confirmation naming the PR
+  (`Merge owner/repo#n ("<session title>")? It gets squash-merged as it is now.`, options Merge and
+  Cancel; `merge`/`1` or `cancel`/`2` in any case answers it, and any other message withdraws it as
+  cancelled). On Merge a step messages the session to merge it as it is, without further commits,
+  and to say why if GitHub refuses, then re-arms the watch; the outcome reaches the owner as a
+  normal `<coding_session_update>`. It is `ctx.ask` and not Eve's `approval: always()` because an
+  approval prompt on iMessage only reads `Approve <tool>?`, never the PR, and can only be answered
+  by the exact requesting principal; a prompt parked in a background turn (debrief, coding update,
+  reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
+  Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
@@ -196,8 +211,8 @@ stub the route).
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
-  `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `agent` (disables the
-  built-in root-copy tool).
+  `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
+  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool).
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -282,6 +297,7 @@ adam/
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   ├── devin.ts           # Devin v3 REST client: create/get/list/message/archive sessions
 │   │   ├── coding-sessions.ts # brief wrapper, state vocabulary, watch ticks, update messages
+│   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -295,6 +311,7 @@ adam/
 │   │   ├── message_coding_session.ts # answer its question or pass on feedback
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
+│   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
@@ -324,7 +341,8 @@ to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
 with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
-with their questions, finished pull requests and failures texted back as they happen.
+with their questions, finished pull requests and failures texted back as they happen, and their
+pull requests merged on the owner's say-so after a confirmation naming the PR.
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
