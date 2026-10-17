@@ -1,14 +1,15 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { codingBrief, describeCodingSession, resolveRepos } from "#lib/coding-sessions.js";
+import { codingBrief, describeCodingSession } from "#lib/coding-sessions.js";
 import { createCodingSession } from "#lib/devin.js";
 
 export default defineTool({
   description:
     "Hand engineering work to a cloud coding agent that works in one or more GitHub repos " +
     "and opens pull requests. Use it to build a capability you are missing or to fix a bug, in " +
-    "your own codebase, other repos, or several at once. It cannot see this chat, so the brief must carry everything: " +
+    "your own codebase, other repos, or several at once; it works out which repos from the " +
+    "brief. It cannot see this chat, so the brief must carry everything: " +
     "what to build or fix and why, what the user was trying to do, what happened instead " +
     "(exact errors or behavior), and what done looks like. Returns the session id and link.",
   inputSchema: z.object({
@@ -22,21 +23,17 @@ export default defineTool({
       .max(10)
       .optional()
       .describe(
-        "GitHub repos as owner/name, from list_coding_repos; list every repo the work spans, " +
-          "including your own if it is one of them. Omit it to work on your own codebase alone.",
+        "Repos as owner/name, only when the user named them; a hint, not a limit. Omit it to " +
+          "let the coding agent pick from the brief.",
       ),
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
   async execute({ brief, title, repos }, ctx) {
-    const targets = resolveRepos(repos);
-    if (targets.length === 0) {
-      throw new Error("This deployment does not know its own repo; find it with list_coding_repos.");
-    }
-
+    const hinted = [...new Set(repos ?? [])];
     const session = await createCodingSession({
-      prompt: codingBrief(brief, targets),
+      prompt: codingBrief(brief, hinted),
       title,
-      repos: targets,
+      repos: hinted,
       idempotencyKey: ctx.callId,
     });
 

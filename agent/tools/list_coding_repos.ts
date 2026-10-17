@@ -7,7 +7,7 @@ import { env } from "#lib/env.js";
 export default defineTool({
   description:
     "List the GitHub repos the coding agent can work in, as owner/name, with a description. " +
-    "Use it to find the repo the user means when they name one loosely.",
+    "Use it when the user asks what it can work on; starting a session does not need it.",
   inputSchema: z.object({
     filter: z
       .string()

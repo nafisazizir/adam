@@ -180,7 +180,7 @@ export async function createCodingSession(input: {
       prompt: input.prompt,
       title: input.title,
       tags: [adamSessionTag, requestTag],
-      repos: input.repos,
+      ...(input.repos.length ? { repos: input.repos } : {}),
       ...(env.DEVIN_MAX_ACU_LIMIT === undefined ? {} : { max_acu_limit: env.DEVIN_MAX_ACU_LIMIT }),
     },
   });

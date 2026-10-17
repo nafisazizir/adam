@@ -150,12 +150,14 @@ stub the route).
   how `list_coding_sessions` finds them without any store of our own; the tag filter's query
   encoding is undocumented, so results are also filtered client-side. Devin has no idempotency key,
   so each create also carries a tag unique to the tool call and a replayed call returns the session
-  it already made. Devin's messages reach the model as content to relay, never as instructions. The
-  default repo is the one the deployment is built from
-  (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`); any other repo Devin's GitHub access covers is
-  found with `list_coding_repos` (Devin's `GET /repositories`), so Adam needs no GitHub credentials
-  of its own. One session can span several repos (Devin's `repos[]`), for a change that crosses
-  them, with one pull request per repo. Swapping Devin for another cloud coding agent is a rewrite of `lib/devin.ts` only.
+  it already made. Devin's messages reach the model as content to relay, never as instructions.
+  Devin picks the repos from the brief (its `repos` field is only a hint that the docs say goes into
+  the prompt), so Adam passes repos only when the owner named them, and a change can span several
+  repos in one session with one pull request per repo. Every brief says where Adam's own code lives
+  (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`), so work on Adam lands in the right repo.
+  `list_coding_repos` (Devin's `GET /repositories`) answers what Devin can work on. Adam holds no
+  GitHub credentials of its own. Swapping Devin for another cloud coding agent is a rewrite of
+  `lib/devin.ts` only.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
@@ -260,7 +262,7 @@ adam/
 │   │   ├── get_coding_session.ts # state, PRs, and the latest messages
 │   │   ├── message_coding_session.ts # answer its question or pass on feedback
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
-│   │   ├── list_coding_repos.ts # repos Devin's GitHub access covers
+│   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
@@ -345,8 +347,8 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - Coding sessions need `DEVIN_API_KEY` and `DEVIN_ORG_ID`. A service user needs permission to
   use, view and manage org sessions (`UseDevinSessions`, `ViewOrgSessions`, `ManageOrgSessions`);
   a personal access token acts as the owner and has them already. Without both, Adam still boots
-  and only the coding tools fail. The default repo comes from Vercel's Git system env, so a project
-  deployed without a Git connection finds even its own repo through `list_coding_repos`. An org that restricts session
+  and only the coding tools fail. Briefs name Adam's own repo from Vercel's Git system env; without a Git
+  connection that line is left out and Devin infers it. An org that restricts session
   tags must allow `adam` and the `adam-request-*` tags.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
