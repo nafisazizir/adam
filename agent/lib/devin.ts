@@ -30,6 +30,12 @@ const messageSchema = z.object({
   created_at: z.number(),
 });
 
+const repositorySchema = z.object({
+  repo_full_name: z.string(),
+  repo_description: z.string().nullish(),
+  repo_language: z.string().nullish(),
+});
+
 function pageSchema<T extends z.ZodType>(item: T) {
   return z.object({
     items: z.array(item),
@@ -53,6 +59,12 @@ export interface CodingSession {
   readonly createdAt: Date;
   readonly updatedAt: Date;
   readonly pullRequests: readonly CodingPullRequest[];
+}
+
+export interface CodingRepo {
+  readonly name: string;
+  readonly description: string | null;
+  readonly language: string | null;
 }
 
 export interface CodingSessionMessage {
@@ -182,6 +194,17 @@ export async function getCodingSession(id: string): Promise<CodingSession> {
 export async function listCodingSessions(limit: number): Promise<CodingSession[]> {
   const sessions = await listTaggedSessions(adamSessionTag, limit);
   return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+}
+
+export async function listCodingRepos(filter: string | undefined, limit: number): Promise<CodingRepo[]> {
+  const query = new URLSearchParams({ first: String(limit) });
+  if (filter) query.set("filter_name", filter);
+  const page = await devinRequest("/repositories", pageSchema(repositorySchema), { query });
+  return page.items.map((raw) => ({
+    name: raw.repo_full_name,
+    description: raw.repo_description ?? null,
+    language: raw.repo_language ?? null,
+  }));
 }
 
 export async function listCodingSessionMessages(id: string): Promise<CodingSessionMessage[]> {

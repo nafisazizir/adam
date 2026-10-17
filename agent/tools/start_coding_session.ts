@@ -21,13 +21,13 @@ export default defineTool({
       .string()
       .regex(/^[\w.-]+\/[\w.-]+$/u)
       .optional()
-      .describe("GitHub repo as owner/name. Omit it to work on your own codebase."),
+      .describe("GitHub repo as owner/name, from list_coding_repos. Omit it to work on your own codebase."),
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
   async execute({ brief, title, repo }, ctx) {
     const target = resolveRepo(repo);
     if (!target) {
-      throw new Error("This deployment does not know its own repo; name the repo as owner/name.");
+      throw new Error("This deployment does not know its own repo; find it with list_coding_repos.");
     }
 
     const session = await createCodingSession({
