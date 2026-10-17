@@ -15,6 +15,11 @@ export const workoutsHevyPath = "/eve/v1/workouts/hevy";
 export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
 export const workoutsNudgePath = "/eve/v1/workouts/nudge";
 
+// An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
+function blankAsUnset<T extends z.ZodType>(schema: T) {
+  return z.preprocess((value) => (value === "" ? undefined : value), schema);
+}
+
 const schema = z.object({
   USER_TIMEZONE: z
     .string()
@@ -30,35 +35,17 @@ const schema = z.object({
   IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
   AI_GATEWAY_API_KEY: z.string().min(1),
   STRAVA_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
-  STRAVA_WEBHOOK_SUBSCRIPTION_ID: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
+  STRAVA_WEBHOOK_SUBSCRIPTION_ID: blankAsUnset(z.string().min(1).optional()),
   HEVY_WEBHOOK_SECRET: z.string().min(1),
   NOTION_PLANS_DATA_SOURCE_ID: z.string().min(1),
   NOTION_WORKOUTS_DATA_SOURCE_ID: z.string().min(1),
-  TRANSCRIPTION_MODEL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).default("microsoft/mai-transcribe-2"),
-  ),
-  SPEECH_MODEL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).default("openai/tts-1"),
-  ),
-  SPEECH_VOICE: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).default("alloy"),
-  ),
+  TRANSCRIPTION_MODEL: blankAsUnset(z.string().min(1).default("microsoft/mai-transcribe-2")),
+  SPEECH_MODEL: blankAsUnset(z.string().min(1).default("openai/tts-1")),
+  SPEECH_VOICE: blankAsUnset(z.string().min(1).default("alloy")),
   // Vercel injects this only once a Blob store is connected, so a project
   // without one still boots; publishAsset is what fails.
-  BLOB_READ_WRITE_TOKEN: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
-  QSTASH_URL: z.preprocess(
-    (value) => (value === "" ? undefined : value),
-    z.string().min(1).optional(),
-  ),
+  BLOB_READ_WRITE_TOKEN: blankAsUnset(z.string().min(1).optional()),
+  QSTASH_URL: blankAsUnset(z.string().min(1).optional()),
   QSTASH_TOKEN: z.string().min(1),
   QSTASH_CURRENT_SIGNING_KEY: z.string().min(1),
   QSTASH_NEXT_SIGNING_KEY: z.string().min(1),
@@ -67,6 +54,13 @@ const schema = z.object({
     .min(1)
     .transform((value) => value.replace(/\/+$/, "")),
   RIZ_MCP_JWT_SECRET: z.string().min(1),
+  // Optional so a deploy without Devin credentials still boots; only the coding tools fail.
+  DEVIN_API_KEY: blankAsUnset(z.string().min(1).optional()),
+  DEVIN_ORG_ID: blankAsUnset(z.string().min(1).optional()),
+  DEVIN_MAX_ACU_LIMIT: blankAsUnset(z.coerce.number().int().positive().optional()),
+  // Vercel system env for a Git-connected project: the repo this agent is built from.
+  VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
+  VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -78,8 +72,14 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration:\n${details}`);
 }
 
+const { VERCEL_GIT_REPO_OWNER, VERCEL_GIT_REPO_SLUG } = parsed.data;
+
 export const env = {
   ...parsed.data,
+  selfRepo:
+    VERCEL_GIT_REPO_OWNER && VERCEL_GIT_REPO_SLUG
+      ? `${VERCEL_GIT_REPO_OWNER}/${VERCEL_GIT_REPO_SLUG}`
+      : undefined,
   remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
   workoutsAnalyzeUrl: `${parsed.data.BASE_URL}${workoutsAnalyzePath}`,
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,

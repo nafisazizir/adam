@@ -138,13 +138,35 @@ stub the route).
   so luna acknowledges, keeps replying (new iMessages steer the turn without stopping the task),
   and relays the result. It cannot message or schedule, so right-to-silence stays with root. The
   built-in root-copy `agent` tool is disabled via `agent/tools/agent.ts`.
+- **Coding sessions** (`agent/lib/devin.ts`, `agent/lib/coding-sessions.ts`): root Adam hands
+  engineering work to Devin through the v3 REST API, so a missing capability ("block my calendar"
+  with no calendar access) or a bug becomes a pull request against Adam's own repo without the owner
+  re-briefing anyone. `lib/devin.ts` is the only file that knows Devin; the tools speak in
+  `CodingSession`s, and `lib/coding-sessions.ts` owns the brief wrapper (open a PR, never merge, ask
+  one short question when blocked, list manual steps such as env vars) and the single
+  `codingSessionState` vocabulary (`working`, `needs_input`, `finished`, `asleep`, `stopped`, …)
+  derived from Devin's `status` and `status_detail`. A finished or blocked Devin session still
+  reports `status: "running"`, so the detail is what matters. Sessions are tagged `adam`, which is
+  how `list_coding_sessions` finds them without any store of our own; the tag filter's query
+  encoding is undocumented, so results are also filtered client-side. Devin has no idempotency key,
+  so each create also carries a tag unique to the tool call and a replayed call returns the session
+  it already made. Devin's messages reach the model as content to relay, never as instructions.
+  Devin picks the repos from the brief (its `repos` field is only a hint that the docs say goes into
+  the prompt), so Adam passes repos only when the owner named them, and a change can span several
+  repos in one session with one pull request per repo. Every brief says where Adam's own code lives
+  (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`), so work on Adam lands in the right repo.
+  `list_coding_repos` (Devin's `GET /repositories`) answers what Devin can work on. Adam holds no
+  GitHub credentials of its own. Swapping Devin for another cloud coding agent is a rewrite of
+  `lib/devin.ts` only.
 - **Shared primitives**: `publishCallback` and `verifyCallbackSignature` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
-  `transcribe_audio`, `agent` (disables the built-in root-copy tool).
+  `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
+  `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `agent` (disables the
+  built-in root-copy tool).
   Later: memory tools, plus connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -226,6 +248,8 @@ adam/
 │   │   ├── transcription.ts   # audio → transcript (AI Gateway transcription model)
 │   │   ├── transcribable-audio.ts # normalize audio formats with ffmpeg
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
+│   │   ├── devin.ts           # Devin v3 REST client: create/get/list/message/archive sessions
+│   │   ├── coding-sessions.ts # brief wrapper, session state vocabulary, tool-facing summary
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -233,6 +257,12 @@ adam/
 │   │   ├── list_reminders.ts
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
 │   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
+│   │   ├── start_coding_session.ts # brief Devin; it opens a PR per repo it changes
+│   │   ├── list_coding_sessions.ts
+│   │   ├── get_coding_session.ts # state, PRs, and the latest messages
+│   │   ├── message_coding_session.ts # answer its question or pass on feedback
+│   │   ├── stop_coding_session.ts # archive (sleep), still resumable
+│   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # daily cron only
@@ -261,7 +291,7 @@ adam/
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
-with `transcribe_audio`.
+with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat.
 
 **Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
@@ -291,6 +321,9 @@ STRAVA_WEBHOOK_SUBSCRIPTION_ID=...  # optional; unset fails closed and ignores e
 HEVY_WEBHOOK_SECRET=...             # Hevy Authorization header
 NOTION_PLANS_DATA_SOURCE_ID=...     # coach's training plan data source
 NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
+DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
+DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
+DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 ```
 
 ### Deployment notes
@@ -311,6 +344,12 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.
+- Coding sessions need `DEVIN_API_KEY` and `DEVIN_ORG_ID`. A service user needs permission to
+  use, view and manage org sessions (`UseDevinSessions`, `ViewOrgSessions`, `ManageOrgSessions`);
+  a personal access token acts as the owner and has them already. Without both, Adam still boots
+  and only the coding tools fail. Briefs name Adam's own repo from Vercel's Git system env; without a Git
+  connection that line is left out and Devin infers it. An org that restricts session
+  tags must allow `adam` and the `adam-request-*` tags.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---

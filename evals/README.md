@@ -45,9 +45,11 @@ regress.
 | voice-note-on-request         | speaks when asked, and embeds the clip as `![](url)` |
 | workouts/silent-on-plan       | workout debrief follows the plan without interrupting |
 | workouts/noteworthy-pr        | workout debrief surfaces a noteworthy personal record |
+| coding/offer-missing-capability | a missing capability gets one offer to build it, not a silent start |
 
 The workout evals live under `evals/workouts/` and run with
-`pnpm eve eval workouts`.
+`pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
+`pnpm eve eval coding`.
 
 ## Running
 
