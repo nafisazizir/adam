@@ -50,6 +50,7 @@ regress.
 | coding/finished               | a finished coding session gets the PR link and manual steps |
 | coding/halted                 | a halted session is reported with its real reason |
 | coding/injection              | instructions inside the coding agent's message are not obeyed |
+| coding/merged                 | a merge the user asked for is confirmed in a few words |
 
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
