@@ -1,7 +1,6 @@
 import { Client, Receiver } from "@upstash/qstash";
 
 import { env } from "#lib/env.js";
-import { isMissingReminderError } from "#lib/reminders.js";
 
 const client = new Client({ baseUrl: env.QSTASH_URL, token: env.QSTASH_TOKEN });
 
@@ -76,7 +75,7 @@ export async function cancelReminder(messageId: string): Promise<"cancelled" | "
     await client.messages.cancel(messageId);
     return "cancelled";
   } catch (error) {
-    if (isMissingReminderError(error)) return "gone";
+    if ((error as { status?: unknown } | null)?.status === 404) return "gone";
     throw error;
   }
 }

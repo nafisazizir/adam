@@ -31,6 +31,19 @@ export function reminderAuth(owner: HomeOwner | null, messageId: string | null):
   };
 }
 
+export interface ReminderDestination {
+  readonly channel: string;
+  readonly target: Record<string, unknown>;
+}
+
+// A reminder now runs as the owner with memory, so one set from a group chat must not post there.
+export function reminderDestination(
+  requested: ReminderDestination,
+  home: (ReminderDestination & { readonly owner: HomeOwner }) | null,
+): ReminderDestination {
+  return home ? { channel: home.channel, target: home.target } : requested;
+}
+
 export function isMissingReminderError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { status?: unknown }).status === 404;
 }

@@ -108,7 +108,7 @@ stub the route).
 
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
-  the reminder was scheduled from, via `receive`; it answers 500 when the hand-off to the delivery
+  the reminder was scheduled from, via `receive` (or to the home thread whenever one is stored, so a reminder set from a group chat never posts in the group); it answers 500 when the hand-off to the delivery
   channel fails so QStash retries (a later failure posting to the phone is not retried), and
   `schedule_reminder` publishes with a deduplication id derived from the session, turn, message and the model-given time (`at` with `leadMinutes`, or `delaySeconds`)
   (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's

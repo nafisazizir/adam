@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ownerMemoryScope } from "#lib/owner.js";
-import { isMissingReminderError, reminderAuth } from "#lib/reminders.js";
+import { isMissingReminderError, reminderAuth, reminderDestination } from "#lib/reminders.js";
 
 const owner = { issuer: "photon-imessage", principalId: "+15551234567" };
 
@@ -23,6 +23,13 @@ test("without an owner a reminder falls back to the service principal", () => {
   const auth = reminderAuth(null, "msg_1");
   assert.equal(auth.principalType, "service");
   assert.equal(auth.authenticator, "qstash");
+});
+
+test("a known home pointer wins over the thread the reminder was set from", () => {
+  const group = { channel: "photon", target: { threadId: "group" } };
+  const home = { channel: "photon", target: { threadId: "dm" }, owner };
+  assert.deepEqual(reminderDestination(group, home), { channel: "photon", target: { threadId: "dm" } });
+  assert.deepEqual(reminderDestination(group, null), group);
 });
 
 test("only a 404 counts as a reminder that is already gone", () => {
