@@ -220,6 +220,19 @@ test("a 401 asks Connect for a fresh token once and retries", async () => {
   assert.deepEqual(found, { results: [], errors: [], truncated: false });
 });
 
+test("a 401 after a fresh token means the account needs connecting", async () => {
+  const { connect, tokenCalls } = fakeConnect({ scl_personal: "token" });
+  const { impl } = fakeFetch((url) =>
+    url.pathname.endsWith("/messages") ? new Response("revoked", { status: 401 }) : undefined,
+  );
+  const found = await workspace(personal, connect, impl).searchEmail(owner, "is:unread", { max: 5 });
+  assert.deepEqual(
+    tokenCalls.map((call) => call.forceRefresh),
+    [false, true],
+  );
+  assert.equal(found.errors[0]?.needsConnecting, true);
+});
+
 test("an account is named by its label or by its address", async () => {
   const { connect } = fakeConnect({ scl_personal: "token-personal", scl_work: "token-work" });
   const { impl, calls } = fakeFetch(

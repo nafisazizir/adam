@@ -561,7 +561,8 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       );
       if (response.ok) return schema.parse(await response.json());
 
-      if (attempt === 0 && response.status === 401) {
+      if (response.status === 401) {
+        if (attempt > 0) throw new GoogleNeedsConnectingError(account.label, "rejected even a freshly refreshed token");
         token = await accessToken(account, true);
         continue;
       }
