@@ -366,7 +366,7 @@ stub the route).
     connecting until a second disconnect removes it). With new-mail triggers on, it first stops the
     account's Gmail watch (`users.stop`, while the token still works), and only once the revoke
     worked drops the mailbox's cursor and checkpoint (`stopWatchingMailbox` and
-    `forgetMailboxState` in `lib/mail-watch.ts`); a failed revoke restarts the watch, so heads-ups
+    `forgetMailbox` in `lib/mail-watch.ts`); a failed revoke restarts the watch, so heads-ups
     continue for an account that is still connected. A stop that fails is logged and the watch
     lapses within seven days; pushes for an address no longer on the list are acknowledged and
     ignored. A mail run checks its account is still listed before it writes any state, so a run
@@ -432,7 +432,10 @@ stub the route).
     publish for a window already queued. `takeDailyMailRun` caps each mailbox at 120 runs a local
     day (best effort, a cache counter), logs when it is reached, and drops pushes until the next day,
     whose first run catches up from history; mail can then never spend the QStash budget reminders
-    and coding watches need.
+    and coding watches need. An address a run found on no listed account is marked in `secretCache`
+    for six hours (`unknownMailboxKey`), and the push route acknowledges its pushes without
+    publishing, so a watch that outlived its account (a failed `users.stop`) costs one QStash message
+    per six hours, not one per window.
   - **Process.** The signed callback maps the address to an account with `accountWithAddress` as
     the home owner (a transient lookup failure throws, so it is a 500 and QStash retries, rather
     than "unknown mailbox"). `processMailbox` lists inbox messages added since the cursor (up to five
@@ -446,8 +449,15 @@ stub the route).
     `turnPolicy: "queue"`), where root decides to text or `stay_silent`. A history id too old to
     replay (Gmail's 404) resets to the profile's current one and skips; a mailbox with no stored
     state starts from its current history id.
+  - **One mailbox per state.** History ids belong to one mailbox, so the Blob state and the cursor
+    record the address they were taken from (the pushed `emailAddress`), and a run or a watch
+    renewal treats state recorded for another address as none: it starts from the new mailbox's
+    current history id with an empty `delivered`. A name reconnected to another Google account can
+    therefore never read from (or stall behind) the old mailbox's history id. Before writing any
+    state a run checks that its account is still listed, so a run queued before a disconnect cannot
+    recreate the state just removed.
   - **State, and the Blob budget.** The cursor every run reads is a `secretCache` entry
-    (`{ historyId, checkpointedAt, openClaim }`). Private Blob (`mailboxes/<account>.json` through
+    (`{ historyId, emailAddress, checkpointedAt, openClaim }`). Private Blob (`mailboxes/<account>.json` through
     `lib/mailbox-state-store.ts`, conditional writes) is read only on a cache miss, when a run has
     noteworthy mail to claim, when a claim is open, or when a checkpoint is due, and written only to
     claim mail and as a checkpoint at most every six hours. A quiet run touches no Blob at all. On a
@@ -464,9 +474,14 @@ stub the route).
     again up to three times, then answers 409 so QStash retries. The one remaining double-send is a
     retry after a successful delivery whose response was lost, on a cache that lost the marker.
     An account that needs connecting is logged and skipped, never signed in.
-  - **Watch renewal** is the `mail-watch` schedule (below), and `list_google_accounts` also starts
-    or renews the watch for every connected account it lists (`watchMailboxes` in
-    `lib/mail-watch.ts`), so an account the owner just (re)connected does not wait for 6am.
+  - **Watch renewal** is the `mail-watch` schedule (below), which renews every watch. A started
+    watch leaves a `secretCache` marker that lives until a day before the watch expires, and
+    `list_google_accounts` starts a watch only for a connected account without one
+    (`watchMailboxes` in `lib/mail-watch.ts`), so an account the owner just (re)connected does not
+    wait for 6am and an ordinary listing costs no Gmail or Blob call. The address a watch records
+    comes from the mailbox profile, which reads whatever account the token now belongs to.
+    Reconnecting an existing name first stops its watch (`users.stop`, while the old token still
+    works) and drops the marker, so the listing after consent watches the new mailbox.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery`, `isOwnerChat`, `isOwnerDirectChat` and `ownerChatRefusal` in `lib/delivery.ts`;
   `googleAccountRegistry` in `lib/google-accounts.ts`; `signInFromOwnerDirectChat`
@@ -796,7 +811,7 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   touching every account, so with new-mail triggers on expect about 24 requests per account per
   day: about 720 a month per account, 1,440 with two, roughly $3 a month of overage on Hobby.
   Without new-mail triggers it is far fewer.
-  The account list costs one Blob write per connect of a new name or disconnect, and about four
+  The account list costs one Blob write per connect of a new name or disconnect, and about 24
   reads a day.
 - New-mail triggers (the PR #39 description is the step-by-step runbook) need, in the same Google
   Cloud project: the Pub/Sub API, a topic, the
@@ -831,10 +846,13 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   - new mail: one put per delivered heads-up plus a checkpoint at most every six hours per mailbox,
     about 90 + 240 = 330 advanced and a similar number of simple reads with two accounts, plus a
     daily read per account from `mail-watch`. Disconnecting deletes the account's checkpoint.
+    Each mail run also reads the home pointer first (`homeDelivery()`), through the CDN cache:
+    a realistic 30 to 100 runs a day (240 at the cap with two accounts), counted here at worst as
+    900 to 3,000 simple a month.
   - the Google account list: one put per account connected or disconnected (a handful), and a read
-    each time its six-hour Runtime Cache entry lapses, about 120 simple; the address and token
+    each time its one-hour Runtime Cache entry lapses, about 720 simple; the address and token
     lookups behind each push stay in Runtime Cache.
-  That is roughly 700 to 1,250 advanced and 2,100 to 3,800 simple a month: inside the limits, with
+  That is roughly 700 to 1,250 advanced and 3,600 to 7,400 simple a month: inside the limits, with
   the home pointer the largest variable. Check Observability → Blob after the first month.
 
 ---

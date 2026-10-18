@@ -5,7 +5,7 @@ import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { GoogleNeedsConnectingError, type EmailSummary } from "#lib/google.js";
 import { mailPushHandler, mailRunHandler, type MailHome, type MailPushDeps } from "#lib/mail-routes.js";
 import { MailboxStateConflict, type MailboxReader, type MailboxState, type MailboxStateStore } from "#lib/new-mail.js";
-import { memoryCache } from "#lib/shared-cache.js";
+import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
 
 const audience = "https://adam.test/eve/v1/mail/push";
 const serviceAccount = "push@adam.iam.gserviceaccount.com";
@@ -143,17 +143,20 @@ function runRequest(body: unknown, messageId = "msg-1"): Request {
   });
 }
 
-function runHandler(overrides: { verify?: boolean; account?: string | null | Error; mailboxStore?: MailboxStateStore } = {}) {
+function runHandler(
+  overrides: { verify?: boolean; account?: string | null | Error; mailboxStore?: MailboxStateStore; cache?: SharedCache } = {},
+) {
   const messages: string[] = [];
   const handler = mailRunHandler({
-    store: overrides.mailboxStore ?? store({ historyId: "100", checkpointedAt: Date.now(), delivered: [] }),
-    cache: memoryCache(),
+    store: overrides.mailboxStore ?? store({ historyId: "100", emailAddress: "me@gmail.example", checkpointedAt: Date.now(), delivered: [] }),
+    cache: overrides.cache ?? memoryCache(),
     timeContext: () => "time",
     verify: async () => overrides.verify ?? true,
     accountWithAddress: async () => {
       if (overrides.account instanceof Error) throw overrides.account;
       return overrides.account === undefined ? "personal" : overrides.account;
     },
+    isListed: async () => true,
     reader: () => inbox(),
   });
   const home = async (): Promise<MailHome> => ({ owner, deliver: async (message) => void messages.push(message) });
@@ -190,7 +193,7 @@ test("a transient failure answers 500 and a lost write race answers 409, so QSta
   assert.equal((await flaky.handler(runRequest({ emailAddress: "me@gmail.example" }), flaky.home)).status, 500);
 
   const racing = runHandler({
-    mailboxStore: store({ historyId: "100", checkpointedAt: Date.now(), delivered: [] }, async () => {
+    mailboxStore: store({ historyId: "100", emailAddress: "me@gmail.example", checkpointedAt: Date.now(), delivered: [] }, async () => {
       throw new MailboxStateConflict("changed");
     }),
   });
@@ -203,4 +206,14 @@ test("a mailbox run with no home target is acknowledged", async () => {
   const { handler } = runHandler();
   const response = await handler(runRequest({ emailAddress: "me@gmail.example" }), async () => null);
   assert.deepEqual(await response.json(), { ok: true, ignored: "no_home_target" });
+});
+
+test("an address found to be unknown is skipped at the push for a while, costing no QStash message", async () => {
+  const cache = memoryCache();
+  const unknown = runHandler({ account: null, cache });
+  await unknown.handler(runRequest({ emailAddress: "me@gmail.example" }), unknown.home);
+  const { handler, published } = pushHandler({ cache });
+  const response = await handler(pushRequest(await bearer(), gmailPush()));
+  assert.deepEqual(await response.json(), { ok: true, ignored: "unknown_mailbox" });
+  assert.equal(published.length, 0);
 });

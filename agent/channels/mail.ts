@@ -15,7 +15,7 @@ function gmailReader(owner: GoogleOwner, account: string): MailboxReader {
   return {
     history: (startHistoryId, pageToken) => google.mailboxHistory(owner, account, startHistoryId, pageToken),
     summaries: (ids) => google.emailSummaries(owner, account, ids),
-    currentHistoryId: () => google.currentHistoryId(owner, account),
+    currentHistoryId: async () => (await google.mailboxProfile(owner, account)).historyId,
     async recentUnread() {
       const found = await google.searchEmail(owner, "in:inbox is:unread newer_than:1d", { account, max: 30 });
       if (found.errors[0]) throw new Error(found.errors[0].error);
@@ -41,6 +41,7 @@ const processRun = mailRunHandler({
   timeContext: () => currentTimeContext(),
   verify: (request, body) => hasValidCallbackSignature(request, body, env.mailProcessUrl),
   accountWithAddress: (owner, address) => google.accountWithAddress(owner, address),
+  isListed: async (owner, account) => (await google.accountNames(owner)).includes(account),
   reader: gmailReader,
 });
 

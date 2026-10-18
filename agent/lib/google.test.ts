@@ -792,12 +792,15 @@ test("a summary carries its inbox tab, Primary when Gmail gives none", async () 
   );
 });
 
-test("the current history id comes from the mailbox profile", async () => {
+test("the mailbox profile gives the address the token reads and its current history id", async () => {
   const { connect } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch((url) =>
     url.pathname.endsWith("/profile") ? Response.json({ emailAddress: "me@gmail.example", historyId: "555" }) : undefined,
   );
-  assert.equal(await workspace(personal, connect, impl).currentHistoryId(owner, "personal"), "555");
+  assert.deepEqual(await workspace(personal, connect, impl).mailboxProfile(owner, "personal"), {
+    emailAddress: "me@gmail.example",
+    historyId: "555",
+  });
 });
 
 test("an address names its account, and an unconnected account does not hide the match", async () => {

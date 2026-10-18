@@ -14,7 +14,7 @@ export default defineSchedule({
       return;
     }
 
-    const outcomes = await watchMailboxes(home.owner);
+    const outcomes = await watchMailboxes(home.owner, { force: true });
     if (!outcomes) {
       console.log("[mail] not watching mailboxes; GOOGLE_PUBSUB_TOPIC or GOOGLE_CONNECTOR is not set");
       return;

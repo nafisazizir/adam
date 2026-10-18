@@ -31,6 +31,8 @@ export const checkpointEveryMs = 6 * hourMs;
 const cursorTtlSeconds = 8 * 24 * 60 * 60;
 const deliveredMarkerTtlSeconds = 7 * 60 * 60;
 const runCountTtlSeconds = 2 * 24 * 60 * 60;
+const renewAheadSeconds = 24 * 60 * 60;
+export const unknownMailboxTtlSeconds = 6 * 60 * 60;
 
 export const mailRunSchema = z.object({ emailAddress: z.string().min(1) });
 
@@ -124,6 +126,8 @@ const claimSchema = z.object({
 
 export const mailboxStateSchema = z.object({
   historyId: z.string().min(1),
+  // History ids belong to one mailbox, so state recorded for another address is never read as this one's.
+  emailAddress: z.string().optional(),
   checkpointedAt: z.number().default(0),
   delivered: z.array(z.string()).default([]),
   claim: claimSchema.optional(),
@@ -157,7 +161,12 @@ export interface MailboxReader {
 }
 
 // The fast cursor every run reads, kept in the shared cache, with Blob as its fallback.
-const cursorSchema = z.object({ historyId: z.string(), checkpointedAt: z.number(), openClaim: z.boolean() });
+const cursorSchema = z.object({
+  historyId: z.string(),
+  emailAddress: z.string(),
+  checkpointedAt: z.number(),
+  openClaim: z.boolean(),
+});
 
 type Cursor = z.infer<typeof cursorSchema>;
 
@@ -165,6 +174,7 @@ export type MailRunOutcome =
   | { readonly kind: "started" }
   | { readonly kind: "reset" }
   | { readonly kind: "leased" }
+  | { readonly kind: "unlisted" }
   | { readonly kind: "quiet"; readonly checked: number }
   | { readonly kind: "delivered"; readonly count: number };
 
@@ -174,7 +184,11 @@ export interface MailRunDeps {
   readonly mailbox: MailboxReader;
   // Stable across retries of one run (the QStash message id), so a retry resumes its own claim.
   readonly claimId: string;
+  // The address the push named, which the account was matched by.
+  readonly emailAddress: string;
   readonly now?: () => number;
+  // Checked before any state is written, so a run queued before a disconnect cannot recreate it.
+  isListed(): Promise<boolean>;
   deliver(emails: readonly EmailSummary[]): Promise<void>;
 }
 
@@ -192,14 +206,24 @@ function laterHistoryId(a: string, b: string): string {
 
 const cursorKey = (account: string) => `mail-cursor:${account}`;
 const deliveredKey = (claimId: string) => `mail-delivered:${claimId}`;
+const watchedKey = (account: string) => `mail-watched:${account}`;
+export const unknownMailboxKey = (address: string) => `mail-unknown:${address.trim().toLowerCase()}`;
 
-async function readCursor(cache: SharedCache, account: string): Promise<Cursor | null> {
+function sameMailbox(recorded: string | undefined, address: string): boolean {
+  return recorded !== undefined && recorded.trim().toLowerCase() === address.trim().toLowerCase();
+}
+
+function ownState(stored: StoredMailboxState | null, address: string): StoredMailboxState | null {
+  return stored && sameMailbox(stored.state.emailAddress, address) ? stored : null;
+}
+
+async function readCursor(cache: SharedCache, account: string, address: string): Promise<Cursor | null> {
   const parsed = cursorSchema.safeParse(await cache.get(cursorKey(account)));
-  return parsed.success ? parsed.data : null;
+  return parsed.success && sameMailbox(parsed.data.emailAddress, address) ? parsed.data : null;
 }
 
 async function writeCursor(cache: SharedCache, account: string, cursor: Cursor): Promise<void> {
-  const current = await readCursor(cache, account);
+  const current = await readCursor(cache, account, cursor.emailAddress);
   const historyId = current ? laterHistoryId(current.historyId, cursor.historyId) : cursor.historyId;
   await cache.set(cursorKey(account), { ...cursor, historyId }, cursorTtlSeconds);
 }
@@ -220,16 +244,20 @@ async function addedSince(mailbox: MailboxReader, startHistoryId: string) {
 
 // Read-modify-write with a bounded retry: a conflict means another run wrote first, so decide again
 // against what it wrote.
+class MailboxUnlisted extends Error {}
+
 async function updateState<T>(
   store: MailboxStateStore,
   account: string,
   first: StoredMailboxState | null | undefined,
   decide: (current: StoredMailboxState | null) => Promise<{ next: MailboxState | null; result: T }>,
+  isListed?: () => Promise<boolean>,
 ): Promise<T> {
   let current = first === undefined ? await store.read(account) : first;
   for (let attempt = 1; ; attempt += 1) {
     const { next, result } = await decide(current);
     if (!next) return result;
+    if (isListed && !(await isListed())) throw new MailboxUnlisted(account);
     try {
       await store.write(account, next, current ? { etag: current.etag } : "absent");
       return result;
@@ -250,26 +278,44 @@ type Decision =
 // expired one that never reported done, so overlapping runs and QStash retries text once. After
 // the cache is lost an expired claim is left alone: missing one heads-up beats sending it twice.
 export async function processMailbox(account: string, deps: MailRunDeps): Promise<MailRunOutcome> {
-  const { store, cache, mailbox, claimId } = deps;
+  try {
+    return await runMailbox(account, deps);
+  } catch (error) {
+    if (error instanceof MailboxUnlisted) return { kind: "unlisted" };
+    throw error;
+  }
+}
+
+async function runMailbox(account: string, deps: MailRunDeps): Promise<MailRunOutcome> {
+  const { store, cache, mailbox, claimId, emailAddress } = deps;
   const now = (deps.now ?? Date.now)();
+  const isListed = () => deps.isListed();
 
   let stored: StoredMailboxState | null | undefined;
-  let cursor = await readCursor(cache, account);
+  let cursor = await readCursor(cache, account, emailAddress);
   // Done markers live in the same cache, so without the cursor they are likely gone too.
   const cacheWasCold = cursor === null;
   if (!cursor) {
-    stored = await store.read(account);
+    const read = await store.read(account);
+    stored = ownState(read, emailAddress);
     if (!stored) {
       const historyId = await mailbox.currentHistoryId();
-      await updateState(store, account, null, async (current) => ({
-        next: current ? null : { historyId, checkpointedAt: now, delivered: [] },
-        result: undefined,
-      }));
-      await writeCursor(cache, account, { historyId, checkpointedAt: now, openClaim: false });
+      await updateState(
+        store,
+        account,
+        read,
+        async (current) => ({
+          next: ownState(current, emailAddress) ? null : { historyId, emailAddress, checkpointedAt: now, delivered: [] },
+          result: undefined,
+        }),
+        isListed,
+      );
+      await writeCursor(cache, account, { historyId, emailAddress, checkpointedAt: now, openClaim: false });
       return { kind: "started" };
     }
     cursor = {
       historyId: stored.state.historyId,
+      emailAddress,
       checkpointedAt: stored.state.checkpointedAt,
       openClaim: stored.state.claim !== undefined,
     };
@@ -281,11 +327,17 @@ export async function processMailbox(account: string, deps: MailRunDeps): Promis
   } catch (error) {
     if (!isTooOld(error)) throw error;
     const historyId = await mailbox.currentHistoryId();
-    await updateState(store, account, stored, async (current) => ({
-      next: { ...(current?.state ?? { delivered: [] }), historyId, checkpointedAt: now },
-      result: undefined,
-    }));
-    await writeCursor(cache, account, { historyId, checkpointedAt: now, openClaim: cursor.openClaim });
+    await updateState(
+      store,
+      account,
+      stored,
+      async (current) => ({
+        next: { ...(ownState(current, emailAddress)?.state ?? { delivered: [] }), historyId, emailAddress, checkpointedAt: now },
+        result: undefined,
+      }),
+      isListed,
+    );
+    await writeCursor(cache, account, { historyId, emailAddress, checkpointedAt: now, openClaim: cursor.openClaim });
     return { kind: "reset" };
   }
 
@@ -305,7 +357,7 @@ export async function processMailbox(account: string, deps: MailRunDeps): Promis
   }
 
   const decision = await updateState<Decision>(store, account, stored, async (current) => {
-    const state = current?.state;
+    const state = ownState(current, emailAddress)?.state;
     const historyId = state ? laterHistoryId(state.historyId, added.historyId) : added.historyId;
     const delivered = new Set(state?.delivered ?? []);
 
@@ -325,7 +377,7 @@ export async function processMailbox(account: string, deps: MailRunDeps): Promis
     if (!emails.length) {
       const due = !state || now - state.checkpointedAt >= checkpointEveryMs || carried.length > 0;
       return {
-        next: due ? { historyId, checkpointedAt: now, delivered: [...delivered] } : null,
+        next: due ? { historyId, emailAddress, checkpointedAt: now, delivered: [...delivered] } : null,
         result: { kind: "quiet", checked: candidates.length },
       };
     }
@@ -334,51 +386,69 @@ export async function processMailbox(account: string, deps: MailRunDeps): Promis
     return {
       next: {
         historyId,
+        emailAddress,
         checkpointedAt: now,
         delivered: [...new Set([...delivered, ...ids])].slice(-maxDeliveredIds),
         claim: { ids, claimId, claimedAt: now },
       },
       result: { kind: "claimed", emails },
     };
-  });
+  }, isListed);
 
   if (decision.kind === "leased") return decision;
   if (decision.kind === "quiet") {
-    await writeCursor(cache, account, { historyId: added.historyId, checkpointedAt: now, openClaim: false });
+    await writeCursor(cache, account, { historyId: added.historyId, emailAddress, checkpointedAt: now, openClaim: false });
     return decision;
   }
 
-  await writeCursor(cache, account, { historyId: added.historyId, checkpointedAt: now, openClaim: true });
+  await writeCursor(cache, account, { historyId: added.historyId, emailAddress, checkpointedAt: now, openClaim: true });
   await deps.deliver(decision.emails);
   await cache.set(deliveredKey(claimId), true, deliveredMarkerTtlSeconds);
-  await writeCursor(cache, account, { historyId: added.historyId, checkpointedAt: now, openClaim: false });
+  await writeCursor(cache, account, { historyId: added.historyId, emailAddress, checkpointedAt: now, openClaim: false });
   return { kind: "delivered", count: decision.emails.length };
 }
 
 export type WatchOutcome = "watching" | "started" | "needs_connecting" | "failed";
 
-// Gmail stops pushing after seven days, so this runs daily. The first watch also records where the
-// mailbox's history starts, so the first push has something to read from.
+export interface StartedWatch extends MailboxWatch {
+  // The mailbox the account's token reads now, from its profile.
+  readonly emailAddress: string;
+}
+
+// Gmail stops pushing after seven days, so the daily run renews every watch (`force`). Other callers
+// renew only a watch with no live marker, which lasts until a day before the watch expires. The
+// first watch on a mailbox also records where its history starts, so the first push has something
+// to read from; state recorded for another address is replaced.
 export async function renewMailboxWatches(
   accounts: readonly string[],
   deps: {
     readonly store: MailboxStateStore;
+    readonly cache: SharedCache;
+    readonly force: boolean;
     readonly now?: () => number;
-    watch(account: string): Promise<MailboxWatch>;
+    watch(account: string): Promise<StartedWatch>;
   },
 ): Promise<Record<string, WatchOutcome>> {
   const outcomes: Record<string, WatchOutcome> = {};
   for (const account of accounts) {
     try {
+      if (!deps.force && (await deps.cache.get(watchedKey(account)))) {
+        outcomes[account] = "watching";
+        continue;
+      }
       const watch = await deps.watch(account);
+      const now = (deps.now ?? Date.now)();
       outcomes[account] = await updateState<WatchOutcome>(deps.store, account, undefined, async (current) =>
-        current
+        ownState(current, watch.emailAddress)
           ? { next: null, result: "watching" }
           : {
-              next: { historyId: watch.historyId, checkpointedAt: (deps.now ?? Date.now)(), delivered: [] },
+              next: { historyId: watch.historyId, emailAddress: watch.emailAddress, checkpointedAt: now, delivered: [] },
               result: "started",
             },
       );
+      const markerSeconds = (watch.expiresAt.getTime() - now) / 1000 - renewAheadSeconds;
+      if (markerSeconds >= 60) await deps.cache.set(watchedKey(account), watch.emailAddress, markerSeconds);
+      await deps.cache.delete(unknownMailboxKey(watch.emailAddress));
     } catch (error) {
       if (error instanceof GoogleNeedsConnectingError) {
         console.warn(`[mail] not watching ${account}; it needs connecting, which only the owner can do in chat`);
@@ -392,18 +462,26 @@ export async function renewMailboxWatches(
   return outcomes;
 }
 
-// Stopped while its token still works, so a disconnected mailbox stops costing a QStash message per
-// push. Its history goes too: a name reconnected to another Google account starts from that
-// mailbox's own history instead of replaying from a cursor that was never its own.
-export async function forgetMailbox(
+// Called while the account's token still works, since Gmail's users.stop needs it. The marker goes
+// too, so the next listing watches whatever mailbox the name reads by then.
+export async function stopWatch(
   account: string,
-  deps: { readonly store: MailboxStateStore; readonly cache: SharedCache; stop(): Promise<void> },
+  deps: { readonly cache: SharedCache; stop(): Promise<void> },
 ): Promise<void> {
   try {
     await deps.stop();
   } catch (error) {
     console.warn(`[mail] could not stop the Gmail watch on ${account}; it lapses within seven days`, error);
   }
-  await deps.cache.delete(cursorKey(account));
+  await deps.cache.delete(watchedKey(account));
+}
+
+// Only once an account is really gone: a name reconnected later starts from its new mailbox's own
+// history.
+export async function forgetMailboxState(
+  account: string,
+  deps: { readonly store: MailboxStateStore; readonly cache: SharedCache },
+): Promise<void> {
+  await Promise.all([deps.cache.delete(cursorKey(account)), deps.cache.delete(watchedKey(account))]);
   await deps.store.remove(account);
 }

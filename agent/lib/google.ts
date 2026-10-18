@@ -279,7 +279,7 @@ const userinfoSchema = z.object({ email: z.string() });
 
 const watchSchema = z.object({ historyId: z.string(), expiration: z.string() });
 
-const profileSchema = z.object({ historyId: z.string() });
+const profileSchema = z.object({ emailAddress: z.string(), historyId: z.string() });
 
 const historySchema = z.object({
   history: z
@@ -1048,9 +1048,9 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       return { historyId: watch.historyId, expiresAt: new Date(Number(watch.expiration)) };
     },
 
-    async currentHistoryId(owner: GoogleOwner | null, name: string): Promise<string> {
-      const profile = await googleCall(await only(owner, name), new URL(`${gmailBase}/profile`), profileSchema);
-      return profile.historyId;
+    // Uncached: the mailbox the account's token reads right now, and where its history stands.
+    async mailboxProfile(owner: GoogleOwner | null, name: string): Promise<{ emailAddress: string; historyId: string }> {
+      return googleCall(await only(owner, name), new URL(`${gmailBase}/profile`), profileSchema);
     },
 
     // A startHistoryId too old for Gmail to replay fails with a GoogleApiError of status 404.
@@ -1079,9 +1079,9 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 export type GoogleWorkspace = ReturnType<typeof googleWorkspace>;
 
 // Every mail push maps its address through the account list, so the list lives in Runtime Cache,
-// shared by every instance and refreshed on each connect and disconnect; the lifetime only bounds
-// how long a missed refresh can linger.
-const accountListTtlSeconds = 6 * 60 * 60;
+// shared by every instance and refreshed on each connect and disconnect; the hour only bounds how
+// long a refresh that failed to land can linger.
+const accountListTtlSeconds = 60 * 60;
 
 export const google = googleWorkspace({
   connector: env.GOOGLE_CONNECTOR,

@@ -12,6 +12,8 @@ import {
   newEmailMessage,
   processMailbox,
   takeDailyMailRun,
+  unknownMailboxKey,
+  unknownMailboxTtlSeconds,
   type MailboxReader,
   type MailboxStateStore,
 } from "#lib/new-mail.js";
@@ -54,6 +56,11 @@ export function mailPushHandler(deps: MailPushDeps) {
       return Response.json({ ok: true, ignored: "invalid_payload" });
     }
 
+    // A mailbox Adam no longer knows (a watch that outlived its account) costs no QStash message.
+    if (await deps.cache.get(unknownMailboxKey(notification.emailAddress))) {
+      return Response.json({ ok: true, ignored: "unknown_mailbox" });
+    }
+
     const run = coalescedMailRun(notification.emailAddress, deps.now?.());
     const queuedKey = `mail-queued:${run.deduplicationId}`;
     if (await deps.cache.get(queuedKey)) return Response.json({ ok: true, coalesced: true });
@@ -84,6 +91,7 @@ export interface MailRunDepsForRoute {
   readonly now?: () => number;
   verify(request: Request, body: string): Promise<boolean>;
   accountWithAddress(owner: GoogleOwner, address: string): Promise<string | null>;
+  isListed(owner: GoogleOwner, account: string): Promise<boolean>;
   reader(owner: GoogleOwner, account: string): MailboxReader;
 }
 
@@ -111,6 +119,7 @@ export function mailRunHandler(deps: MailRunDepsForRoute) {
     try {
       account = await deps.accountWithAddress(owner, parsed.data.emailAddress);
       if (!account) {
+        await deps.cache.set(unknownMailboxKey(parsed.data.emailAddress), true, unknownMailboxTtlSeconds);
         console.warn("[mail] skipping new mail; no connected account has the pushed address");
         return Response.json({ ok: true, ignored: "unknown_mailbox" });
       }
@@ -121,6 +130,8 @@ export function mailRunHandler(deps: MailRunDepsForRoute) {
         cache: deps.cache,
         mailbox: deps.reader(owner, mailbox),
         claimId: request.headers.get("upstash-message-id") ?? randomUUID(),
+        emailAddress: parsed.data.emailAddress,
+        isListed: () => deps.isListed(owner, mailbox),
         ...(deps.now ? { now: deps.now } : {}),
         deliver: (emails) => target.deliver(newEmailMessage(mailbox, emails, deps.timeContext()), mailAuth(owner, mailbox)),
       });

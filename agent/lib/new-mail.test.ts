@@ -9,11 +9,13 @@ import {
   dailyMailRunCap,
   maxEmailsPerTrigger,
   mightMatter,
-  forgetMailbox,
+  forgetMailboxState,
   newEmailMessage,
   noteworthy,
   processMailbox,
   renewMailboxWatches,
+  stopWatch,
+  unknownMailboxKey,
   takeDailyMailRun,
   MailboxStateConflict,
   type MailboxReader,
@@ -24,6 +26,7 @@ import {
 import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
 
 const t0 = Date.parse("2026-10-18T01:00:00Z");
+const hour = 60 * 60 * 1000;
 
 function email(id: string, overrides: Partial<EmailSummary> = {}): EmailSummary {
   return {
@@ -42,8 +45,11 @@ function email(id: string, overrides: Partial<EmailSummary> = {}): EmailSummary 
   };
 }
 
+const address = "me@gmail.example";
+const identity = { emailAddress: address, isListed: async () => true };
+
 function state(historyId: string, extra: Partial<MailboxState> = {}): MailboxState {
-  return { historyId, checkpointedAt: t0, delivered: [], ...extra };
+  return { historyId, emailAddress: address, checkpointedAt: t0, delivered: [], ...extra };
 }
 
 test("primary mail that is still unread might matter", () => {
@@ -184,6 +190,7 @@ function run(
     cache,
     mailbox,
     claimId: "msg-1",
+    ...identity,
     now: () => t0,
     deliver: async (emails) => void delivered.push(emails.map((e) => e.id)),
     ...overrides,
@@ -210,7 +217,7 @@ test("new noteworthy mail is claimed in one write and delivered once", async () 
   assert.deepEqual(await outcome, { kind: "delivered", count: 1 });
   assert.deepEqual(delivered, [["a"]]);
   assert.deepEqual(writes, [
-    { historyId: "120", checkpointedAt: t0, delivered: ["a"], claim: { ids: ["a"], claimId: "msg-1", claimedAt: t0 } },
+    { historyId: "120", emailAddress: address, checkpointedAt: t0, delivered: ["a"], claim: { ids: ["a"], claimId: "msg-1", claimedAt: t0 } },
   ]);
 });
 
@@ -233,7 +240,7 @@ test("a quiet mailbox checkpoints its cursor to Blob every few hours", async () 
   assert.equal(current()?.historyId, "100");
   const later = t0 + checkpointEveryMs + 1;
   await run(store, cache, fakeMailbox({ historyId: "140" }).mailbox, { now: () => later }).outcome;
-  assert.deepEqual(current(), { historyId: "140", checkpointedAt: later, delivered: [] });
+  assert.deepEqual(current(), { historyId: "140", emailAddress: address, checkpointedAt: later, delivered: [] });
 });
 
 test("a lost cache replays from the Blob checkpoint without texting delivered mail again", async () => {
@@ -290,6 +297,7 @@ test("two overlapping runs text once: the second sees a live lease and backs off
   const delivered: string[] = [];
 
   const a = processMailbox("personal", {
+    ...identity,
     store,
     cache,
     mailbox: fakeMailbox(mail).mailbox,
@@ -304,6 +312,7 @@ test("two overlapping runs text once: the second sees a live lease and backs off
   await aStarted;
 
   const b = await processMailbox("personal", {
+    ...identity,
     store,
     cache: memoryCache(),
     mailbox: fakeMailbox(both).mailbox,
@@ -316,6 +325,7 @@ test("two overlapping runs text once: the second sees a live lease and backs off
   assert.deepEqual(await a, { kind: "delivered", count: 1 });
 
   const bRetry = await processMailbox("personal", {
+    ...identity,
     store,
     cache,
     mailbox: fakeMailbox(both).mailbox,
@@ -331,7 +341,7 @@ test("an expired lease that never finished is taken over by the next run", async
   const stale = state("120", { delivered: ["a"], claim: { ids: ["a"], claimId: "msg-dead", claimedAt: t0 } });
   const { store, current } = memoryStore(stale);
   const cache = memoryCache();
-  await cache.set("mail-cursor:personal", { historyId: "120", checkpointedAt: t0, openClaim: true }, 60);
+  await cache.set("mail-cursor:personal", { historyId: "120", emailAddress: address, checkpointedAt: t0, openClaim: true }, 60);
   const takeover = run(store, cache, fakeMailbox({ historyId: "120", emails: [email("a")] }).mailbox, {
     claimId: "msg-2",
     now: () => t0 + claimLeaseMs + 1,
@@ -383,7 +393,7 @@ test("a history id too old to replay resets to the current one and skips", async
   const { outcome, delivered } = run(store, memoryCache(), fakeMailbox({ tooOld: true, current: "900" }).mailbox);
   assert.deepEqual(await outcome, { kind: "reset" });
   assert.deepEqual(delivered, []);
-  assert.deepEqual(current(), { historyId: "900", checkpointedAt: t0, delivered: ["x"] });
+  assert.deepEqual(current(), { historyId: "900", emailAddress: address, checkpointedAt: t0, delivered: ["x"] });
 });
 
 test("more history than a run reads falls back to the newest unread mail", async () => {
@@ -401,10 +411,12 @@ test("watch renewal records the first history id and skips accounts that need co
   const { store, current } = memoryStore();
   const outcomes = await renewMailboxWatches(["personal", "work"], {
     store,
+    cache: memoryCache(),
+    force: true,
     now: () => t0,
     async watch(account) {
       if (account === "work") throw new GoogleNeedsConnectingError("work", "is not connected");
-      return { historyId: "700", expiresAt: new Date() };
+      return { historyId: "700", expiresAt: new Date(t0 + 7 * 24 * hour), emailAddress: address };
     },
   });
   assert.deepEqual(outcomes, { personal: "started", work: "needs_connecting" });
@@ -415,7 +427,9 @@ test("renewing an existing watch keeps the stored history id", async () => {
   const { store, current } = memoryStore(state("650"));
   const outcomes = await renewMailboxWatches(["personal"], {
     store,
-    watch: async () => ({ historyId: "700", expiresAt: new Date() }),
+    cache: memoryCache(),
+    force: true,
+    watch: async () => ({ historyId: "700", expiresAt: new Date(), emailAddress: address }),
   });
   assert.deepEqual(outcomes, { personal: "watching" });
   assert.deepEqual(current(), state("650"));
@@ -432,25 +446,92 @@ test("after the cache is lost an expired claim from another run is not sent agai
   assert.deepEqual(delivered, []);
 });
 
-test("forgetting a mailbox stops its watch and drops its cursor and checkpoint", async () => {
-  const { store, current } = memoryStore(state("100"));
+test("state and cursor recorded for another mailbox are never read as this one's", async () => {
+  const foreign = state("900000", { emailAddress: "old@work.example", delivered: ["x"] });
+  const { store, current } = memoryStore(foreign);
   const cache = memoryCache();
-  await cache.set("mail-cursor:work", { historyId: "100", checkpointedAt: 0 }, 60);
-  let stopped = 0;
-  await forgetMailbox("work", { store, cache, stop: async () => void stopped++ });
-  assert.equal(stopped, 1);
-  assert.equal(current(), null);
-  assert.equal(await cache.get("mail-cursor:work"), null);
+  await cache.set("mail-cursor:personal", { historyId: "900000", emailAddress: "old@work.example", checkpointedAt: t0, openClaim: false }, 60);
+  const reader = fakeMailbox({ current: "500" });
+  const { outcome } = run(store, cache, reader.mailbox);
+  assert.deepEqual(await outcome, { kind: "started" });
+  assert.deepEqual(current(), state("500"));
+
+  const next = run(store, cache, fakeMailbox({ added: ["a"], historyId: "520", emails: [email("a")] }).mailbox, {
+    claimId: "msg-2",
+  });
+  assert.deepEqual(await next.outcome, { kind: "delivered", count: 1 });
+  assert.equal(current()?.historyId, "520");
 });
 
-test("a watch that cannot be stopped still has its state dropped", async () => {
-  const { store, current } = memoryStore(state("100"));
-  await forgetMailbox("work", {
+test("a run for an account no longer listed writes no state", async () => {
+  const { store, current } = memoryStore();
+  const { outcome } = run(store, memoryCache(), fakeMailbox({ current: "500" }).mailbox, {
+    isListed: async () => false,
+  });
+  assert.deepEqual(await outcome, { kind: "unlisted" });
+  assert.equal(current(), null);
+});
+
+test("a watch on a different mailbox replaces the state left by the old one", async () => {
+  const { store, current } = memoryStore(state("900000", { emailAddress: "old@work.example" }));
+  const outcomes = await renewMailboxWatches(["personal"], {
     store,
     cache: memoryCache(),
+    force: true,
+    now: () => t0,
+    watch: async () => ({ historyId: "700", expiresAt: new Date(t0 + 7 * 24 * hour), emailAddress: address }),
+  });
+  assert.deepEqual(outcomes, { personal: "started" });
+  assert.deepEqual(current(), state("700"));
+});
+
+test("without force a live watch is not renewed, and a stop or a new watch clears what it should", async () => {
+  const { store } = memoryStore();
+  const cache = memoryCache(() => t0);
+  let watches = 0;
+  const deps = {
+    store,
+    cache,
+    now: () => t0,
+    watch: async () => {
+      watches += 1;
+      return { historyId: "700", expiresAt: new Date(t0 + 7 * 24 * hour), emailAddress: address };
+    },
+  };
+  await cache.set(unknownMailboxKey(address), true, 60);
+  await renewMailboxWatches(["personal"], { ...deps, force: false });
+  assert.equal(await cache.get(unknownMailboxKey(address)), null);
+  assert.deepEqual(await renewMailboxWatches(["personal"], { ...deps, force: false }), { personal: "watching" });
+  assert.equal(watches, 1);
+  await renewMailboxWatches(["personal"], { ...deps, force: true });
+  assert.equal(watches, 2);
+
+  let stopped = 0;
+  await stopWatch("personal", { cache, stop: async () => void stopped++ });
+  assert.equal(stopped, 1);
+  await renewMailboxWatches(["personal"], { ...deps, force: false });
+  assert.equal(watches, 3);
+});
+
+test("a stop that fails is logged, and the marker still goes", async () => {
+  const cache = memoryCache();
+  await cache.set("mail-watched:work", address, 60);
+  await stopWatch("work", {
+    cache,
     stop: async () => {
       throw new GoogleNeedsConnectingError("work", "is not connected");
     },
   });
+  assert.equal(await cache.get("mail-watched:work"), null);
+});
+
+test("forgetting a mailbox drops its cursor, watch marker and checkpoint", async () => {
+  const { store, current } = memoryStore(state("100"));
+  const cache = memoryCache();
+  await cache.set("mail-cursor:work", { historyId: "100", emailAddress: address, checkpointedAt: 0, openClaim: false }, 60);
+  await cache.set("mail-watched:work", address, 60);
+  await forgetMailboxState("work", { store, cache });
   assert.equal(current(), null);
+  assert.equal(await cache.get("mail-cursor:work"), null);
+  assert.equal(await cache.get("mail-watched:work"), null);
 });

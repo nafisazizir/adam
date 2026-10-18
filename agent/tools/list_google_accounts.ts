@@ -15,9 +15,10 @@ export default defineTool({
     const owner = ownerPrincipal(ctx.session.auth.current);
     const accounts = await google.listAccounts(owner);
     const connected = accounts.filter((account) => account.status === "connected").map((account) => account.account);
-    // A just-(re)connected account would otherwise wait for the daily mail-watch run.
+    // A just-(re)connected account would otherwise wait for the daily mail-watch run; one already
+    // watched is skipped.
     if (owner && connected.length) {
-      await watchMailboxes(owner, connected).catch((error: unknown) => {
+      await watchMailboxes(owner, { accounts: connected }).catch((error: unknown) => {
         console.warn("[mail] could not start mailbox watches after listing accounts", error);
       });
     }
