@@ -50,3 +50,10 @@ export function currentTimeContext(now: Date = new Date()): string {
 export function userLocalDateTimeToInstant(local: string): Date {
   return localDateTimeToInstant(local, timeZone);
 }
+
+const calendarDateFormat = new Intl.DateTimeFormat("en-AU", { timeZone: "UTC", dateStyle: "full" });
+
+export function formatCalendarDate(date: string): string {
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  return Number.isNaN(parsed) ? date : calendarDateFormat.format(parsed);
+}

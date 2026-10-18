@@ -22,6 +22,32 @@ function blankAsUnset<T extends z.ZodType>(schema: T) {
   return z.preprocess((value) => (value === "" ? undefined : value), schema);
 }
 
+export interface GoogleConnector {
+  readonly label: string;
+  readonly connector: string;
+}
+
+const googleConnectorEntry = /^([a-z0-9][a-z0-9_-]*)=(\S+)$/iu;
+
+// One Vercel Connect connector per Google account, since Connect keys a grant by connector and
+// subject and the subject is always the owner.
+function googleConnectors(value: string | undefined, ctx: z.RefinementCtx): GoogleConnector[] {
+  const connectors: GoogleConnector[] = [];
+  for (const entry of (value ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
+    const [, label, connector] = googleConnectorEntry.exec(entry) ?? [];
+    if (!label || !connector) {
+      ctx.addIssue({ code: "custom", message: `"${entry}" is not label=connector, e.g. personal=scl_abc` });
+      return z.NEVER;
+    }
+    connectors.push({ label: label.toLowerCase(), connector });
+  }
+  if (new Set(connectors.map(({ label }) => label)).size !== connectors.length) {
+    ctx.addIssue({ code: "custom", message: "each account label must be used once" });
+    return z.NEVER;
+  }
+  return connectors;
+}
+
 const schema = z.object({
   USER_TIMEZONE: z
     .string()
@@ -67,6 +93,8 @@ const schema = z.object({
   VERCEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
+  // Optional so a deploy without Google still boots; only the Google tools fail.
+  GOOGLE_CONNECTORS: blankAsUnset(z.string().optional()).transform(googleConnectors),
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),

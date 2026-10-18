@@ -17,6 +17,11 @@ export function ownerAuth(
   };
 }
 
+export function ownerPrincipal(auth: SessionAuthContext | null): HomeOwner | null {
+  if (auth?.principalType !== "user" || !auth.issuer) return null;
+  return { issuer: auth.issuer, principalId: auth.principalId };
+}
+
 // Leaves out the authenticator that `byPrincipal` keys on: `ownerAuth` keeps each trigger's own
 // (photon-imessage, workouts, coding-sessions), which would split the owner into one memory per trigger.
 export function ownerMemoryScope(ctx: Pick<MemoryScopeContext, "session">): string[] | string | null {

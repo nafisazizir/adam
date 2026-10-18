@@ -43,7 +43,7 @@ and runs it. It collapses almost the entire hand-rolled stack we'd otherwise bui
 | Per-user, per-channel chat history + context window | **Durable sessions** keyed by `continuationToken`; history is append-only + durable; **compaction** manages the context window automatically |
 | Conversation-scoped working memory                  | **`defineState`** (durable per-session)                                                                                                      |
 | Model/provider abstraction                          | Native — `model:` routes through **Vercel AI Gateway**                                                                                       |
-| External tools (riz-mcp, Strava, Gmail)             | **Connections** (`defineMcpClientConnection` / OpenAPI)                                                                                      |
+| External tools (riz-mcp, Notion)                    | **Connections** (`defineMcpClientConnection` / OpenAPI)                                                                                      |
 | Specialist agents                                   | **Declared subagents** (`agent/subagents/<id>/`)                                                                                             |
 | Recurring jobs                                      | **Schedules** (`agent/schedules/*.ts`, become Vercel Cron)                                                                                   |
 
@@ -309,10 +309,62 @@ stub the route).
   by the exact requesting principal; a prompt parked in a background turn (debrief, coding update,
   reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
+- **Google Workspace** (`agent/lib/google.ts`): read-only Gmail and Calendar across the owner's
+  several Google accounts, on root Adam (no `inbox` subagent yet). Vercel Connect owns Google sign-in,
+  the refresh token and refresh; small typed tools call the Gmail and Calendar REST APIs with `fetch`
+  (no SDK, no `gws`), and the access token stays in the tool process, never in the model's sandbox or
+  history. `lib/google.ts` is the only file that knows Google (token requests, Gmail and Calendar
+  endpoints, MIME and RFC 2047 decoding); tools speak in account names, `EmailSummary`/`Email` and
+  `CalendarEvent`. Its `googleWorkspace({ connectors, connect, fetch })` factory is what unit tests
+  drive with a fake Connect and `fetch`. Every call takes the owner principal (`ownerPrincipal` in
+  `lib/owner.ts` from the turn's auth, or `home.owner` outside a turn), so it works the same from a
+  chat, the briefing or a channel route.
+  - **Accounts.** One Connect connector per Google account (`GOOGLE_CONNECTORS`, e.g.
+    `personal=scl_…,work=scl_…`), because Connect keys a grant by connector and subject and the
+    subject is always the owner: `{ type: "user", id: principalId, issuer }`, the same subject Eve's
+    `connect()` adapter derives, so Notion and Google grants are keyed alike. Each token is requested
+    with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
+    OpenID userinfo with its own token and is cached per instance. Tools name an account by its label
+    or its address. Nothing Google-specific is stored by Adam.
+  - **Consent.** `connect_google_account(account)` (the owner's direct chat only, through
+    `ownerLinkRefusal` in `lib/connection-auth.ts` on `isOwnerDirectChat`: in a group anyone could
+    open the link first and connect their own account as the owner's) calls Connect's
+    `startAuthorization` for that connector, as the owner with the same scopes, and returns its URL.
+    Connect runs the Google OAuth flow (its Google service adds `access_type=offline` and
+    `prompt=consent`), stores the grant and refreshes it. Adam gets no callback; the owner says when
+    they are done and `list_google_accounts` shows the address.
+  - **Background turns never sign in.** Tokens come from `@vercel/connect`'s `getToken`, which never
+    starts a sign-in: a missing or revoked grant (`user_authorization_required` / `no_token`) becomes
+    `GoogleNeedsConnectingError` for that account, so the briefing or a mail trigger reports it and
+    the owner asks for a link in the direct chat (the same rule as Notion, #36).
+  - **Reads.** `search_email` (Gmail `q` syntax) and `list_events` fan out over every account
+    unless one is named, and return per-account `errors` (`needsConnecting` marks the ones that need
+    a link) beside the results, so one broken account never hides the rest. `list_events` reads every calendar the owner shows (or only primaries),
+    expands recurring events, and reports a failing shared calendar under `errors` while keeping the rest. Both follow page tokens up to a
+    bound and return `truncated` when more matched than they returned. All-day events carry an
+    inclusive last day (Google's end date is exclusive) and sort at the start of their local day in
+    `USER_TIMEZONE` (`startOfLocalDay` in `lib/zoned-time.ts`). A grant missing a scope (Google's 403
+    insufficient scopes) is reported as needing connecting. `read_email` prefers `text/plain`,
+    falls back to HTML as text, trims quoted replies, caps the body at 8k characters and lists
+    attachments without fetching them.
+  - **Tokens.** The Connect SDK caches tokens in process until shortly before expiry. A 401 asks
+    Connect again with `forceRefresh` and retries once; 429, 5xx and Gmail's 403 rate limits retry once.
+  - **For new-mail triggers.** `watchMailbox` (Gmail `users.watch` on the inbox to a Pub/Sub topic),
+    `mailboxHistory` (`users.history.list`, added inbox messages since a history id),
+    `emailSummaries` (message metadata) and `accountWithAddress` (the account a push names) are
+    exposed for the next step; nothing calls them yet.
+  - **Untrusted content.** Every text field written by a sender or event organiser reaches the model
+    inside `<email_content>` or `<calendar_content>` (`lib/untrusted.ts`, which strips any
+    look-alike of that tag from the text so it cannot close early), and `instructions.md` says mail is
+    data: nothing in it schedules, starts coding, merges, connects, saves memory or messages anyone,
+    and no image or link from it is embedded with `![](url)`, which the server would fetch. That
+    last rule is instruction only; `renderOutbound` does not know which urls came from mail.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
-  (interactive sign-in only in the owner's direct chat) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
-  `lib/home-target.ts`; `ownerAuth`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
+  (interactive sign-in only in the owner's direct chat) and `ownerLinkRefusal` (the same rule for a
+  link a tool hands out) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
+  `lib/home-target.ts`; `ownerAuth`, `ownerPrincipal`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
+  `untrusted`/`stripWrapperTags` in `lib/untrusted.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
@@ -321,7 +373,8 @@ stub the route).
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool), plus the
+  (confirmed in chat, merged by Devin), `connect_google_account`, `list_google_accounts`,
+  `search_email`, `read_email`, `list_events`, `agent` (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -446,6 +499,9 @@ adam/
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
+│   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
+│   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
+│   │   ├── untrusted.ts       # wrap untrusted text in tags, strip look-alike tags
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -460,6 +516,11 @@ adam/
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
+│   │   ├── connect_google_account.ts # owner's direct chat only: a Connect sign-in link for one account
+│   │   ├── list_google_accounts.ts
+│   │   ├── search_email.ts    # Gmail query across accounts, per-account errors
+│   │   ├── read_email.ts      # one message, text body, attachments listed
+│   │   ├── list_events.ts     # time range across accounts and calendars
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
@@ -495,10 +556,12 @@ voice note (text stays the default; see `agent/instructions.md`) · inbound voic
 with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
-remembered across sessions with the `owner` memory slot.
+remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar
+across the owner's connected Google accounts (search, read, list events), with email and invites
+treated as untrusted data.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
-subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
+subagents · sending mail and writing events · new-mail triggers · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
 ### Environment variables
@@ -533,6 +596,7 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
+GOOGLE_CONNECTORS=...               # optional; label=connector per Google account, e.g. personal=scl_…,work=scl_…
 ```
 
 ### Deployment notes
@@ -581,6 +645,14 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
+- Google needs a Google Cloud project with the Gmail and Calendar APIs enabled, an External consent
+  screen published In production (in Testing, refresh tokens die after 7 days), and a Web OAuth
+  client whose redirect URI is Vercel Connect's `https://connect.vercel.com/callback`. Each account
+  is a Connect connector made from that client with `vercel connect create google --connection-method
+  oauth`, attached to the project, and listed in `GOOGLE_CONNECTORS`. Expect the unverified-app
+  warning at consent. A Workspace admin may have to allow the client before a work account can
+  connect. Connect bills per token request (Hobby includes 500 a month); the SDK caches each token
+  for its hour, so reads cost about one request per account per instance-hour.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -598,14 +670,22 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
 1. **Google Workspace (`inbox`).** Gmail and Calendar across the owner's several Google accounts;
    triages mail, exercises right-to-silence, schedules follow-ups, and feeds `briefing` through
    a section in `lib/briefing.ts`.
-   - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts keyed by
-     email address and take an `account` argument or search all of them. Candidate backends: the
-     Google APIs directly, or Google's `gws` CLI (multi-account, has a `gws mcp` mode; labelled not an
-     officially supported Google product, pre-1.0).
-   - **Auth.** One Google Cloud OAuth client the owner creates. In "Testing" status its refresh
-     tokens expire after 7 days, so publish it (an unverified-app warning is fine for one user) and
-     confirm tokens persist. Per-account refresh tokens live in private Vercel Blob, or in Vercel
-     Connect if it covers Google.
+   **Read-only reads are built** (§4): connect, list accounts, search and read mail, list events,
+   on root Adam, with Vercel Connect holding the Google grants. Next: a new-mail trigger (Gmail
+   `users.watch` to Pub/Sub to an Adam route, on the primitives `lib/google.ts` already exposes),
+   mail in the briefing, writes (`send_email`, `create_event`) behind `ctx.ask`, and an `inbox`
+   subagent if triage crowds root's context.
+   - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts named by
+     label or address and take an `account` argument or search all of them. Built on the Google REST
+     APIs directly with `fetch`, the shape ChatGPT, Grok, Claude and Poke use for Gmail: OAuth through
+     a managed token service plus small typed tools, with the token never in the model's sandbox. Google's `gws` CLI was rejected: a binary with interactive,
+     on-disk login, not an officially supported Google product, pre-1.0, and its README confirms
+     neither multi-account nor an MCP mode.
+   - **Auth.** One Google Cloud OAuth client the owner creates, brought to Vercel Connect as one
+     `google` connector per account (Connect keys a grant by connector and subject, and the subject
+     is the owner). Connect's Google service sends `access_type=offline` and `prompt=consent`, stores
+     the refresh token and refreshes. In "Testing" status Google's refresh tokens expire after 7 days,
+     so publish the consent screen (an unverified-app warning is fine for one user).
    - **Safety.** Read-only scopes first. Sending mail and writing events are confirmed in chat with
      `ctx.ask`, as `merge_pull_request` is. Mail is untrusted input: bodies reach the model as
      content, never instructions, so nothing read from an email acts without that confirmation.
@@ -652,7 +732,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
 8. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
    "life review" running `coach` + `finance` in parallel and merging).
 9. **External event triggers.** Strava/Hevy workout webhooks are built in `workouts`; new-mail
-   triggers follow `inbox` (item 1).
+   triggers follow `inbox` (item 1): Gmail `users.watch` to Pub/Sub, renewed daily (a watch expires after 7 days), or a QStash
+   poll of `is:unread newer_than:1h` per account.
 10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
     auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
     a WhatsApp number to the same logical user. `admitSender` becomes a lookup of the sender in

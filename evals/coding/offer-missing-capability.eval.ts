@@ -11,7 +11,7 @@ export default defineEval({
     t.calledTool("start_coding_session", { count: 0 });
     assertHouseStyle(t, turn.message ?? "");
     t.judge(
-      "Says plainly that it has no calendar access yet and offers to get that capability built, in a line or two. It does NOT claim the time was blocked, and does NOT bury the offer under a list of alternatives.",
+      "Says plainly that it cannot put events on the calendar yet (reading it is fine to mention) and offers to get that capability built, in a line or two. It does NOT claim the time was blocked, and does NOT bury the offer under a list of alternatives.",
     ).atLeast(0.7);
   },
 });
