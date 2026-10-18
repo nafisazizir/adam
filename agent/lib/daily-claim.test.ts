@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, mock, test } from "node:test";
-import { claimDay, claimOnce, releaseDay, tryClaimOnce, type ClaimStore } from "#lib/daily-claim.js";
+import { claimDay, releaseDay, type ClaimStore } from "#lib/daily-claim.js";
 
 class PreconditionFailed extends Error {}
 
@@ -82,40 +82,4 @@ test("releasing a claim that was superseded leaves the newer one alone", async (
   assert.ok(newer);
   assert.equal(await releaseDay(store, stale), false);
   assert.equal(await claimDay(store, "briefing", "2026-10-19"), null);
-});
-
-test("a one-off claim is won once, and released it can be won again", async () => {
-  const first = await claimOnce(store, "whatsapp-message-1");
-  assert.ok(first);
-  assert.equal(await claimOnce(store, "whatsapp-message-1"), null);
-  assert.ok(await claimOnce(store, "whatsapp-message-2"));
-
-  assert.ok(await releaseDay(store, first));
-  assert.ok(await claimOnce(store, "whatsapp-message-1"));
-});
-
-test("a caller can tell a duplicate from a store it could not reach", async () => {
-  assert.equal((await tryClaimOnce(store, "whatsapp-message-1")).status, "claimed");
-  assert.equal((await tryClaimOnce(store, "whatsapp-message-1")).status, "taken");
-
-  store.read = async () => {
-    throw new Error("blob down");
-  };
-  const attempt = await tryClaimOnce(store, "whatsapp-message-2");
-  assert.equal(attempt.status, "unavailable");
-});
-
-test("losing a concurrent one-off claim is a duplicate, not an outage", async () => {
-  const attempts = await Promise.all([
-    tryClaimOnce(store, "whatsapp-message-1"),
-    tryClaimOnce(store, "whatsapp-message-1"),
-  ]);
-  assert.deepEqual(attempts.map((attempt) => attempt.status).sort(), ["claimed", "taken"]);
-});
-
-test("a write that fails without anyone else holding the key is an outage", async () => {
-  store.write = async () => {
-    throw new Error("blob down");
-  };
-  assert.equal((await tryClaimOnce(store, "whatsapp-message-1")).status, "unavailable");
 });

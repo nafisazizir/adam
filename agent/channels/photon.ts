@@ -7,6 +7,7 @@ import {
   readHomeTargetState,
   rememberChannelPresence,
   rememberHomeTarget,
+  rememberWithinBudget,
 } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
 import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
@@ -55,13 +56,14 @@ const groupChatContext =
 
 const surfaceContext = env.whatsapp ? [otherSurfaceContext("WhatsApp")] : [];
 
-async function rememberHome(home: HomeTarget): Promise<void> {
-  try {
+// iMessage's own presence only matters for choosing between channels, so without WhatsApp it is
+// never written.
+function rememberHome(home: HomeTarget): Promise<void> {
+  return rememberWithinBudget("photon", async () => {
     await rememberHomeTarget(home);
+    if (!env.whatsapp) return;
     await rememberChannelPresence(home.channel, { target: home.target, lastInboundAt: new Date().toISOString() });
-  } catch (error) {
-    console.warn("[photon] failed to remember home target", error);
-  }
+  });
 }
 
 export default withInboundMediaNormalization(photonIMessageChannel({
@@ -141,7 +143,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
         attributes: { thread_id: message.threadId, direct: isDirect ? "true" : "false" },
         authenticator: photonAuthenticator,
       }),
-      context: [currentTimeContext(), ...surfaceContext, ...(isDirect ? [] : [groupChatContext])],
+      context: [currentTimeContext(), ...(isDirect ? surfaceContext : [groupChatContext])],
     };
   },
 }));

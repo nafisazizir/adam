@@ -1,17 +1,20 @@
 import { createMemoryState } from "@chat-adapter/state-memory";
-import { createWhatsAppAdapter } from "@chat-adapter/whatsapp";
+import { createWhatsAppAdapter, WhatsAppApiError } from "@chat-adapter/whatsapp";
 import type { SessionAuthContext } from "eve/context";
 import { defineChannel, GET, POST } from "eve/channels";
 import { chatSdkChannel, messageToUserContent } from "eve/channels/chat-sdk";
 
-import { blobClaimStore } from "#lib/claim-store.js";
-import { releaseDay, tryClaimOnce } from "#lib/daily-claim.js";
 import { env, whatsappPath } from "#lib/env.js";
-import { readHomeTargetState, rememberChannelPresence } from "#lib/home-target.js";
+import { readHomeTargetState, rememberChannelPresence, rememberWithinBudget } from "#lib/home-target.js";
 import { admitSender, ownerAuth, ownerIssuer, ownerRecordLookup, type SenderAdmission } from "#lib/owner.js";
 import { completedReply, deliverReply, otherSurfaceContext, signInMessage } from "#lib/reply.js";
 import { currentTimeContext } from "#lib/time.js";
-import { inboundMessageClaimKey, isBusinessScopedUserId, waIdToE164 } from "#lib/whatsapp.js";
+import {
+  isBusinessScopedUserId,
+  normalizeOwnerNumbers,
+  OUTSIDE_SERVICE_WINDOW,
+  waIdToE164,
+} from "#lib/whatsapp.js";
 
 export const whatsappAdapterName = "whatsapp";
 export const whatsappAuthenticator = "whatsapp";
@@ -19,6 +22,8 @@ export const whatsappAuthenticator = "whatsapp";
 const ownerRecord = ownerRecordLookup(readHomeTargetState, ownerIssuer);
 
 const surfaceContext = otherSurfaceContext("iMessage");
+
+const ownerWhatsAppNumbers = normalizeOwnerNumbers(env.OWNER_WHATSAPP_NUMBERS);
 
 async function admit(userId: string): Promise<SenderAdmission> {
   const number = waIdToE164(userId);
@@ -35,7 +40,7 @@ async function admit(userId: string): Promise<SenderAdmission> {
     { id: number, isDirect: true, service: "whatsapp" },
     {
       handles: env.OWNER_IMESSAGE_HANDLES,
-      whatsappNumbers: env.OWNER_WHATSAPP_NUMBERS,
+      whatsappNumbers: ownerWhatsAppNumbers,
       record: await ownerRecord.current(),
     },
   );
@@ -51,27 +56,20 @@ function chatAuth(principalId: string, threadId: string): SessionAuthContext {
   );
 }
 
-// Meta retries a webhook it thinks failed, possibly onto another instance than the one that
-// handled it, so a message is claimed across instances. A Blob outage must not cost the owner a
-// message, so an unknown outcome handles it anyway.
-async function claimInbound(messageId: string) {
-  const attempt = await tryClaimOnce(blobClaimStore, inboundMessageClaimKey(messageId));
-  if (attempt.status === "unavailable") {
-    console.warn(`[whatsapp] could not check ${messageId} for a redelivery; handling it anyway`, attempt.error);
-  }
-  return attempt;
-}
-
-async function rememberPresence(threadId: string, sentAt: Date): Promise<void> {
+function rememberPresence(threadId: string, sentAt: Date): Promise<void> {
   const at = Math.min(Number.isFinite(sentAt.getTime()) ? sentAt.getTime() : Date.now(), Date.now());
-  try {
-    await rememberChannelPresence("whatsapp", {
+  return rememberWithinBudget("whatsapp", () =>
+    rememberChannelPresence("whatsapp", {
       target: { threadId, adapterName: whatsappAdapterName },
       lastInboundAt: new Date(at).toISOString(),
-    });
-  } catch (error) {
-    console.warn("[whatsapp] failed to remember when the owner last wrote", error);
-  }
+    }),
+  );
+}
+
+// `homeDelivery` keeps a margin before the window closes, so this only catches a turn that ran
+// past it; the reply is lost, which the log says plainly.
+function isOutsideServiceWindow(error: unknown): boolean {
+  return error instanceof WhatsAppApiError && error.errorCode === OUTSIDE_SERVICE_WINDOW;
 }
 
 function createWhatsAppChannel(credentials: NonNullable<typeof env.whatsapp>) {
@@ -100,10 +98,15 @@ function createWhatsAppChannel(credentials: NonNullable<typeof env.whatsapp>) {
         const thread = channel.thread;
         if (!reply || !thread) return;
 
-        await deliverReply(reply, {
-          post: ({ text, files }) => thread.post({ raw: text, files }),
-          sendVoice: (voiceNote) => thread.post({ raw: "", files: [voiceNote] }),
-        });
+        try {
+          await deliverReply(reply, {
+            post: ({ text, files }) => thread.post({ raw: text, files }),
+            sendVoice: (voiceNote) => thread.post({ raw: "", files: [voiceNote] }),
+          });
+        } catch (error) {
+          if (!isOutsideServiceWindow(error)) throw error;
+          console.error("[whatsapp] window closed: Meta refused the reply, so it was not delivered", error);
+        }
       },
     },
   });
@@ -114,25 +117,14 @@ function createWhatsAppChannel(credentials: NonNullable<typeof env.whatsapp>) {
     const admission = await admit(message.author.userId);
     if (!admission.admitted) return;
 
-    const attempt = await claimInbound(message.id);
-    if (attempt.status === "taken") {
-      console.log(`[whatsapp] skipped ${message.id}, already handled`);
-      return;
-    }
-
     await bot.getAdapter(whatsappAdapterName).markAsRead(thread.id, message.id).catch(() => {});
     await rememberPresence(thread.id, message.metadata.dateSent);
 
-    try {
-      await send(messageToUserContent(message), {
-        thread,
-        auth: chatAuth(admission.principalId, thread.id),
-        context: [currentTimeContext(), surfaceContext],
-      });
-    } catch (error) {
-      if (attempt.status === "claimed") await releaseDay(blobClaimStore, attempt.claim);
-      throw error;
-    }
+    await send(messageToUserContent(message), {
+      thread,
+      auth: chatAuth(admission.principalId, thread.id),
+      context: [currentTimeContext(), surfaceContext],
+    });
   });
 
   return channel;

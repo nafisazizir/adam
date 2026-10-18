@@ -1,12 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  inboundMessageClaimKey,
-  isBusinessScopedUserId,
-  waIdToE164,
-  withinServiceWindow,
-} from "#lib/whatsapp.js";
+import { admitSender } from "#lib/owner.js";
+import { isBusinessScopedUserId, normalizeOwnerNumbers, waIdToE164, withinServiceWindow } from "#lib/whatsapp.js";
 
 test("a wa_id becomes the E.164 number owner handles use", () => {
   assert.equal(waIdToE164("61412345678"), "+61412345678");
@@ -41,9 +37,16 @@ test("no message or an unreadable time keeps the window closed", () => {
   assert.ok(!withinServiceWindow("not a date", now));
 });
 
-test("a message's claim key is stable, path-safe and distinct per message", () => {
-  const key = inboundMessageClaimKey("wamid.HBgLNjE0MTIzNDU2NzgVAgASGBQzRUIwQ0Y5RjE=");
-  assert.equal(key, inboundMessageClaimKey("wamid.HBgLNjE0MTIzNDU2NzgVAgASGBQzRUIwQ0Y5RjE="));
-  assert.match(key, /^whatsapp-message-[0-9a-f]{32}$/u);
-  assert.notEqual(key, inboundMessageClaimKey("wamid.other"));
+test("owner numbers listed as bare digits match the sender WhatsApp reports", () => {
+  assert.deepEqual(normalizeOwnerNumbers(["6281234567890", "+61412345678", "+62 812 3456 7890"]), [
+    "+6281234567890",
+    "+61412345678",
+    "+62 812 3456 7890",
+  ]);
+
+  const sender = { id: waIdToE164("6281234567890")!, isDirect: true, service: "whatsapp" as const };
+  const record = { kind: "recorded" as const, principalId: "+61412345678" };
+  assert.equal(admitSender(sender, { handles: [], whatsappNumbers: ["6281234567890"], record }).admitted, false);
+  const admitted = admitSender(sender, { handles: [], whatsappNumbers: normalizeOwnerNumbers(["6281234567890"]), record });
+  assert.equal(admitted.admitted, true);
 });

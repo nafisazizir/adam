@@ -1,6 +1,7 @@
-import { get, put } from "@vercel/blob";
+import { get } from "@vercel/blob";
 import { z } from "zod";
 
+import { BlobWriteConflict, putConditional } from "#lib/blob-conditional.js";
 import { env } from "#lib/env.js";
 
 const pathname = "home-target.json";
@@ -117,17 +118,11 @@ async function updateHomeTarget(change: (current: HomeTarget | null) => HomeTarg
     }
 
     try {
-      await put(pathname, JSON.stringify(next), {
-        access: "private",
-        addRandomSuffix: false,
-        contentType: "application/json",
-        token: blobToken,
-        ...(stored ? { allowOverwrite: true, ifMatch: stored.etag } : { allowOverwrite: false }),
-      });
+      await putConditional(pathname, JSON.stringify(next), stored ? { etag: stored.etag } : "absent", blobToken);
       lastKnown = next;
       return;
     } catch (error) {
-      if (attempt >= 2) throw error;
+      if (!(error instanceof BlobWriteConflict) || attempt >= 2) throw error;
     }
   }
 }
@@ -140,19 +135,35 @@ export function rememberChannelPresence(name: string, presence: Required<Channel
   return updateHomeTarget((current) => withPresence(current, name, presence));
 }
 
+const POINTER_WRITE_BUDGET_MS = 1500;
+
+// A chat channel writes the pointer before its turn starts, so a slow Blob must not hold up the
+// reply: past the budget the write carries on unawaited and the turn goes ahead.
+export async function rememberWithinBudget(label: string, write: () => Promise<void>): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[${label}] gave up waiting on the home pointer after ${POINTER_WRITE_BUDGET_MS}ms`);
+      resolve();
+    }, POINTER_WRITE_BUDGET_MS);
+  });
+  const written = write().catch((error: unknown) => {
+    console.warn(`[${label}] failed to remember the home target`, error);
+  });
+  try {
+    await Promise.race([written, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // The first owner is claimed with `allowOverwrite: false`, so when two people text a fresh install
 // at once only one write lands and the other claim fails.
 export async function claimHomeTarget(home: HomeTarget): Promise<void> {
   const blobToken = token();
   if (!blobToken) throw new Error("Vercel Blob is not configured");
 
-  await put(pathname, JSON.stringify(home), {
-    access: "private",
-    addRandomSuffix: false,
-    allowOverwrite: false,
-    contentType: "application/json",
-    token: blobToken,
-  });
+  await putConditional(pathname, JSON.stringify(home), "absent", blobToken);
   lastKnown = home;
 }
 
