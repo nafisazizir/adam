@@ -1,3 +1,4 @@
+// Side effect: schedule_reminder is not stubbed, so this publishes a real QStash reminder to BASE_URL; cancel it after running.
 import { defineEval } from "eve/evals";
 
 import { formatUserDateTime } from "#lib/time.js";
