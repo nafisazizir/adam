@@ -52,7 +52,6 @@ regress.
 | coding/merged                 | a merge the user asked for is confirmed in a few words |
 | reminders/absolute-time       | a clock time becomes `at` in local time, no hand-computed delay |
 | reminders/relative-delay      | "in 20 minutes" is `delaySeconds` 1200 |
-| reminders/cancel              | cancelling by id calls `cancel_reminder` with that id |
 | briefing/quiet-day            | a morning briefing with nothing worth saying gets no text |
 | memory/saves-durable-fact     | an injury the user mentions is saved to owner memory |
 | memory/skips-trivia           | small talk is not saved |
