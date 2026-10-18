@@ -1,7 +1,7 @@
 import {
   ConnectError,
   deleteTokenCacheEntry,
-  getToken,
+  getTokenResponse,
   NoValidTokenError,
   revokeToken,
   startAuthorization,
@@ -15,7 +15,7 @@ import { env } from "#lib/env.js";
 import { googleAccountRegistry, type GoogleAccountRegistry, normalizeAccountLabel } from "#lib/google-accounts.js";
 import { blobGoogleAccountStore } from "#lib/google-accounts-store.js";
 import type { HomeOwner } from "#lib/home-target.js";
-import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
+import { memoryCache, sharedCache, type SharedCache } from "#lib/shared-cache.js";
 import { startOfLocalDay } from "#lib/zoned-time.js";
 
 const userinfoUrl = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -33,17 +33,22 @@ const eventPageSize = 100;
 const maxEventPages = 3;
 const metadataConcurrency = 5;
 const addressTtlSeconds = 24 * 60 * 60;
+const tokenCacheMarginSeconds = 5 * 60;
 
 // The slice of @vercel/connect this file uses, so tests can stand in for Vercel Connect.
 export interface GoogleConnect {
-  getToken(connector: string, params: ConnectTokenParams, options?: { forceRefresh?: boolean }): Promise<string>;
+  getToken(
+    connector: string,
+    params: ConnectTokenParams,
+    options?: { forceRefresh?: boolean },
+  ): Promise<{ token: string; expiresAt: number }>;
   startAuthorization(connector: string, params: ConnectTokenParams): Promise<{ url: string; expiresAt?: number }>;
   revokeToken(connector: string, params: { subject: ConnectTokenSubject }): Promise<void>;
   deleteTokenCacheEntry(connector: string, params: ConnectTokenParams): void;
 }
 
 const vercelConnect: GoogleConnect = {
-  getToken: (connector, params, options) => getToken(connector, params, options),
+  getToken: (connector, params, options) => getTokenResponse(connector, params, options),
   startAuthorization: (connector, params) => startAuthorization(connector, params),
   revokeToken: (connector, params) => revokeToken(connector, params),
   deleteTokenCacheEntry: (connector, params) => deleteTokenCacheEntry(connector, params),
@@ -121,7 +126,11 @@ export interface EmailSummary {
   readonly snippet: string;
   readonly unread: boolean;
   readonly important: boolean;
+  readonly category: EmailCategory;
 }
+
+// Gmail's inbox tabs; mail with no category label sits in Primary.
+export type EmailCategory = "primary" | "social" | "promotions" | "updates" | "forums";
 
 export interface EmailAttachment {
   readonly filename: string;
@@ -269,6 +278,8 @@ const eventListSchema = z.object({
 const userinfoSchema = z.object({ email: z.string() });
 
 const watchSchema = z.object({ historyId: z.string(), expiration: z.string() });
+
+const profileSchema = z.object({ historyId: z.string() });
 
 const historySchema = z.object({
   history: z
@@ -445,6 +456,22 @@ async function mapLimited<T, R>(items: readonly T[], limit: number, run: (item: 
   return results;
 }
 
+const categoryLabels: Record<string, EmailCategory> = {
+  CATEGORY_PERSONAL: "primary",
+  CATEGORY_SOCIAL: "social",
+  CATEGORY_PROMOTIONS: "promotions",
+  CATEGORY_UPDATES: "updates",
+  CATEGORY_FORUMS: "forums",
+};
+
+function categoryOf(labelIds: readonly string[]): EmailCategory {
+  for (const label of labelIds) {
+    const category = categoryLabels[label];
+    if (category) return category;
+  }
+  return "primary";
+}
+
 function toSummary(account: string, raw: z.infer<typeof messageSchema>): EmailSummary {
   return {
     account,
@@ -457,6 +484,7 @@ function toSummary(account: string, raw: z.infer<typeof messageSchema>): EmailSu
     snippet: decodeEntities(raw.snippet),
     unread: raw.labelIds.includes("UNREAD"),
     important: raw.labelIds.includes("IMPORTANT"),
+    category: categoryOf(raw.labelIds),
   };
 }
 
@@ -548,6 +576,7 @@ export interface GoogleWorkspaceDeps {
   readonly timeZone: string;
   readonly connect?: GoogleConnect;
   readonly addressCache?: SharedCache;
+  readonly tokenCache?: SharedCache;
   readonly fetch?: typeof fetch;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -555,6 +584,7 @@ export interface GoogleWorkspaceDeps {
 export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   const { connector, accounts: registry, timeZone } = deps;
   const connect = deps.connect ?? vercelConnect;
+  const tokenCache = deps.tokenCache ?? sharedCache;
   const request = deps.fetch ?? ((input, init) => fetch(input, init));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const addresses = deps.addressCache ?? memoryCache();
@@ -580,15 +610,29 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     return { connector, owner };
   }
 
-  // getToken never starts a sign-in, so a background turn with no grant fails here instead of
-  // waiting on the owner.
+  function tokenCacheKey(account: Account): string {
+    return `google-token:${connector}:${JSON.stringify(googleSubject(account.owner, account.label))}`;
+  }
+
+  // Connect bills per token request and its SDK caches only per instance, so each token is shared
+  // across instances for its lifetime less a margin. getToken never starts a sign-in, so a
+  // background turn with no grant fails here instead of waiting on the owner.
   async function accessToken(account: Account, fresh: boolean): Promise<string> {
+    const key = tokenCacheKey(account);
+    if (fresh) await tokenCache.delete(key);
+    else {
+      const cached = await tokenCache.get(key);
+      if (typeof cached === "string" && cached) return cached;
+    }
     try {
-      return await connect.getToken(
+      const { token, expiresAt } = await connect.getToken(
         connectorFor(account.owner).connector,
         tokenParams(account),
         fresh ? { forceRefresh: true } : undefined,
       );
+      const ttlSeconds = (expiresAt - Date.now()) / 1000 - tokenCacheMarginSeconds;
+      if (ttlSeconds >= 60) await tokenCache.set(key, token, ttlSeconds);
+      return token;
     } catch (error) {
       if (error instanceof UserAuthorizationRequiredError || error instanceof NoValidTokenError) {
         throw new GoogleNeedsConnectingError(account.label, "is not connected, or its access was revoked");
@@ -618,7 +662,10 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       if (response.ok) return schema.parse(await response.json());
 
       if (response.status === 401) {
-        if (attempt > 0) throw new GoogleNeedsConnectingError(account.label, "rejected even a freshly refreshed token");
+        if (attempt > 0) {
+          await tokenCache.delete(tokenCacheKey(account));
+          throw new GoogleNeedsConnectingError(account.label, "rejected even a freshly refreshed token");
+        }
         token = await accessToken(account, true);
         continue;
       }
@@ -660,7 +707,7 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   // between can cache the old account again; listAccounts is what gets past that.
   async function forget(account: Account): Promise<void> {
     if (connector) connect.deleteTokenCacheEntry(connector, tokenParams(account));
-    await addresses.delete(addressKey(account));
+    await Promise.all([addresses.delete(addressKey(account)), tokenCache.delete(tokenCacheKey(account))]);
   }
 
   async function addressOf(account: Account, fresh = false): Promise<string> {
@@ -739,9 +786,15 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     return googleCall(account, url, messageSchema);
   }
 
+  // A message deleted between listing and fetching is left out rather than failing the rest.
   async function summaries(account: Account, ids: readonly string[]): Promise<EmailSummary[]> {
-    const messages = await mapLimited(ids, metadataConcurrency, (id) => getMessage(account, id, "metadata"));
-    return messages.map((message) => toSummary(account.label, message));
+    const messages = await mapLimited(ids, metadataConcurrency, (id) =>
+      getMessage(account, id, "metadata").catch((error: unknown) => {
+        if (error instanceof GoogleApiError && error.status === 404) return null;
+        throw error;
+      }),
+    );
+    return messages.filter((message) => message !== null).map((message) => toSummary(account.label, message));
   }
 
   async function searchAccount(account: Account, query: string, max: number): Promise<Page<EmailSummary>> {
@@ -832,6 +885,10 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   return {
     get configured(): boolean {
       return connector !== undefined;
+    },
+
+    async accountNames(owner: GoogleOwner | null): Promise<string[]> {
+      return (await accountsOf(owner)).map((account) => account.label);
     },
 
     // The owner checks a connect with this, so it asks Connect for a fresh token and Google for the
@@ -971,6 +1028,11 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         labelFilterBehavior: "include",
       });
       return { historyId: watch.historyId, expiresAt: new Date(Number(watch.expiration)) };
+    },
+
+    async currentHistoryId(owner: GoogleOwner | null, name: string): Promise<string> {
+      const profile = await googleCall(await only(owner, name), new URL(`${gmailBase}/profile`), profileSchema);
+      return profile.historyId;
     },
 
     // A startHistoryId too old for Gmail to replay fails with a GoogleApiError of status 404.

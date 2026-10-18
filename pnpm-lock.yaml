@@ -23,6 +23,9 @@ importers:
       '@vercel/connect':
         specifier: 2.4.1
         version: 2.4.1(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))(ai@7.0.131(zod@4.4.3))(eve@0.73.0(ai@7.0.131(zod@4.4.3)))
+      '@vercel/functions':
+        specifier: 3.9.11
+        version: 3.9.11
       ai:
         specifier: 7.0.131
         version: 7.0.131(zod@4.4.3)
@@ -32,6 +35,9 @@ importers:
       heic-decode:
         specifier: 2.1.0
         version: 2.1.0
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
       sharp:
         specifier: 0.35.5
         version: 0.35.5(@types/node@24.13.2)
@@ -490,6 +496,18 @@ packages:
       eve:
         optional: true
 
+  '@vercel/functions@3.9.11':
+    resolution: {integrity: sha512-DbqKqcbUHGBTYgHZieSNDuF1/L2iSPZV0OGm0Xkm/t+s61lFk4VX8yGQ22Og3WYGxypW1l4Elx1NP8BL928u8Q==}
+    engines: {node: '>= 20'}
+    peerDependencies:
+      '@aws-sdk/credential-provider-web-identity': '*'
+      ws: '>=8'
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-web-identity':
+        optional: true
+      ws:
+        optional: true
+
   '@vercel/oidc@3.2.0':
     resolution: {integrity: sha512-UycprH3T6n3jH0k44NHMa7pnFHGu/N05MjojYr+Mc6I7obkoLIJujSWwin1pCvdy/eOxrI/l3uDLQsmcrOb4ug==}
     engines: {node: '>= 20'}
@@ -517,6 +535,11 @@ packages:
 
   ajv-formats@3.0.1:
     resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
+    peerDependencies:
+      ajv: ^8.0.0
+    peerDependenciesMeta:
+      ajv:
+        optional: true
 
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
@@ -1269,7 +1292,7 @@ snapshots:
     dependencies:
       '@hono/node-server': 1.19.17(hono@4.13.12)
       ajv: 8.20.0
-      ajv-formats: 3.0.1
+      ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
       cors: 2.8.6
       cross-spawn: 7.0.6
@@ -1414,6 +1437,10 @@ snapshots:
       ai: 7.0.131(zod@4.4.3)
       eve: 0.73.0(ai@7.0.131(zod@4.4.3))
 
+  '@vercel/functions@3.9.11':
+    dependencies:
+      '@vercel/oidc': 4.0.0
+
   '@vercel/oidc@3.2.0': {}
 
   '@vercel/oidc@3.6.1':
@@ -1442,8 +1469,8 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.56(zod@4.4.3)
       zod: 4.4.3
 
-  ajv-formats@3.0.1:
-    dependencies:
+  ajv-formats@3.0.1(ajv@8.20.0):
+    optionalDependencies:
       ajv: 8.20.0
 
   ajv@8.20.0:
