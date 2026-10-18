@@ -5,15 +5,19 @@ import { deliveryChannelForAuth, homeDelivery } from "#lib/delivery.js";
 import { publishReminder } from "#lib/qstash.js";
 import { replayStableKey } from "#lib/replay-key.js";
 import { scheduledReminders } from "#lib/reminders.js";
-import { formatUserDateTime } from "#lib/time.js";
+import { reminderTiming } from "#lib/reminder-timing.js";
+import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
 
 export default defineTool({
   description:
-    "Schedule a one-time reminder to be delivered to the user after a delay. " +
-    "delaySeconds is how many seconds from now it should fire: convert the user's " +
-    "phrasing yourself (e.g. 'in 15 minutes' is 900, 'in 2 hours' is 7200). For an " +
-    "absolute time like 'tomorrow at 7am', work out the gap from the user's current " +
-    "local time given in context. message is the reminder text in your own voice.",
+    "Schedule a one-time reminder to be delivered to the user. Give exactly one of " +
+    "delaySeconds or at, and omit the other. delaySeconds is for relative phrasing ('in 15 minutes' is 900, " +
+    "'in 2 hours' is 7200). at is for any clock time ('tomorrow at 7am'): a local " +
+    "wall-clock date-time like 2026-10-03T07:00 in the user's time zone, read from the " +
+    "current local date and time in context. Never convert a clock time into seconds " +
+    "yourself. leadMinutes (only with at) fires that many minutes before at. A reminder " +
+    "with leadMinutes that would fire in the past or within 5 minutes returns " +
+    "{ skipped: 'too soon' } instead of being scheduled; a plain at in the past is an error. message is the reminder text in your own voice.",
   inputSchema: z.object({
     message: z
       .string()
@@ -23,9 +27,42 @@ export default defineTool({
       .number()
       .int()
       .positive()
-      .describe("Seconds from now until the reminder fires."),
+      .optional()
+      .describe("Seconds from now until the reminder fires. For relative times; omit when using at."),
+    at: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+      .optional()
+      .describe("Local date-time YYYY-MM-DDTHH:mm in the user's time zone. For clock times; omit delaySeconds."),
+    leadMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("With at: fire this many minutes before at. Default 0."),
   }),
-  async execute({ message, delaySeconds }, ctx) {
+  async execute({ message, delaySeconds: relativeDelay, at, leadMinutes = 0 }, ctx) {
+    if ((relativeDelay === undefined) === (at === undefined)) {
+      throw new Error("Give exactly one of delaySeconds or at.");
+    }
+    if (relativeDelay !== undefined && leadMinutes > 0) {
+      throw new Error("leadMinutes only works together with at.");
+    }
+    const now = Date.now();
+    const timing = reminderTiming(
+      relativeDelay !== undefined
+        ? { delaySeconds: relativeDelay }
+        : { targetMs: userLocalDateTimeToInstant(at!).getTime(), leadMinutes },
+      now,
+    );
+    if (timing.kind === "past") {
+      throw new Error(
+        `${at} is already in the past (it is now ${formatUserDateTime(new Date(now))}); pick a future time.`,
+      );
+    }
+    if (timing.kind === "skipped") return { skipped: "too soon" };
+    const { delaySeconds, fireAtMs } = timing;
+
     const { current, initiator } = ctx.session.auth;
     const resolved =
       (current && deliveryChannelForAuth(current)) ??
@@ -43,9 +80,9 @@ export default defineTool({
       channel: resolved.channel.name,
       target: resolved.target,
       delaySeconds,
-      idempotencyKey: replayStableKey(ctx, message, delaySeconds),
+      idempotencyKey: replayStableKey(ctx, message, at ?? relativeDelay!, leadMinutes),
     });
-    const fireAt = new Date(Date.now() + delaySeconds * 1000);
+    const fireAt = new Date(fireAtMs);
     scheduledReminders.update((list) => [
       ...list,
       { id, message, fireAt: fireAt.toISOString() },

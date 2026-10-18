@@ -32,6 +32,8 @@ function workoutLabel(ref: WorkoutRef): string {
 
 export function coachRequest(ref: WorkoutRef, options: { dryRun?: boolean } = {}): string {
   return [
+    currentTimeContext(),
+    "",
     `Run the workout debrief for ${workoutLabel(ref)}, which the user just finished.`,
     `Training plan data source: ${env.NOTION_PLANS_DATA_SOURCE_ID}`,
     `Workouts data source: ${env.NOTION_WORKOUTS_DATA_SOURCE_ID}`,

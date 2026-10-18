@@ -1,3 +1,5 @@
+import { userTimeZone } from "#lib/time.js";
+
 export const onPlanRunDebrief = `workout: Morning Run (Strava, run), Friday 2 October 2026, 5:45 am
 notion: https://www.notion.so/Morning-Run-2-Oct-2026-00000000000000000000000000000001
 verdict: easy zone 2 run done as planned, nothing to flag.
@@ -19,3 +21,17 @@ signals:
 - trend: squat estimated 1RM up for the fourth straight session
 - pr or regression: back squat 3-rep PR, 140 kg
 - recovery: none`;
+
+export function debriefWithNextSession(nextSession: string): string {
+  return `${onPlanRunDebrief}\nnext session: ${nextSession}`;
+}
+
+const localDateTimeFormat = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: userTimeZone,
+  dateStyle: "short",
+  timeStyle: "short",
+});
+
+export function localDateTimeIn(milliseconds: number): string {
+  return localDateTimeFormat.format(new Date(Date.now() + milliseconds)).replace(" ", "T");
+}
