@@ -22,11 +22,15 @@ function blankAsUnset<T extends z.ZodType>(schema: T) {
   return z.preprocess((value) => (value === "" ? undefined : value), schema);
 }
 
-// One connector serves every Google account; each account is its own Connect subject.
+// One connector serves every Google account; each account is its own Connect subject. Connect finds
+// a connector by its id or its service-qualified UID, never by its bare name.
 export const googleConnectorSchema = blankAsUnset(
   z
     .string()
-    .regex(/^[^\s,=]+$/u, "must be one Vercel Connect connector id or UID, e.g. scl_abc or adam-google")
+    .regex(
+      /^(?:scl_[A-Za-z0-9]+|[^\s,=/]+\/[^\s,=]+)$/u,
+      "must be one Vercel Connect connector id or UID, e.g. scl_abc or google/adam-google (the name alone is not found)",
+    )
     .optional(),
 );
 

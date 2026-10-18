@@ -383,6 +383,26 @@ test("connecting a new name adds it to the list and links its own subject, with 
   assert.deepEqual(started[0]?.params, tokenCalls.find((call) => labelOf(call.params) === "work")?.params);
 });
 
+test("a link Connect cannot start leaves a new name off the list, and an existing one on it", async () => {
+  const notFound = new ConnectError("Connector not found: adam-google", { status: 404, code: "not_found" });
+  const { connect } = fakeConnect({ personal: "token-personal" });
+  connect.startAuthorization = async () => {
+    throw notFound;
+  };
+  const store = fakeAccountStore(["personal"]);
+  const google = workspace(["personal"], connect, fakeFetch(addresses({})).impl, store);
+
+  await assert.rejects(google.signIn(owner, "junk"), notFound);
+  assert.deepEqual(store.labels(), ["personal"]);
+  assert.deepEqual(
+    (await google.listAccounts(owner)).map((account) => account.account),
+    ["personal"],
+  );
+
+  await assert.rejects(google.signIn(owner, "personal"), notFound);
+  assert.deepEqual(store.labels(), ["personal"]);
+});
+
 test("reconnecting an existing name reuses its subject, writes nothing and forgets its old address", async () => {
   const { connect, started } = fakeConnect({ personal: "token-personal" });
   let address = "old@gmail.example";
