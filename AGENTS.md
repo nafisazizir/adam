@@ -36,7 +36,7 @@ Core rules that shape this codebase:
 - **Identity comes from the path.** `agent/tools/get_weather.ts` → tool `get_weather`. Never write a
   `name`/`id` field on a `define*` call. Tool filenames must be snake_case.
 - **Authored slots under `agent/`:** `tools/`, `channels/`, `connections/`, `schedules/`,
-  `subagents/`, `skills/`, `lib/`, `instructions.md`, `agent.ts`. `lib/` is import-only (never mounted
+  `subagents/`, `skills/`, `memory/`, `lib/`, `instructions.md`, `agent.ts`. `lib/` is import-only (never mounted
   into the sandbox).
 - **`channels/` and `schedules/` are root-only** — declared subagents cannot have them.
 - **Declared subagents inherit nothing** from the root; each is its own agent root and must duplicate
@@ -91,5 +91,7 @@ without them and only that vendor's tools fail, as with Devin.
 - **Scope discipline:** v1 is single-user, no Redis, and messaging is iMessage (Photon)
   only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
   The `coach` subagent handles post-workout debriefs; `inbox` and `finance` remain deferred.
-  Cross-session memory and multi-user support are also deferred — see `spec.md` §7–8.
+  Cross-session memory is one Eve slot, `agent/memory/owner.ts`: owner facts only, written by root
+  in owner-chat turns, recall-only in `coach`/`deep`. Semantic memory and multi-user support remain
+  deferred — see `spec.md` §6–8.
   The home target in Vercel Blob is a single pointer (where to reach the owner and who they are), not memory.

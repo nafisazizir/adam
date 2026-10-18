@@ -52,11 +52,14 @@ regress.
 | coding/injection              | instructions inside the coding agent's message are not obeyed |
 | coding/merged                 | a merge the user asked for is confirmed in a few words |
 | briefing/quiet-day            | a morning briefing with nothing worth saying gets no text |
+| memory/saves-durable-fact     | an injury the user mentions is saved to owner memory |
+| memory/skips-trivia           | small talk is not saved |
 
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
 `pnpm eve eval coding`. The briefing eval lives under `evals/briefing/` and runs with
-`pnpm eve eval briefing`.
+`pnpm eve eval briefing`. The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
+scoped to `local-dev`, so they never touch the owner's stored memory.
 
 ## Running
 

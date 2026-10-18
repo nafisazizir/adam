@@ -60,6 +60,9 @@ const schema = z.object({
   DEVIN_API_KEY: blankAsUnset(z.string().min(1).optional()),
   DEVIN_ORG_ID: blankAsUnset(z.string().min(1).optional()),
   DEVIN_MAX_ACU_LIMIT: blankAsUnset(z.coerce.number().int().positive().optional()),
+  VERCEL: blankAsUnset(z.string().min(1).optional()),
+  VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
+  VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
@@ -74,10 +77,11 @@ if (!parsed.success) {
   throw new Error(`Invalid environment configuration:\n${details}`);
 }
 
-const { VERCEL_GIT_REPO_OWNER, VERCEL_GIT_REPO_SLUG } = parsed.data;
+const { VERCEL, VERCEL_ENV, VERCEL_TARGET_ENV, VERCEL_GIT_REPO_OWNER, VERCEL_GIT_REPO_SLUG } = parsed.data;
 
 export const env = {
   ...parsed.data,
+  deployment: { onVercel: Boolean(VERCEL), environment: VERCEL_TARGET_ENV ?? VERCEL_ENV },
   selfRepo:
     VERCEL_GIT_REPO_OWNER && VERCEL_GIT_REPO_SLUG
       ? `${VERCEL_GIT_REPO_OWNER}/${VERCEL_GIT_REPO_SLUG}`
