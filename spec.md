@@ -96,7 +96,7 @@ stub the route).
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
    QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
-   Vercel Cron      ──▶│ (roadmap) periodic briefing/sweep      │      (durable)        via channel
+   Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
    (future) webhooks──▶│ external events (email)                 │
                        └────────────────────────────────────────┘
@@ -212,7 +212,8 @@ stub the route).
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` in
+  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -249,8 +250,24 @@ stub the route).
   (`lib/photon-inbound.ts`). `transcribe_audio` reads the staged audio file from the sandbox and calls
   `lib/transcription.ts`, the STT seam. `lib/transcribable-audio.ts` uses ffmpeg to convert CAF and
   other unsupported types to 16 kHz mono WAV before sending audio through the AI Gateway.
-- **Schedules** (`agent/schedules/`): none yet; the daily `briefing` is on the roadmap (Hobby-safe,
-  once a day). Periodic only — _never_ the reminder timer.
+- **Schedules** (`agent/schedules/`): periodic only — _never_ the reminder timer. A schedule has no
+  inbound auth and no thread of its own, so it reaches the owner the way the channels do: resolve
+  `homeDelivery()`, then deliver into the home thread with `turnPolicy: "queue"`, acting as the owner
+  through `ownerAuth` with its own authenticator. Vercel Cron evaluates in UTC, so `dailyCron`
+  (`lib/cron.ts`) turns a local time in `USER_TIMEZONE` into a UTC cron at build time; the zone's
+  offset is baked in, so a zone with daylight saving drifts an hour after each change until the
+  next deploy. Vercel Cron can fire a run twice, so a daily job claims its local date first with
+  `claimDay` (`lib/daily-claim.ts`, a conditional write to one private Blob pointer per job); a
+  failed claim skips the run rather than risk sending it twice.
+  - **`briefing`** (7am local, once a day, Hobby-safe). Delivers a `<briefing>` trigger built by
+    `lib/briefing.ts` from a list of section providers. Each section renders text or nothing, a
+    failing section is left out rather than failing the briefing, and section text cannot close the
+    wrapper tag. The only section today is the static guidance: check today's reminders with
+    `list_reminders` and coding sessions waiting on the owner with `list_coding_sessions`, then send
+    one short message if something is real and `stay_silent` otherwise, which is the expected
+    outcome most mornings. It is a background turn, so it schedules, starts, messages and merges
+    nothing and never waits on the owner. Later features (calendar and mail highlights, an overnight
+    browser digest) add a section to `briefingSections` without touching the schedule.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
   is the actual product surface; right-to-silence is applied to workout debriefs when they re-enter
   the user's iMessage thread.
@@ -307,6 +324,9 @@ adam/
 │   │   ├── devin.ts           # Devin v3 REST client: create/get/list/message/archive sessions
 │   │   ├── coding-sessions.ts # brief wrapper, state vocabulary, watch ticks, update messages
 │   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
+│   │   ├── briefing.ts        # morning briefing message from a list of section providers
+│   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
+│   │   ├── daily-claim.ts     # claimDay: one run per job per local date (private Vercel Blob)
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -322,7 +342,8 @@ adam/
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
-│   └── schedules/             # roadmap: briefing.ts (daily cron only); absent today
+│   └── schedules/
+│       └── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
 ├── scripts/
 │   ├── sync-riz-mcp-skill.ts
 │   └── riz-mcp-skill.lock.json
@@ -345,8 +366,8 @@ adam/
 
 ## 7. v1 scope & non-goals
 
-**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
-Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
+**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · a daily
+morning `briefing` cron into the home thread that stays silent unless something matters · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
@@ -354,7 +375,7 @@ with `transcribe_audio` · Devin coding sessions started, checked, messaged and 
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR.
 
-**Out (deferred):** daily `briefing` cron (roadmap) · Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
+**Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
@@ -418,6 +439,10 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - A watched coding session costs one QStash message a minute while Devin is busy, backing off to
   one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
   24 idle hours, about 250 messages; two such sessions would use most of the free tier.
+- The `briefing` cron fires once a day at 7am in `USER_TIMEZONE` (`0 21 * * *` for the default
+  Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
+  a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
+  `/eve/v1/dev/schedules/briefing`.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -433,7 +458,8 @@ than a one-off tool, and a vendor swap stays a one-file change. Steps only the o
 plans, OAuth consent screens, logging in to accounts) are listed so a brief can name them.
 
 1. **Google Workspace (`inbox`).** Gmail and Calendar across the owner's several Google accounts;
-   triages mail, exercises right-to-silence, schedules follow-ups, and feeds `briefing`.
+   triages mail, exercises right-to-silence, schedules follow-ups, and feeds `briefing` through
+   a section in `lib/briefing.ts`.
    - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts keyed by
      email address and take an `account` argument or search all of them. Candidate backends: the
      Google APIs directly, or Google's `gws` CLI (multi-account, has a `gws mcp` mode; labelled not an
@@ -468,7 +494,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    notifications, research, an overnight digest.
    - **Seam.** A subagent with computer-use tools over a hosted browser that keeps logins
      (Browserbase, Steel, Kernel); `lib/browser.ts` is the only file that knows the vendor. The
-     Vercel Sandbox stays for headless work. A digest is a schedule that delegates to it.
+     Vercel Sandbox stays for headless work. An overnight digest is a schedule that delegates to it,
+     or a `briefing` section that does.
    - **Risk.** X and LinkedIn prohibit automated access, and LinkedIn bans accounts for it. Keep it
      read-only, low-volume and human-paced, or use a secondary account. Least certain value and
      most risk of the three, so it comes last.
