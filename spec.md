@@ -256,8 +256,11 @@ stub the route).
     CDNs, embeds and other subresources still load; routing also turns off the HTTP cache for
     that connection). Playwright's route never sees a redirect, so every call also checks where
     the page landed and, if it is off the list, sends it to `about:blank` and reports it instead of
-    reading. Logged-in reading of another site is one entry in `browsableSites`; public pages are
-    `deep`'s. The owner's own clicks in the live view are not policed. Kernel's
+    reading. Known gap: an open redirect on an allowed host (e.g. `x.com/i/redirect?url=…`) still
+    sends one request to its target before that check reports it; the operator never builds URLs
+    from page content. Logged-in reading of another site is one entry in `browsableSites`; public
+    pages are `deep`'s. The owner's own clicks in the live view, and popups or `target=_blank` tabs
+    (the operator only reads the first page), are not policed. Kernel's
     `network.allowed_hosts` (proxy v3, every CDN listed) would be the stricter, egress-level form.
   - **Operator.** `openai/gpt-6-luna` (reading and summarising, so the cheaper model) with
     `defaultTools: false`, so it has no shell, files, web fetch or search, and no connections. Its
