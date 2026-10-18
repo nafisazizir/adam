@@ -144,16 +144,30 @@ stub the route).
     root. The memory key is derived from namespace and scope only, and the file provider stores it at
     `eve/memory/file/<key>/MEMORY.md`, so root, `coach` and `deep` read the same document. Production
     keeps one namespace across deploys (project + environment); each preview branch gets its own.
+    On Vercel without the project id or environment in system env, Eve's default would fall back to
+    a form a preview could share with production, so the resolver returns `null` and memory is off
+    (logged as `[owner-memory] Vercel project or environment unknown`).
   - **Read-only subagents.** `coach` and `deep` declare the same slot (subagents inherit nothing) and
     disable its tools with `tools/owner.ts` (`disableTool()`); recall is a lifecycle hook, so they still
-    read it. Only root writes, and only from what the owner says in chat, never from background turns
-    or untrusted content.
+    read it. Their instructions say they cannot change memories, despite the recall header naming the
+    remove tool.
+  - **Writes only from owner chat.** `guardedMemory` (`lib/memory.ts`) wraps the provider and offers
+    the save and remove tools only when `isOwnerChat` holds: the turn resolves to a delivery channel
+    (`deliveryChannelForAuth`, the gate `merge_pull_request` uses) or is `local-dev`. Workout debriefs
+    and coding-session updates carry text the owner did not write, so they can read memory but have
+    no tool to write it. Untrusted content inside a chat turn (a forwarded email, a web result) is
+    guarded by the instructions only.
   - **Storage.** Private Vercel Blob, in the same store as the home target: on Vercel Eve finds
     `BLOB_STORE_ID` (OIDC) or `BLOB_READ_WRITE_TOKEN` itself, and writes use optimistic versioning.
-    `eve dev` and evals use process-local in-memory storage. Recall that throws fails the turn, so a
-    deployment without Blob fails owner turns until a store is connected. Recall is capped at 4,000
-    characters (about 1k tokens, paid on every turn), and over-limit saves are rejected rather than
-    evicting, so the model prunes stale entries.
+    `eve dev` and evals use process-local in-memory storage. Eve fails the turn when recall throws;
+    `guardedMemory` logs `[owner-memory] recall failed` and continues without memory instead (an
+    aborted turn still throws), so a Blob outage, a missing store or a corrupt document costs recall,
+    not replies. Saves and removes still fail into the tool result.
+  - **Cost.** Recall is capped at 4,000 characters (about 1k tokens) and is one Blob read per turn per
+    agent. Eve skips a recall identical to the copy already in context, so in the long-lived iMessage
+    session the document sits in context once. Each save or remove appends a fresh copy and hides the
+    old one, which breaks the prompt cache from the old copy onward; keep the list stable and short.
+    Over-limit saves are rejected rather than evicting, so the model prunes stale entries.
 - **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam,
   the coach and the deep worker. The first Notion call parks the turn and the Photon channel's `authorization.required`
   handler texts the sign-in link; the turn resumes after consent. Runs started by a trigger without
@@ -236,7 +250,8 @@ stub the route).
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
-  the owner memory slot definition in `lib/owner-memory.ts`;
+  the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
+  write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
   `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
@@ -348,6 +363,7 @@ adam/
 │   │   ├── notion.ts          # shared Notion connection config
 │   │   ├── owner.ts           # ownerAuth plus the owner memory scope and namespace
 │   │   ├── owner-memory.ts    # the owner memory slot definition shared by root, coach and deep
+│   │   ├── memory.ts          # guardedMemory: best-effort recall, write tools only for allowed callers
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
@@ -468,7 +484,8 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - Workout analyses and nudges require a connected private Vercel Blob store and are skipped until the
   user has texted Adam once after deploy; that chat becomes the remembered home target and owner.
 - Owner memory lives in the same private Blob store, read by Eve from the store's own `BLOB_*`
-  variables; no extra setup. Without a store, turns that recall it fail, so keep the store connected.
+  variables; no extra setup. Without a store, turns run without memory and saves fail. It also needs
+  Vercel's system environment variables exposed (the default), or memory stays off.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.

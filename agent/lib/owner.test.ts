@@ -44,22 +44,40 @@ test("local development shares one scope", () => {
   );
 });
 
+const local = { onVercel: false, environment: undefined };
+
 test("root and subagents resolve the same namespace", () => {
-  const root = ownerMemoryNamespace({ appRoot: "/app", node: "__root__", slot: "owner" });
-  const coach = ownerMemoryNamespace({ appRoot: "/app", node: "coach", slot: "owner" });
+  const root = ownerMemoryNamespace({ appRoot: "/app", node: "__root__", slot: "owner" }, local);
+  const coach = ownerMemoryNamespace({ appRoot: "/app", node: "coach", slot: "owner" }, local);
   assert.equal(coach, root);
 });
 
-test("production keeps one namespace across deployments, previews get their own", (t) => {
+function withEnv(t: { after(fn: () => void): void }) {
   const saved = { ...process.env };
   t.after(() => {
     process.env = saved;
   });
-  const namespaceFor = (vars: Record<string, string>) => {
-    process.env = { ...saved, VERCEL_PROJECT_ID: "prj_adam", ...vars };
-    return ownerMemoryNamespace({ appRoot: "/app", node: "__root__", slot: "owner" });
+  return (vars: Record<string, string>) => {
+    process.env = { ...saved, ...vars };
+    return ownerMemoryNamespace(
+      { appRoot: "/app", node: "__root__", slot: "owner" },
+      { onVercel: true, environment: vars.VERCEL_ENV },
+    );
   };
-  const production = namespaceFor({ VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_1" });
-  assert.equal(namespaceFor({ VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_2" }), production);
-  assert.notEqual(namespaceFor({ VERCEL_ENV: "preview", VERCEL_GIT_COMMIT_REF: "feat/x" }), production);
+}
+
+test("production keeps one namespace across deployments, previews get their own", (t) => {
+  const namespaceFor = withEnv(t);
+  const project = { VERCEL_PROJECT_ID: "prj_adam" };
+  const production = namespaceFor({ ...project, VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_1" });
+  assert.ok(production);
+  assert.equal(namespaceFor({ ...project, VERCEL_ENV: "production", VERCEL_DEPLOYMENT_ID: "dpl_2" }), production);
+  assert.notEqual(namespaceFor({ ...project, VERCEL_ENV: "preview", VERCEL_GIT_COMMIT_REF: "feat/x" }), production);
+});
+
+test("on Vercel without the project or environment, memory is off rather than shared", (t) => {
+  const namespaceFor = withEnv(t);
+  t.mock.method(console, "warn", () => {});
+  assert.equal(namespaceFor({ VERCEL_PROJECT_ID: "", VERCEL_OIDC_TOKEN: "", VERCEL_ENV: "preview" }), null);
+  assert.equal(namespaceFor({ VERCEL_PROJECT_ID: "prj_adam" }), null);
 });
