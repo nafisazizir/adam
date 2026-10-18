@@ -51,6 +51,19 @@ export function deliveryChannelForAuth(
   return null;
 }
 
+// Only the owner reaches a chat turn (`admitSender`), and background turns (debriefs, coding updates,
+// the briefing, reminders) never resolve to a delivery channel. Gate on isOwnerChat when an action
+// needs the owner's say-so in chat, such as a confirmation; gate on isOwnerDirectChat when it hands
+// out a link that grants access to the owner's accounts (a sign-in or consent link), since in a group
+// anyone could follow it first.
+export function isOwnerChat(auth: SessionAuthContext | null | undefined): auth is SessionAuthContext {
+  return auth != null && deliveryChannelForAuth(auth) !== null;
+}
+
+export function isOwnerDirectChat(auth: SessionAuthContext | null | undefined): boolean {
+  return isOwnerChat(auth) && attribute(auth, "direct") === "true";
+}
+
 export function deliveryChannelByName(name: string): DeliveryChannel | undefined {
   return deliveryChannels.find((channel) => channel.name === name);
 }

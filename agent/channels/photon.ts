@@ -174,7 +174,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
 
     return {
       auth: ownerAuth(owner, {
-        attributes: { thread_id: message.threadId },
+        attributes: { thread_id: message.threadId, direct: isDirect ? "true" : "false" },
         authenticator: photonAuthenticator,
       }),
       context: isDirect ? [currentTimeContext()] : [currentTimeContext(), groupChatContext],
