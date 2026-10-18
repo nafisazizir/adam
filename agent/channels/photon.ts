@@ -2,15 +2,15 @@ import { photonIMessageChannel } from "eve/channels/photon";
 
 import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
-import { readHomeTarget, rememberHomeTarget } from "#lib/home-target.js";
+import { readHomeTargetState, rememberHomeTarget } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
-import { resolveAttachmentIds, unreadableInbound } from "#lib/photon-inbound.js";
+import { resolveAttachmentIds, sentOverIMessage, unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import {
   admitSender,
   type InboundSender,
-  type KnownOwner,
   ownerAuth,
+  ownerRecordLookup,
   type SenderAdmission,
 } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
@@ -22,36 +22,25 @@ const BUBBLE_GAP_MS = 400;
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// Only the owner's own direct messages rewrite the home pointer, so once read it cannot change
-// under this instance.
-let recordedOwnerId: string | undefined;
-
-async function knownOwner(): Promise<KnownOwner> {
-  if (env.OWNER_IMESSAGE_USER_ID) return { pinned: env.OWNER_IMESSAGE_USER_ID };
-  if (!recordedOwnerId) {
-    const home = await readHomeTarget();
-    if (home?.owner.issuer === photonAuthenticator) recordedOwnerId = home.owner.principalId;
-  }
-  return { recorded: recordedOwnerId };
-}
+const ownerRecord = ownerRecordLookup(readHomeTargetState, photonAuthenticator);
 
 async function admit(sender: InboundSender): Promise<SenderAdmission> {
-  let owner: KnownOwner;
-  try {
-    owner = await knownOwner();
-  } catch (error) {
-    console.warn("[photon] ignored a message; the owner could not be looked up", error);
-    return { admitted: false };
-  }
-
-  const admission = admitSender(sender, owner);
+  const handles = env.OWNER_IMESSAGE_HANDLES;
+  const admission = admitSender(sender, { handles, record: await ownerRecord.current() });
+  const who = sender.id || "an unknown sender";
+  const chat = sender.isDirect ? "direct" : "group";
   if (!admission.admitted) {
-    const who = sender.id || "an unknown sender";
-    const chat = sender.isDirect ? "direct" : "group";
-    console.warn(`[photon] ignored a message from ${who} in a ${chat} chat; not the owner`);
+    console.warn(`[photon] ignored a message from ${who} in a ${chat} chat: ${admission.reason}`);
+  } else if (admission.claimed) {
+    console.warn(`[photon] ${who} claimed ownership; no owner was recorded or configured`);
   }
   return admission;
 }
+
+const groupChatContext =
+  "This message came from a group chat, so other people read your replies. Keep the user's " +
+  "private details (health, work, money, anything from their accounts) out of it unless they " +
+  "ask you to share them here.";
 
 function firstNonEmptyLine(message: string): string | null {
   for (const line of message.split(/\r?\n/u)) {
@@ -135,7 +124,12 @@ export default withInboundMediaNormalization(photonIMessageChannel({
   async onMessage(ctx, message) {
     if (message.author.isMe) return null;
 
-    const admission = await admit({ id: message.author.userId, isDirect: ctx.thread.isDM === true });
+    const isDirect = ctx.thread.isDM === true;
+    const admission = await admit({
+      id: message.author.userId,
+      isDirect,
+      isIMessage: sentOverIMessage(message.raw),
+    });
     if (!admission.admitted) return null;
 
     try {
@@ -147,9 +141,9 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     const unreadable = unreadableInbound(message);
     if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);
 
-    const owner = { issuer: photonAuthenticator, principalId: message.author.userId };
+    const owner = { issuer: photonAuthenticator, principalId: admission.principalId };
     if (admission.updatesHome) {
-      recordedOwnerId = owner.principalId;
+      ownerRecord.remember(owner.principalId);
       try {
         await rememberHomeTarget({
           channel: "photon",
@@ -166,7 +160,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
         attributes: { thread_id: message.threadId },
         authenticator: photonAuthenticator,
       }),
-      context: [currentTimeContext()],
+      context: isDirect ? [currentTimeContext()] : [currentTimeContext(), groupChatContext],
     };
   },
 }));

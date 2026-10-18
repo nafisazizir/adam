@@ -1,7 +1,7 @@
 import type { SessionAuthContext } from "eve/context";
 import { defaultNamespace, type MemoryNamespaceContext, type MemoryScopeContext } from "eve/memory";
 
-import type { HomeOwner } from "#lib/home-target.js";
+import type { HomeOwner, HomeTargetRead } from "#lib/home-target.js";
 
 // User-scoped connections key grants by issuer and principal id, so a background run acting as the
 // owner reuses the grant the owner approved in chat instead of failing with `principal_required`.
@@ -58,21 +58,33 @@ function isVercelNamespace(namespace: string): boolean {
 export interface InboundSender {
   readonly id: string;
   readonly isDirect: boolean;
+  readonly isIMessage: boolean;
 }
 
+export type OwnerRecord =
+  | { readonly kind: "recorded"; readonly principalId: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unconfigured" }
+  | { readonly kind: "invalid"; readonly reason: string };
+
 export interface KnownOwner {
-  readonly pinned?: string;
-  readonly recorded?: string;
+  readonly handles: readonly string[];
+  readonly record: OwnerRecord;
 }
 
 export type SenderAdmission =
-  | { readonly admitted: false }
-  | { readonly admitted: true; readonly updatesHome: boolean };
+  | { readonly admitted: false; readonly reason: string }
+  | {
+      readonly admitted: true;
+      readonly principalId: string;
+      readonly claimed: boolean;
+      readonly updatesHome: boolean;
+    };
 
-// Emails compare case-insensitively; phone numbers ignore the spaces and punctuation people type.
+// Emails compare ignoring ASCII case; phone numbers ignore the spaces and punctuation people type.
 // Nothing looser, since a near-miss would hand a stranger the owner's identity.
 function canonicalHandle(handle: string): string {
-  const trimmed = handle.trim().toLowerCase();
+  const trimmed = handle.trim().replace(/[A-Z]/gu, (letter) => letter.toLowerCase());
   return trimmed.includes("@") ? trimmed : trimmed.replace(/[\s().-]/gu, "");
 }
 
@@ -80,12 +92,72 @@ export function sameHandle(a: string, b: string): boolean {
   return canonicalHandle(a) === canonicalHandle(b);
 }
 
-// With no owner known yet, the first person to text directly becomes the owner; a group chat
-// never claims it, and only a direct chat moves the home thread.
-export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
-  if (canonicalHandle(sender.id) === "") return { admitted: false };
+const rejected = (reason: string): SenderAdmission => ({ admitted: false, reason });
 
-  const ownerId = owner.pinned ?? owner.recorded;
-  const admitted = ownerId === undefined ? sender.isDirect : sameHandle(sender.id, ownerId);
-  return admitted ? { admitted, updatesHome: sender.isDirect } : { admitted };
+// Every alias of the owner acts as one principal (the recorded one, else the first listed handle)
+// so `home.owner` and user-scoped grants stay put. With no owner known at all, the first person to
+// text directly claims it; a group never does, and only a direct chat moves the home thread.
+export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
+  if (canonicalHandle(sender.id) === "") return rejected("no sender handle");
+  if (!sender.isIMessage) return rejected("not sent over iMessage");
+
+  const { handles, record } = owner;
+  if (record.kind === "invalid") return rejected(`the home pointer is unusable (${record.reason})`);
+  if (record.kind === "unconfigured" && handles.length === 0) {
+    return rejected("no Blob store and no OWNER_IMESSAGE_HANDLES, so no owner can be known");
+  }
+
+  const recorded = record.kind === "recorded" ? record.principalId : undefined;
+  const known = recorded === undefined ? handles : [...handles, recorded];
+  if (known.length === 0) {
+    return sender.isDirect
+      ? { admitted: true, principalId: sender.id, claimed: true, updatesHome: true }
+      : rejected("a group chat cannot claim ownership");
+  }
+
+  if (!known.some((handle) => sameHandle(handle, sender.id))) return rejected("not the owner");
+  return {
+    admitted: true,
+    principalId: recorded ?? handles[0]!,
+    claimed: false,
+    updatesHome: sender.isDirect,
+  };
+}
+
+export function ownerRecordFrom(read: HomeTargetRead, issuer: string): OwnerRecord {
+  switch (read.status) {
+    case "found":
+      return read.home.owner.issuer === issuer
+        ? { kind: "recorded", principalId: read.home.owner.principalId }
+        : { kind: "invalid", reason: `owner issuer is ${read.home.owner.issuer}` };
+    case "absent":
+      return { kind: "absent" };
+    case "unconfigured":
+      return { kind: "unconfigured" };
+    case "invalid":
+      return { kind: "invalid", reason: read.reason };
+  }
+}
+
+// Only the owner's own direct messages rewrite the pointer, always under the same principal, so a
+// recorded owner is cached for the life of the instance; nothing else is.
+export function ownerRecordLookup(read: () => Promise<HomeTargetRead>, issuer: string) {
+  let cached: string | undefined;
+
+  return {
+    async current(): Promise<OwnerRecord> {
+      if (cached !== undefined) return { kind: "recorded", principalId: cached };
+      let record: OwnerRecord;
+      try {
+        record = ownerRecordFrom(await read(), issuer);
+      } catch (error) {
+        record = { kind: "invalid", reason: error instanceof Error ? error.message : String(error) };
+      }
+      if (record.kind === "recorded") cached = record.principalId;
+      return record;
+    },
+    remember(principalId: string): void {
+      cached = principalId;
+    },
+  };
 }

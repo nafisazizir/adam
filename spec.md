@@ -131,19 +131,30 @@ stub the route).
   messaged from and who they are, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging
   surface is a channel file plus one entry here.
 - **Only the owner** (`admitSender` in `agent/lib/owner.ts`): the photon `onMessage` drops every
-  message not from the owner (returns `null` and logs the sender's handle, never the content), so
-  no one else starts a turn, steers one, answers a confirmation, or moves the home pointer. The owner
-  is `OWNER_IMESSAGE_USER_ID` when set, otherwise the `owner.principalId` already in the home pointer,
-  otherwise the first person to text Adam directly; the photon principal id is the sender's iMessage
-  handle (`message.author.userId`: a phone number such as `+61412345678` or an Apple ID email).
-  Handles compare exactly, apart from case for emails and spacing and punctuation for numbers. Only
-  a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's `isDM`
-  (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores everyone
-  else's; a sign-in link is never posted there, Adam asks the owner to text directly instead. If the
-  Blob read fails while no override is set, messages are dropped rather than let through. Without a
-  Blob store or an override nothing records the owner across instances, so set the override there.
-  Because only the owner reaches a photon turn, `deliveryChannelForAuth` resolving a photon auth
-  still means "the owner is chatting", which the owner-chat gates rely on.
+  message not from the owner (returns `null` and logs the sender's handle and the reason, never the
+  content), so no one else starts a turn, steers one, answers a confirmation, or moves the home
+  pointer. A handle is the sender's iMessage address as Photon reports it (`message.author.userId`):
+  a phone number in E.164 with country code (`+61412345678`) or an Apple ID email, and the two are
+  different handles. The owner's handles are any listed in `OWNER_IMESSAGE_HANDLES`
+  (comma-separated) plus the `owner.principalId` in the home pointer; with neither, the first person
+  to text Adam directly claims ownership, logged as `[photon] <handle> claimed ownership`. Whichever
+  alias writes, Adam acts as one principal, the pointer's `principalId` or else the first listed
+  handle, so `home.owner` and user-scoped Connect grants never move; only the home thread follows
+  the latest direct chat. Handles compare exactly, apart from ASCII case for emails and spacing and
+  punctuation for numbers. Only a 404 counts as "no owner yet": a pointer that is not JSON, fails
+  the schema, names another issuer, or cannot be read drops every message, and without a Blob store
+  only listed handles get in. A recorded owner is cached per instance; nothing else is.
+  Only iMessage senders get in: Apple authenticates a handle, while an SMS or RCS originator can be
+  spoofed. `sentOverIMessage` in `lib/photon-inbound.ts` reads the sender's `service`, falling back
+  to the webhook's `platform`, and fails closed when neither says iMessage, so the owner's own SMS
+  fallback during an iMessage outage is dropped too. Photon's webhook documents only `platform`, so
+  an SMS that Photon labels `iMessage` would still pass; the line is an iMessage line.
+  Only a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's
+  `isDM` (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores
+  everyone else's; its context says others can read the replies, and a sign-in link is never posted
+  there, Adam asks the owner to text directly instead. Because only the owner reaches a photon
+  turn, `deliveryChannelForAuth` resolving a photon auth still means "the owner is chatting", which
+  the owner-chat gates rely on.
 - **Acting as the owner** (`agent/lib/owner.ts`): `ownerAuth(owner, source)` builds a user-principal
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
   User-scoped connections key grants by issuer and principal id, so workout runs reuse the grant the
@@ -465,7 +476,7 @@ BASE_URL=...                        # app's public origin, e.g. https://adam.ver
 IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
 IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
-OWNER_IMESSAGE_USER_ID=...          # optional; the owner's iMessage handle, else the one in the home pointer, else the first direct sender
+OWNER_IMESSAGE_HANDLES=...          # optional; the owner's E.164 numbers and Apple ID emails, comma-separated, admitted alongside the home pointer's owner
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
@@ -506,8 +517,11 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   variables; no extra setup. Without a store, turns run without memory and saves fail. It also needs
   Vercel's system environment variables exposed (the default), or memory stays off.
 - Adam answers only its owner (see "Only the owner" in §4). With the home pointer already holding
-  the owner nothing needs setting. To change number, or to run without a Blob store, set
-  `OWNER_IMESSAGE_USER_ID` to the handle the logs show for your ignored message.
+  the owner nothing needs setting. To text from another handle (a second number, the Apple ID
+  email), or to run without a Blob store, list it in `OWNER_IMESSAGE_HANDLES`; the logs show the
+  handle of every ignored message. Adding an alias keeps the recorded principal and its Notion
+  grant. Replacing the owner means deleting `home-target.json`, and then Notion has to be
+  connected again, since grants follow the principal.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.
