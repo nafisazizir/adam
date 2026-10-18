@@ -19,3 +19,7 @@ signals:
 - trend: squat estimated 1RM up for the fourth straight session
 - pr or regression: back squat 3-rep PR, 140 kg
 - recovery: none`;
+
+export function debriefWithNextSession(nextSession: string): string {
+  return `${onPlanRunDebrief}\nnext session: ${nextSession}`;
+}

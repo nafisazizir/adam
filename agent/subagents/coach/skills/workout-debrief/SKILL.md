@@ -61,9 +61,12 @@ signals:
 - trend: <a recent trend continued or broken, or "none">
 - pr or regression: <a personal best or a clear regression, or "none">
 - recovery: <recovery data saying the session was a bad idea or should change the next one, or "none">
+next session: <what> | <local date and time, or "unscheduled">
 ```
 
 Fill a signal only when it is real and specific, and include the number that shows it. A routine session that went to plan has "none" for all four. Write that rather than stretching something minor into a signal.
+
+The `next session:` line is not a signal. Fill the time only when the plan page, its notes or the workout data state a concrete date and clock time for the next session, written as a full local date and time (for example `Saturday 3 October 2026, 6:00 am`). A day without a clock time, a habit, or a guess is `unscheduled`. Never invent or infer a time, and never ask for one.
 
 If you couldn't write the page, still return the debrief and give the reason on the `notion:` line.
 

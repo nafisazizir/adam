@@ -117,7 +117,9 @@ stub the route).
   `strava:<id>` or `hevy:<id>`. Strava activity details are fetched through riz-mcp; `WeightTraining`
   and `Walk` activities are deterministically skipped, matching riz-mcp. The session delegates to
   `coach` and returns its debrief. A completed coach response queues one nudge to the user's home
-  iMessage thread; root Adam applies right-to-silence there.
+  iMessage thread; root Adam applies right-to-silence there. The debrief ends with a
+  `next session: <what> | <local time or "unscheduled">` line, filled only from a concrete time in the plan;
+  root then calls `schedule_reminder` for 15 minutes before it, silently.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
@@ -563,8 +565,9 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    `coach` and `deep`. Remaining: give the voice front end (item 2) the same facts at call start, and
    move to Supermemory or Upstash only if a short document stops being enough and semantic recall is
    needed.
-5. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Pre-session reminders
-   based on its recommendations, about 15 minutes before the next workout, remain roadmap.
+5. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Done: pre-session
+   reminders, about 15 minutes before the next workout, scheduled by root through `schedule_reminder` when the
+   debrief carries a concrete next-session time (the plan has no clock times, so otherwise nothing is scheduled).
 6. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
    plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
    (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
