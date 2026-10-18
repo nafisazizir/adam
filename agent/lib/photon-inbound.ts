@@ -91,3 +91,18 @@ export function unreadableInbound(message: {
     })),
   };
 }
+
+function field(node: unknown, key: string): unknown {
+  return typeof node === "object" && node !== null ? (node as ContentNode)[key] : undefined;
+}
+
+const spoofableServices = new Set(["sms", "rcs"]);
+
+// Apple authenticates an iMessage handle; an SMS or RCS originator can be spoofed. Photon's webhook
+// sender carries only `platform`, the gateway's sender also `service`. Only a sender explicitly marked
+// as another service is refused: failing closed on a missing field would lock the owner out.
+export function sentOverAnotherService(raw: unknown): boolean {
+  const sender = field(raw, "sender");
+  const service = field(sender, "service") ?? field(sender, "platform") ?? field(raw, "platform");
+  return typeof service === "string" && spoofableServices.has(service.toLowerCase());
+}

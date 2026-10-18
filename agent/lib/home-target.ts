@@ -50,21 +50,54 @@ export async function rememberHomeTarget(home: HomeTarget): Promise<void> {
   lastWrittenJson = json;
 }
 
-export async function readHomeTarget(): Promise<HomeTarget | null> {
+// The first owner is claimed with `allowOverwrite: false`, so when two people text a fresh install
+// at once only one write lands and the other claim fails.
+export async function claimHomeTarget(home: HomeTarget): Promise<void> {
   const blobToken = token();
-  if (!blobToken) return null;
+  if (!blobToken) throw new Error("Vercel Blob is not configured");
+
+  const json = JSON.stringify(home);
+  await put(pathname, json, {
+    access: "private",
+    addRandomSuffix: false,
+    allowOverwrite: false,
+    contentType: "application/json",
+    token: blobToken,
+  });
+  lastWrittenJson = json;
+}
+
+export type HomeTargetRead =
+  | { readonly status: "found"; readonly home: HomeTarget }
+  | { readonly status: "absent" }
+  | { readonly status: "unconfigured" }
+  | { readonly status: "invalid"; readonly reason: string };
+
+// Only a 404 is "absent": callers deciding who the owner is must not mistake a broken pointer for
+// a fresh install.
+export async function readHomeTargetState(): Promise<HomeTargetRead> {
+  const blobToken = token();
+  if (!blobToken) return { status: "unconfigured" };
 
   const result = await get(pathname, { access: "private", token: blobToken });
-  if (result?.statusCode !== 200) return null;
+  if (result === null) return { status: "absent" };
+  if (result.statusCode !== 200) return { status: "invalid", reason: `status ${result.statusCode}` };
 
   const text = await new Response(result.stream).text();
   let payload: unknown;
   try {
     payload = JSON.parse(text);
   } catch {
-    return null;
+    return { status: "invalid", reason: "not JSON" };
   }
 
   const parsed = homeTargetSchema.safeParse(payload);
-  return parsed.success ? parsed.data : null;
+  return parsed.success
+    ? { status: "found", home: parsed.data }
+    : { status: "invalid", reason: "does not match the home target schema" };
+}
+
+export async function readHomeTarget(): Promise<HomeTarget | null> {
+  const read = await readHomeTargetState();
+  return read.status === "found" ? read.home : null;
 }

@@ -2,11 +2,22 @@ import { photonIMessageChannel } from "eve/channels/photon";
 
 import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
-import { rememberHomeTarget } from "#lib/home-target.js";
+import {
+  claimHomeTarget,
+  type HomeTarget,
+  readHomeTargetState,
+  rememberHomeTarget,
+} from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
-import { resolveAttachmentIds, unreadableInbound } from "#lib/photon-inbound.js";
+import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
-import { ownerAuth } from "#lib/owner.js";
+import {
+  admitSender,
+  type InboundSender,
+  ownerAuth,
+  ownerRecordLookup,
+  type SenderAdmission,
+} from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
 
 export const photonAdapterName = "imessage";
@@ -15,6 +26,35 @@ export const photonAuthenticator = "photon-imessage";
 const BUBBLE_GAP_MS = 400;
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+const ownerRecord = ownerRecordLookup(readHomeTargetState, photonAuthenticator);
+
+async function admit(sender: InboundSender): Promise<SenderAdmission> {
+  const handles = env.OWNER_IMESSAGE_HANDLES;
+  const admission = admitSender(sender, { handles, record: await ownerRecord.current() });
+  const who = sender.id || "an unknown sender";
+  const chat = sender.isDirect ? "direct" : "group";
+  if (!admission.admitted) {
+    console.warn(`[photon] ignored a message from ${who} in a ${chat} chat: ${admission.reason}`);
+  }
+  return admission;
+}
+
+async function claim(home: HomeTarget): Promise<boolean> {
+  const who = home.owner.principalId;
+  const claimed = await ownerRecord.claim(who, () => claimHomeTarget(home));
+  console.warn(
+    claimed
+      ? `[photon] ${who} claimed ownership; no owner was recorded or configured`
+      : `[photon] ignored a message from ${who}: the ownership claim was not written`,
+  );
+  return claimed;
+}
+
+const groupChatContext =
+  "This message came from a group chat, so other people read your replies. Keep the user's " +
+  "private details (health, work, money, anything from their accounts) out of it unless they " +
+  "ask you to share them here.";
 
 function firstNonEmptyLine(message: string): string | null {
   for (const line of message.split(/\r?\n/u)) {
@@ -31,10 +71,19 @@ export default withInboundMediaNormalization(photonIMessageChannel({
   }),
   webhookSecret: env.IMESSAGE_WEBHOOK_SECRET,
   events: {
-    // A Photon thread is a 1:1 chat with the owner, so the sign-in link can go straight into it.
+    // Only the owner gets through, so a direct thread is theirs alone; in a group anyone could
+    // follow the link and connect their own account in the owner's name. Asks the adapter because
+    // a thread rebuilt for a background delivery always claims it is not a DM.
     async "authorization.required"(event, channel) {
       const { url, instructions, userCode, displayName } = event.authorization ?? {};
       if (!channel.thread || (!url && !instructions)) return;
+
+      if (!channel.bot.getAdapter(photonAdapterName).isDM(channel.thread.id)) {
+        await channel.thread.post({
+          markdown: `I need you to connect ${displayName ?? event.name} first. Text me directly and ask again.`,
+        });
+        return;
+      }
 
       const lines = [
         `I need you to connect ${displayName ?? event.name} before I can carry on.`,
@@ -89,6 +138,22 @@ export default withInboundMediaNormalization(photonIMessageChannel({
   async onMessage(ctx, message) {
     if (message.author.isMe) return null;
 
+    const isDirect = ctx.thread.isDM === true;
+    const admission = await admit({
+      id: message.author.userId,
+      isDirect,
+      isIMessage: !sentOverAnotherService(message.raw),
+    });
+    if (!admission.admitted) return null;
+
+    const owner = { issuer: photonAuthenticator, principalId: admission.principalId };
+    const home: HomeTarget = {
+      channel: "photon",
+      target: { threadId: message.threadId, adapterName: photonAdapterName },
+      owner,
+    };
+    if (admission.claimed && !(await claim(home))) return null;
+
     try {
       await resolveAttachmentIds(message.raw, (ctx.thread.adapter as { app?: unknown }).app);
     } catch (error) {
@@ -98,15 +163,13 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     const unreadable = unreadableInbound(message);
     if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);
 
-    const owner = { issuer: photonAuthenticator, principalId: message.author.userId };
-    try {
-      await rememberHomeTarget({
-        channel: "photon",
-        target: { threadId: message.threadId, adapterName: photonAdapterName },
-        owner,
-      });
-    } catch (error) {
-      console.warn("[photon] failed to remember home target", error);
+    if (admission.updatesHome && !admission.claimed) {
+      ownerRecord.remember(owner.principalId);
+      try {
+        await rememberHomeTarget(home);
+      } catch (error) {
+        console.warn("[photon] failed to remember home target", error);
+      }
     }
 
     return {
@@ -114,7 +177,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
         attributes: { thread_id: message.threadId },
         authenticator: photonAuthenticator,
       }),
-      context: [currentTimeContext()],
+      context: isDirect ? [currentTimeContext()] : [currentTimeContext(), groupChatContext],
     };
   },
 }));

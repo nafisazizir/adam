@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionAuthContext } from "eve/context";
 
-import { ownerAuth, ownerMemoryNamespace, ownerMemoryScope } from "#lib/owner.js";
+import type { HomeTargetRead } from "#lib/home-target.js";
+import {
+  admitSender,
+  type OwnerRecord,
+  ownerAuth,
+  ownerMemoryNamespace,
+  ownerMemoryScope,
+  ownerRecordLookup,
+  sameHandle,
+} from "#lib/owner.js";
 
 const owner = { issuer: "photon-imessage", principalId: "user-1" };
 
@@ -80,4 +89,177 @@ test("on Vercel without the project or environment, memory is off rather than sh
   t.mock.method(console, "warn", () => {});
   assert.equal(namespaceFor({ VERCEL_PROJECT_ID: "", VERCEL_OIDC_TOKEN: "", VERCEL_ENV: "preview" }), null);
   assert.equal(namespaceFor({ VERCEL_PROJECT_ID: "prj_adam" }), null);
+});
+
+const issuer = owner.issuer;
+const phone = "+61412345678";
+const email = "owner@icloud.com";
+const stranger = "+61499999999";
+const direct = (id: string) => ({ id, isDirect: true, isIMessage: true });
+const group = (id: string) => ({ id, isDirect: false, isIMessage: true });
+const absent: OwnerRecord = { kind: "absent" };
+const recorded = (principalId: string): OwnerRecord => ({ kind: "recorded", principalId });
+const none = { handles: [], record: absent };
+
+test("with no owner known, the first direct sender claims it", () => {
+  assert.deepEqual(admitSender(direct(stranger), none), {
+    admitted: true,
+    principalId: stranger,
+    claimed: true,
+    updatesHome: true,
+  });
+});
+
+test("a group chat never claims ownership", () => {
+  assert.equal(admitSender(group(stranger), none).admitted, false);
+});
+
+test("rejects anyone but the recorded owner", () => {
+  const owner = { handles: [], record: recorded(phone) };
+  assert.equal(admitSender(direct(stranger), owner).admitted, false);
+  assert.deepEqual(admitSender(direct(phone), owner), {
+    admitted: true,
+    principalId: phone,
+    claimed: false,
+    updatesHome: true,
+  });
+});
+
+test("a phone number and an email of the same person are different handles", () => {
+  assert.equal(admitSender(direct(email), { handles: [], record: recorded(phone) }).admitted, false);
+});
+
+test("every listed alias acts as the recorded principal when it is listed", () => {
+  const owner = { handles: [email, phone], record: recorded(phone) };
+  const admission = admitSender(direct(email), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+  assert.equal(admitSender(direct(phone), owner).admitted, true);
+  assert.equal(admitSender(direct(stranger), owner).admitted, false);
+});
+
+test("a handle list that leaves the recorded owner out locks them out and takes over", () => {
+  const owner = { handles: [phone], record: recorded(stranger) };
+  assert.equal(admitSender(direct(stranger), owner).admitted, false);
+  const admission = admitSender(direct(phone), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+});
+
+test("a listed handle used as the principal is canonical", () => {
+  const owner = { handles: ["+61 412 345 678", email], record: absent };
+  const admission = admitSender(direct(email), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+  const emailFirst = admitSender(direct(phone), { handles: ["Owner@iCloud.com", phone], record: absent });
+  assert.ok(emailFirst.admitted);
+  assert.equal(emailFirst.principalId, email);
+});
+
+test("with no pointer, listed handles act as the first one and nobody else can claim", () => {
+  const owner = { handles: [phone, email], record: absent };
+  const admission = admitSender(direct(email), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+  assert.equal(admission.claimed, false);
+  assert.equal(admitSender(direct(stranger), owner).admitted, false);
+});
+
+test("in a group only the owner gets through, and the home thread stays put", () => {
+  for (const owner of [{ handles: [], record: recorded(phone) }, { handles: [phone], record: absent }]) {
+    const admission = admitSender(group(phone), owner);
+    assert.ok(admission.admitted);
+    assert.equal(admission.updatesHome, false);
+    assert.equal(admitSender(group(stranger), owner).admitted, false);
+  }
+});
+
+test("an unusable pointer drops everyone, even a listed handle", () => {
+  const record: OwnerRecord = { kind: "invalid", reason: "not JSON" };
+  assert.equal(admitSender(direct(stranger), { handles: [], record }).admitted, false);
+  assert.equal(admitSender(direct(phone), { handles: [phone], record }).admitted, false);
+});
+
+test("without a Blob store only listed handles get in", () => {
+  const record: OwnerRecord = { kind: "unconfigured" };
+  assert.equal(admitSender(direct(stranger), { handles: [], record }).admitted, false);
+  assert.equal(admitSender(direct(phone), { handles: [phone], record }).admitted, true);
+});
+
+test("rejects senders with no handle or not on iMessage", () => {
+  assert.equal(admitSender(direct(""), none).admitted, false);
+  assert.equal(admitSender(direct("  "), { handles: [], record: recorded(phone) }).admitted, false);
+  const sms = { id: phone, isDirect: true, isIMessage: false };
+  assert.equal(admitSender(sms, { handles: [phone], record: recorded(phone) }).admitted, false);
+});
+
+test("matches handles across formatting but not across near-misses", () => {
+  assert.ok(sameHandle("+61 412 345 678", phone));
+  assert.ok(sameHandle("Owner@iCloud.com ", email));
+  assert.ok(!sameHandle("first-last@icloud.com", "firstlast@icloud.com"));
+  assert.ok(!sameHandle("+61412345679", phone));
+  assert.ok(!sameHandle("Kate@icloud.com", "kate@icloud.com"));
+});
+
+function fakeStore(...reads: (HomeTargetRead | Error)[]) {
+  let calls = 0;
+  const read = async () => {
+    const next = reads[Math.min(calls++, reads.length - 1)]!;
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  return { read, calls: () => calls };
+}
+
+const found = (principalId: string, ownerIssuer = issuer): HomeTargetRead => ({
+  status: "found",
+  home: { channel: "photon", target: {}, owner: { issuer: ownerIssuer, principalId } },
+});
+
+test("a failed Blob read is unusable, not absent", async () => {
+  const lookup = ownerRecordLookup(fakeStore(new Error("blob down")).read, issuer);
+  assert.deepEqual(await lookup.current(), { kind: "invalid", reason: "blob down" });
+});
+
+test("a pointer from another issuer is unusable", async () => {
+  const lookup = ownerRecordLookup(fakeStore(found(phone, "slack")).read, issuer);
+  assert.equal((await lookup.current()).kind, "invalid");
+});
+
+test("only a 404 means no owner yet", async () => {
+  const invalid: HomeTargetRead = { status: "invalid", reason: "not JSON" };
+  assert.equal((await ownerRecordLookup(fakeStore(invalid).read, issuer).current()).kind, "invalid");
+  const missing = ownerRecordLookup(fakeStore({ status: "absent" }).read, issuer);
+  assert.equal((await missing.current()).kind, "absent");
+});
+
+test("caches a recorded owner but retries everything else", async () => {
+  const store = fakeStore(new Error("blob down"), { status: "absent" }, found(phone), found(stranger));
+  const lookup = ownerRecordLookup(store.read, issuer);
+  assert.equal((await lookup.current()).kind, "invalid");
+  assert.equal((await lookup.current()).kind, "absent");
+  assert.deepEqual(await lookup.current(), recorded(phone));
+  assert.deepEqual(await lookup.current(), recorded(phone));
+  assert.equal(store.calls(), 3);
+});
+
+test("a claim is remembered without another read", async () => {
+  const store = fakeStore({ status: "absent" });
+  const lookup = ownerRecordLookup(store.read, issuer);
+  lookup.remember(phone);
+  assert.deepEqual(await lookup.current(), recorded(phone));
+  assert.equal(store.calls(), 0);
+});
+
+test("a claim is cached only once it is written", async () => {
+  const store = fakeStore({ status: "absent" });
+  const lookup = ownerRecordLookup(store.read, issuer);
+  const taken = async () => {
+    throw new Error("blob already exists");
+  };
+  assert.equal(await lookup.claim(stranger, taken), false);
+  assert.equal((await lookup.current()).kind, "absent");
+  assert.equal(await lookup.claim(phone, async () => {}), true);
+  assert.deepEqual(await lookup.current(), recorded(phone));
+  assert.equal(store.calls(), 1);
 });
