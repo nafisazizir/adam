@@ -15,7 +15,7 @@ import { env } from "#lib/env.js";
 import { googleAccountRegistry, type GoogleAccountRegistry, normalizeAccountLabel } from "#lib/google-accounts.js";
 import { blobGoogleAccountStore } from "#lib/google-accounts-store.js";
 import type { HomeOwner } from "#lib/home-target.js";
-import { memoryCache, sharedCache, type SharedCache } from "#lib/shared-cache.js";
+import { memoryCache, secretCache, type SharedCache } from "#lib/shared-cache.js";
 import { startOfLocalDay } from "#lib/zoned-time.js";
 
 const userinfoUrl = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -584,7 +584,7 @@ export interface GoogleWorkspaceDeps {
 export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   const { connector, accounts: registry, timeZone } = deps;
   const connect = deps.connect ?? vercelConnect;
-  const tokenCache = deps.tokenCache ?? sharedCache;
+  const tokenCache = deps.tokenCache ?? secretCache;
   const request = deps.fetch ?? ((input, init) => fetch(input, init));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const addresses = deps.addressCache ?? memoryCache();
@@ -966,8 +966,19 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       return { disconnected: true, account: account.label, hadGrant };
     },
 
+    // Null only when every account answered or needs connecting; a transient failure throws, so a
+    // caller can retry instead of treating the address as unknown.
     async accountWithAddress(owner: GoogleOwner | null, address: string): Promise<string | null> {
-      return (await withAddress(await accountsOf(owner), address))?.label ?? null;
+      let failure: unknown;
+      for (const account of await accountsOf(owner)) {
+        try {
+          if (sameAddress(await addressOf(account), address)) return account.label;
+        } catch (error) {
+          if (!(error instanceof GoogleNeedsConnectingError)) failure ??= error;
+        }
+      }
+      if (failure !== undefined) throw failure;
+      return null;
     },
 
     async searchEmail(

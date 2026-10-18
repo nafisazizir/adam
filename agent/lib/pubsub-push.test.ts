@@ -92,3 +92,29 @@ test("a malformed push yields nothing", () => {
   assert.equal(parseMailboxNotification(envelope({ emailAddress: "me@gmail.example" })), null);
   assert.equal(parseMailboxNotification(envelope({ emailAddress: "me@gmail.example", historyId: "12a" })), null);
 });
+
+test("an HS256 token is refused, even one keyed with the published key material", async () => {
+  const secret = new TextEncoder().encode(JSON.stringify(googleJwk));
+  const token = await new SignJWT({ email: serviceAccount, email_verified: true })
+    .setProtectedHeader({ alg: "HS256", kid: "google-1" })
+    .setIssuer("https://accounts.google.com")
+    .setAudience(audience)
+    .setIssuedAt()
+    .setExpirationTime("1h")
+    .sign(secret);
+  assert.equal(await isAuthenticPush(`Bearer ${token}`, verifier), false);
+});
+
+test("an unsigned alg none token is refused", async () => {
+  const encode = (part: unknown) => Buffer.from(JSON.stringify(part)).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const token = `${encode({ alg: "none", typ: "JWT" })}.${encode({
+    iss: "https://accounts.google.com",
+    aud: audience,
+    email: serviceAccount,
+    email_verified: true,
+    iat: now,
+    exp: now + 3600,
+  })}.`;
+  assert.equal(await isAuthenticPush(`Bearer ${token}`, verifier), false);
+});

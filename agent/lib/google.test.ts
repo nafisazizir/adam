@@ -799,3 +799,19 @@ test("the current history id comes from the mailbox profile", async () => {
   );
   assert.equal(await workspace(personal, connect, impl).currentHistoryId(owner, "personal"), "555");
 });
+
+test("an address names its account, and an unconnected account does not hide the match", async () => {
+  const { connect } = fakeConnect({ work: "token-work" });
+  const { impl } = fakeFetch(addresses({ "token-work": "me@work.example" }));
+  const google = workspace(both, connect, impl);
+  assert.equal(await google.accountWithAddress(owner, "ME@work.example"), "work");
+  assert.equal(await google.accountWithAddress(owner, "nobody@example.com"), null);
+});
+
+test("a transient failure looking up an address is thrown, not reported as unknown", async () => {
+  const { connect } = fakeConnect({ personal: "token-personal" });
+  const { impl } = fakeFetch((url) =>
+    url.hostname === "openidconnect.googleapis.com" ? new Response("unavailable", { status: 503 }) : undefined,
+  );
+  await assert.rejects(workspace(personal, connect, impl).accountWithAddress(owner, "me@gmail.example"), /503/u);
+});

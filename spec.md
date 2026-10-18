@@ -342,8 +342,8 @@ stub the route).
     looked up once more against the store, since another instance may have just added it. A read
     that misses the cache backfills it only if no write has cached a newer list meanwhile. A
     corrupt document fails the Google tools loudly rather than reading as empty. Besides the list,
-    the only Google state Adam keeps is each mailbox's history id for new-mail triggers, and access
-    tokens live briefly in Runtime Cache.
+    the only Google state Adam keeps is each mailbox's history cursor and recently delivered ids for
+    new-mail triggers, and access tokens live briefly, sealed, in Runtime Cache.
   - **Consent.** `connect_google_account(account)` (the owner's direct chat only, through
     `ownerLinkRefusal` in `lib/connection-auth.ts` on `isOwnerDirectChat`: in a group anyone could
     open the link first and connect their own account as the owner's) takes the owner's own name for
@@ -383,11 +383,15 @@ stub the route).
     falls back to HTML as text, trims quoted replies, caps the body at 8k characters and lists
     attachments without fetching them.
   - **Tokens.** Connect bills per token request and its SDK caches only per instance, so each
-    account's access token is kept in Vercel Runtime Cache (`lib/shared-cache.ts` over
-    `@vercel/functions` `getCache`, shared by every instance in the region and scoped to the project
-    and environment) for its lifetime less five minutes; a token with under a minute left after that
-    margin is not cached. Off Vercel `getCache` falls back to a per-process cache, and a cache
-    failure reads as a miss. A 401 drops the cached token, asks Connect again with `forceRefresh`
+    account's access token is kept in Vercel Runtime Cache for its lifetime less five minutes; a
+    token with under a minute left after that margin is not cached. Runtime Cache is shared by every
+    instance in a region and split by environment, but on Hobby every project in the team shares
+    one cache, and Vercel documents no encryption at rest. So tokens go through `secretCache`
+    (`lib/shared-cache.ts`): values are sealed with AES-256-GCM, bound to their key, and key names are
+    HMACs, both under keys derived with HKDF from `QSTASH_CURRENT_SIGNING_KEY`, so no new secret is
+    needed; rotating that key only turns cached entries into misses. Key hashing is SHA-256 rather
+    than `getCache`'s 32-bit default. Off Vercel `getCache` falls back to a per-process cache, and a
+    cache failure reads as a miss. A 401 drops the cached token, asks Connect again with `forceRefresh`
     and retries once; a 401 on the fresh token means the account needs connecting. 429, 5xx and
     Gmail's 403 rate limits retry once.
   - **For new-mail triggers.** `watchMailbox` (Gmail `users.watch` on the inbox to a Pub/Sub topic),
@@ -403,37 +407,58 @@ stub the route).
     last rule is instruction only; `renderOutbound` does not know which urls came from mail.
 - **New mail** (`agent/channels/mail.ts`): new inbox mail is a trigger, the way a finished
   workout is. Gmail's `users.watch` publishes to a Cloud Pub/Sub topic, whose push subscription
-  POSTs to `/eve/v1/mail/push`.
+  POSTs to `/eve/v1/mail/push`. The channel only wires dependencies; the route logic lives in
+  `lib/mail-routes.ts` (`mailPushHandler`, `mailRunHandler`), where it is unit-tested.
   - **Push.** `lib/pubsub-push.ts` is the only file that knows Pub/Sub: it verifies the push's OIDC
-    token with `jose` (signed by a key from Google's JWKS, issuer `accounts.google.com`, audience
-    `mailPushUrl` derived from `BASE_URL`, `email` equal to `GOOGLE_PUSH_SERVICE_ACCOUNT` with
-    `email_verified`, unexpired) and decodes the `{ emailAddress, historyId }` payload. Without
-    `GOOGLE_PUSH_SERVICE_ACCOUNT` every push is refused. An authentic but malformed push is
-    acknowledged, so Pub/Sub does not redeliver it. The route does no Google call and answers fast.
-  - **Coalescing.** Gmail pushes on every inbox change, read marks included, so the route only
-    publishes one QStash callback to `/eve/v1/mail/process` per mailbox per minute
-    (`coalescedMailRun` in `lib/new-mail.ts`: deduplication id `mail-<address>-<minute>`, delay 60
-    seconds). A Runtime Cache marker skips the publish for a minute already queued, so a burst costs
-    one QStash message.
+    token with `jose` (RS256 only, signed by a key from Google's JWKS, issuer `accounts.google.com`,
+    audience `mailPushUrl` derived from `BASE_URL`, `email` equal to `GOOGLE_PUSH_SERVICE_ACCOUNT`
+    with `email_verified`, unexpired) and decodes the `{ emailAddress, historyId }` payload. Without
+    `GOOGLE_PUSH_SERVICE_ACCOUNT` every push is refused. An authentic but malformed push (for
+    example with Pub/Sub payload unwrapping on) is acknowledged and logged, so Pub/Sub does not
+    redeliver it. The route makes no Google call and answers fast; a failed QStash publish is a 500,
+    so Pub/Sub retries.
+  - **Coalescing.** Gmail pushes on every inbox change, read marks included. All pushes for a
+    mailbox in one three-minute window share a QStash deduplication id (`mail-<address>-<window>`)
+    and one run five seconds after the window closes (`coalescedMailRun` in `lib/new-mail.ts`), so a
+    burst is one run and runs for a mailbox are a window apart. A `secretCache` marker skips the
+    publish for a window already queued. `takeDailyMailRun` caps each mailbox at 120 runs a local
+    day (best effort, a cache counter), logs when it is reached, and drops pushes until the next day,
+    whose first run catches up from history; mail can then never spend the QStash budget reminders
+    and coding watches need.
   - **Process.** The signed callback maps the address to an account with `accountWithAddress` as
-    the home owner, then `processMailbox` reads the account's state from private Blob
-    (`mailboxes/<account>.json`, `{ historyId, pending? }`, conditional writes through
-    `lib/mailbox-state-store.ts`), lists inbox messages added since that history id (up to five
-    pages, the newest 30 ids), and fetches their summaries. `mightMatter` keeps unread mail in
-    Primary (or with no category), and Updates or Forums mail only when Gmail marks it important;
-    Promotions and Social never trigger. The newest ten that remain become one `<new_email>`
-    trigger (`newEmailMessage`, each email in `<email_content>`, look-alike `new_email` tags
-    stripped) delivered to the home thread as the owner (`mailAuth`, authenticator `mail`,
+    the home owner (a transient lookup failure throws, so it is a 500 and QStash retries, rather
+    than "unknown mailbox"). `processMailbox` lists inbox messages added since the cursor (up to five
+    pages, the newest 30 ids; when history has more pages it logs that and reads the newest unread
+    inbox mail instead), and fetches their summaries. `mightMatter` keeps unread mail in Primary (or
+    with no category), and Updates or Forums mail only when Gmail marks it important; Promotions and
+    Social never trigger. The newest ten that remain become one `<new_email>` trigger
+    (`newEmailMessage`; each field is stripped of both `email_content` and `new_email` look-alikes
+    in one looped pass, `untrusted(…, ["new_email"])`, so a sender cannot rebuild one tag out of the
+    other) delivered to the home thread as the owner (`mailAuth`, authenticator `mail`,
     `turnPolicy: "queue"`), where root decides to text or `stay_silent`. A history id too old to
     replay (Gmail's 404) resets to the profile's current one and skips; a mailbox with no stored
     state starts from its current history id.
-  - **Exactly once, mostly.** The new history id and the ids about to be delivered (`pending`) are
-    written in one conditional write before delivery, so a concurrent run backs off and a failed
-    delivery (500, so QStash retries) stays pending for the retry or the next run instead of being
-    lost; the pending ids are cleared after delivery. Only a Blob failure between delivering and
-    clearing can send the same mail twice. An account that needs connecting is logged and skipped,
-    never signed in.
-  - **Watch renewal** is the `mail-watch` schedule (below).
+  - **State, and the Blob budget.** The cursor every run reads is a `secretCache` entry
+    (`{ historyId, checkpointedAt, openClaim }`). Private Blob (`mailboxes/<account>.json` through
+    `lib/mailbox-state-store.ts`, conditional writes) is read only on a cache miss, when a run has
+    noteworthy mail to claim, when a claim is open, or when a checkpoint is due, and written only to
+    claim mail and as a checkpoint at most every six hours. A quiet run touches no Blob at all. On a
+    cache miss the run replays from the Blob checkpoint; at worst it re-reads a few hours of history.
+  - **Exactly once.** The Blob document keeps `delivered` (the newest 200 ids ever claimed) and a
+    `claim`: `{ ids, claimId, claimedAt }`, where the claim id is the QStash `Upstash-Message-Id`,
+    stable across retries of one run. A run claims its mail (adds it to `delivered` and takes the
+    lease) in one conditional write before delivering, then sets a "delivered" marker for its claim
+    id in the cache. Another run skips mail already in `delivered`; on a live lease (under two
+    minutes) it answers 409 so QStash retries after the owner finishes; it takes over an expired
+    lease that never reported delivered only within six hours, and never on a cold cache, where the
+    marker is likely gone too (a missed heads-up beats a double one). A QStash retry of the same run
+    owns its claim and resends it if delivery failed. A lost conditional write re-reads and decides
+    again up to three times, then answers 409 so QStash retries. The one remaining double-send is a
+    retry after a successful delivery whose response was lost, on a cache that lost the marker.
+    An account that needs connecting is logged and skipped, never signed in.
+  - **Watch renewal** is the `mail-watch` schedule (below), and `list_google_accounts` also starts
+    or renews the watch for every connected account it lists (`watchMailboxes` in
+    `lib/mail-watch.ts`), so an account the owner just (re)connected does not wait for 6am.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery`, `isOwnerChat`, `isOwnerDirectChat` and `ownerChatRefusal` in `lib/delivery.ts`;
   the `SharedCache` interface and `memoryCache` in `lib/shared-cache.ts`; `googleAccountRegistry` in
@@ -445,7 +470,7 @@ stub the route).
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `sharedCache` (Vercel Runtime Cache, best effort) in `lib/shared-cache.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -509,7 +534,8 @@ stub the route).
   - **`mail-watch`** (6am local, once a day). Gmail stops pushing to the topic seven days after a
     watch, so this renews `watchMailbox` on the inbox for every account in `GOOGLE_CONNECTORS`, as
     the home owner, with `GOOGLE_PUBSUB_TOPIC`, and records the returned history id for an account
-    with no stored state (`renewMailboxWatches` in `lib/new-mail.ts`). An account that needs
+    with no stored state (`watchMailboxes` in `lib/mail-watch.ts` over `renewMailboxWatches` in
+    `lib/new-mail.ts`). An account that needs
     connecting is logged and skipped; any other failure fails the cron run. Without the topic it
     does nothing. Renewing twice is harmless, so it claims no day. A second cron is fine on Hobby,
     which allows 100 per project, each at most once a day.
@@ -589,9 +615,11 @@ adam/
 │   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
 │   │   ├── google-accounts-store.ts # the GoogleAccountStore in private Vercel Blob
 │   │   ├── pubsub-push.ts     # Pub/Sub push: verify Google's OIDC token, decode the Gmail notification
-│   │   ├── new-mail.ts        # coalescing, the noteworthy filter, <new_email>, processMailbox, watch renewal
-│   │   ├── mailbox-state-store.ts # per-account history id and pending mail in private Vercel Blob
-│   │   ├── shared-cache.ts    # Vercel Runtime Cache, best effort (Google tokens, push coalescing)
+│   │   ├── new-mail.ts        # coalescing, daily cap, the noteworthy filter, <new_email>, processMailbox, watch renewal
+│   │   ├── mail-routes.ts     # the push and run route handlers behind channels/mail.ts
+│   │   ├── mail-watch.ts      # watchMailboxes: start or renew every account's Gmail watch
+│   │   ├── mailbox-state-store.ts # per-account checkpoint, delivered ids and delivery lease in private Vercel Blob
+│   │   ├── shared-cache.ts    # Vercel Runtime Cache, best effort; secretCache seals values and HMACs keys
 │   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
 │   │   ├── untrusted.ts       # wrap untrusted text in tags, strip look-alike tags
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
@@ -757,9 +785,10 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   before a work account can connect. Connect bills per token request (Hobby includes 500 a month, overage about $3 per
   1,000). Each Google access token lives an hour and is shared through Runtime Cache for about 55
   minutes, so it costs at most one request per account per hour Adam touches that account, whatever
-  the number of instances: with new mail arriving through the day, expect roughly 12 to 16
-  requests per account per day, about 400 to 500 a month per account, or 800 to 1,000 with two
-  accounts (a dollar or two of overage on Hobby). Without new-mail triggers it is far fewer.
+  the number of instances. Newsletters arrive overnight too, and every mail run maps its address by
+  touching every account, so with new-mail triggers on expect about 24 requests per account per
+  day: about 720 a month per account, 1,440 with two, roughly $3 a month of overage on Hobby.
+  Without new-mail triggers it is far fewer.
   The account list costs one Blob write per connect of a new name or disconnect,
   and about one read per instance per five minutes of Google use.
 - New-mail triggers need, in the same Google Cloud project: the Pub/Sub API, a topic, the
@@ -768,10 +797,34 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   audience exactly that URL). Set `GOOGLE_PUBSUB_TOPIC` to the full topic name and
   `GOOGLE_PUSH_SERVICE_ACCOUNT` to the subscription's service account, then redeploy. The watch
   starts on the next `mail-watch` run; to start it now, run the `mail-watch` job from Settings →
-  Cron Jobs (or POST `/eve/v1/dev/schedules/mail-watch` under `eve dev`). Mail that arrives before
-  the first watch is never triggered on. Each burst of pushes costs one QStash message, each run
-  with noteworthy mail one agent turn.
-- QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
+  Cron Jobs (or POST `/eve/v1/dev/schedules/mail-watch` under `eve dev`), or ask Adam in chat which
+  Google accounts are connected, which starts the watch for each connected one. Leave the
+  subscription's "payload unwrapping" off (with it on every push is acknowledged as malformed) and
+  give it an exponential-backoff retry policy. Mail that arrives before the first watch is never
+  triggered on.
+- QStash's free tier is 1,000 messages a day, and every retry counts as another message. Mail
+  costs one per three-minute window with inbox activity per mailbox, capped at 120 a day per
+  mailbox: 240 a day with two accounts at the very worst, a realistic 30 to 100. Coding watches
+  spend up to one a minute while Devin is busy (about 250 for a long session), reminders one each,
+  workouts two each. The cap keeps mail under a quarter of the budget, so reminders always fit.
+- Vercel Blob on Hobby includes 2,000 advanced operations (put, copy, list) and 10,000 simple ones
+  (a read that misses the cache, a head) a month; deletes are free. Going over locks Blob for 30
+  days, which would take the home pointer, reminders, memory and the briefing down with it.
+  A rough month for one owner:
+  - the home pointer: one put the first time each new instance sees a direct message (it remembers
+    what it last wrote), about 100 to 600 advanced; reads go through the CDN cache and mostly cost
+    nothing.
+  - the reminder list: a read and a write per schedule, cancel and delivery (list also prunes),
+    about 150 advanced and 250 simple for 60 reminders.
+  - daily claims for the briefing: 30 advanced, 30 simple.
+  - owner memory: one simple read per turn of root, `coach` and `deep` (about 1,500 to 3,000),
+    one put per save (about 30 to 60).
+  - generated audio: one put and one read per voice note (about 10 to 20 each).
+  - new mail: one put per delivered heads-up plus a checkpoint at most every six hours per mailbox,
+    about 90 + 240 = 330 advanced and a similar number of simple reads with two accounts, plus a
+    daily read per account from `mail-watch`.
+  That is roughly 700 to 1,250 advanced and 2,000 to 3,700 simple a month: inside the limits, with
+  the home pointer the largest variable. Check Observability → Blob after the first month.
 
 ---
 
