@@ -130,6 +130,30 @@ stub the route).
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
   User-scoped connections key grants by issuer and principal id, so workout runs reuse the grant the
   owner approved over iMessage instead of failing with `principal_required`.
+- **Owner memory** (`agent/memory/owner.ts`, `lib/owner-memory.ts`): one Eve memory slot with the
+  built-in file provider, holding a short list of durable facts about the owner (injuries, preferences,
+  routines, people, standing instructions). Eve recalls the whole document before every turn and again
+  after compaction, so facts reach sessions that never see the iMessage thread (workout analyses,
+  `coach`, `deep`) and survive compaction verbatim. The model maintains it with `owner__save_memory` and
+  `owner__remove_memory`; nothing is captured automatically.
+  - **Scope.** `ownerMemoryScope` (`lib/owner.ts`) is `[issuer, principalId]` for user principals, so the
+    owner's chat, workout and coding-session turns share one document even though `ownerAuth` keeps
+    each trigger's own authenticator (Eve's `byPrincipal` keys on the authenticator and would split
+    them). Service principals (reminder delivery) get no memory; `eve dev` uses one `local-dev` scope.
+  - **Namespace.** `ownerMemoryNamespace` is Eve's `defaultNamespace` with the graph node pinned to
+    root. The memory key is derived from namespace and scope only, and the file provider stores it at
+    `eve/memory/file/<key>/MEMORY.md`, so root, `coach` and `deep` read the same document. Production
+    keeps one namespace across deploys (project + environment); each preview branch gets its own.
+  - **Read-only subagents.** `coach` and `deep` declare the same slot (subagents inherit nothing) and
+    disable its tools with `tools/owner.ts` (`disableTool()`); recall is a lifecycle hook, so they still
+    read it. Only root writes, and only from what the owner says in chat, never from background turns
+    or untrusted content.
+  - **Storage.** Private Vercel Blob, in the same store as the home target: on Vercel Eve finds
+    `BLOB_STORE_ID` (OIDC) or `BLOB_READ_WRITE_TOKEN` itself, and writes use optimistic versioning.
+    `eve dev` and evals use process-local in-memory storage. Recall that throws fails the turn, so a
+    deployment without Blob fails owner turns until a store is connected. Recall is capped at 4,000
+    characters (about 1k tokens, paid on every turn), and over-limit saves are rejected rather than
+    evicting, so the model prunes stale entries.
 - **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam,
   the coach and the deep worker. The first Notion call parks the turn and the Photon channel's `authorization.required`
   handler texts the sign-in link; the turn resumes after consent. Runs started by a trigger without
@@ -211,15 +235,16 @@ stub the route).
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
-  `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
+  `lib/home-target.ts`; `ownerAuth`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
+  the owner memory slot definition in `lib/owner-memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
   `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool).
-  Later: memory tools, plus connection-provided tools.
+  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool), plus the
+  memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
   the allowlist (`image/*` plus common audio types), and hands the bytes to the channel. The Photon
@@ -287,6 +312,8 @@ adam/
 ├── agent/
 │   ├── agent.ts               # gateway model: openai/gpt-6-luna
 │   ├── instructions.md        # personality, right-to-silence, when to nudge
+│   ├── memory/
+│   │   └── owner.ts           # owner memory slot (file provider, private Blob)
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
@@ -302,20 +329,25 @@ adam/
 │   │   │   ├── connections/
 │   │   │   │   ├── notion.ts  # shared Notion connection config
 │   │   │   │   └── riz-mcp.ts
+│   │   │   ├── memory/owner.ts # same owner memory, recall only
+│   │   │   ├── tools/owner.ts # disableTool(): no save/remove in the coach
 │   │   │   └── skills/
 │   │   │       ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
 │   │   │       └── workout-debrief/
 │   │   └── deep/
 │   │       ├── agent.ts
 │   │       ├── instructions.md
-│   │       └── connections/
-│   │           └── notion.ts  # shared Notion connection config
+│   │       ├── connections/
+│   │       │   └── notion.ts  # shared Notion connection config
+│   │       ├── memory/owner.ts # same owner memory, recall only
+│   │       └── tools/owner.ts # disableTool(): no save/remove in the deep worker
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry plus homeDelivery
 │   │   ├── home-target.ts     # last chat the user messaged from, in private Vercel Blob
 │   │   ├── notion.ts          # shared Notion connection config
-│   │   ├── owner.ts           # ownerAuth: act as the owner's chat identity from background runs
+│   │   ├── owner.ts           # ownerAuth plus the owner memory scope and namespace
+│   │   ├── owner-memory.ts    # the owner memory slot definition shared by root, coach and deep
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
@@ -362,10 +394,12 @@ adam/
 - **Per-session working memory** → `defineState` (durable, dies with the session).
 - **Per-(channel, user) conversation history + context window** → **Eve durable sessions**
   (built-in; nothing to build).
-- **Cross-session long-term memory** (durable facts that span sessions/channels) → **deferred**;
-  when a second surface or separate sessions need it, an Eve memory slot (§8). For v1 single-user,
-  the per-chat session _is_ the memory, so `agent.ts` disables Eve's session timeout
-  (`sessionTimeoutMs: false`; the default 30 days would start the thread over empty).
+- **Cross-session long-term memory** (durable facts about the owner that span sessions, subagents
+  and surfaces) → the `owner` Eve memory slot (§4): a bounded, model-maintained document in private
+  Vercel Blob, recalled before every turn of root, `coach` and `deep`, and preserved verbatim across
+  compaction. It holds facts, not history.
+- **The conversation itself** is still the one iMessage session, so `agent.ts` disables Eve's
+  session timeout (`sessionTimeoutMs: false`; the default 30 days would start the thread over empty).
 
 ---
 
@@ -378,9 +412,10 @@ instructions · outbound image and audio attachments, with `generate_speech` for
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
 with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
-pull requests merged on the owner's say-so after a confirmation naming the PR.
+pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
+remembered across sessions with the `owner` memory slot.
 
-**Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
+**Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
@@ -403,7 +438,7 @@ QSTASH_URL=...                      # optional; QStash API origin for the region
 RIZ_MCP_URL=...                     # riz-mcp server for Strava activity details and the coach
 RIZ_MCP_JWT_SECRET=...              # signs the JWT riz-mcp expects
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio and the home delivery target
+BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio, the home delivery target and owner memory
 TRANSCRIPTION_MODEL=...             # optional, defaults to microsoft/mai-transcribe-2
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
@@ -432,6 +467,8 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   Configure both Notion data source IDs in Adam's environment.
 - Workout analyses and nudges require a connected private Vercel Blob store and are skipped until the
   user has texted Adam once after deploy; that chat becomes the remembered home target and owner.
+- Owner memory lives in the same private Blob store, read by Eve from the store's own `BLOB_*`
+  variables; no extra setup. Without a store, turns that recall it fail, so keep the store connected.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.
@@ -504,13 +541,11 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    - **Risk.** X and LinkedIn prohibit automated access, and LinkedIn bans accounts for it. Keep it
      read-only, low-volume and human-paced, or use a secondary account. Least certain value and
      most risk of the three, so it comes last.
-4. **Cross-session memory.** Not needed while Adam is one iMessage thread: the durable session is
-   the memory, and compaction keeps it inside the context window. It becomes needed when a second
-   surface needs context (voice, item 2), when separate sessions need the owner's facts (workout
-   analyses, `deep` tasks, subagents, which inherit nothing), or when durable facts erode through
-   repeated compaction. Then: an Eve memory slot (`agent/memory/`, `defineMemory`) scoped to the
-   owner through `ownerAuth`, starting with the built-in file provider and moving to Supermemory or
-   Upstash only if semantic recall is needed. This replaces the earlier plan of a Redis memory layer.
+4. **Cross-session memory.** Built: the `owner` memory slot (§4) with the built-in file provider,
+   scoped to the owner's identity across every trigger that acts as them, shared read-only with
+   `coach` and `deep`. Remaining: give the voice front end (item 2) the same facts at call start, and
+   move to Supermemory or Upstash only if a short document stops being enough and semantic recall is
+   needed.
 5. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Pre-session reminders
    based on its recommendations, about 15 minutes before the next workout, remain roadmap.
 6. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
