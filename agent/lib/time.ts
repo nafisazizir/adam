@@ -1,4 +1,5 @@
 import { env } from "#lib/env.js";
+import { localDateTimeToInstant } from "#lib/zoned-time.js";
 
 const timeZone = env.USER_TIMEZONE;
 
@@ -44,4 +45,8 @@ export function currentTimeContext(now: Date = new Date()): string {
     "Interpret every date and time the user mentions in this zone, and express every date and time you report back in it too, unless they explicitly name another zone.",
     "</current_time>",
   ].join("\n");
+}
+
+export function userLocalDateTimeToInstant(local: string): Date {
+  return localDateTimeToInstant(local, timeZone);
 }

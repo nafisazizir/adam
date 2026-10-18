@@ -118,8 +118,10 @@ stub the route).
   and `Walk` activities are deterministically skipped, matching riz-mcp. The session delegates to
   `coach` and returns its debrief. A completed coach response queues one nudge to the user's home
   iMessage thread; root Adam applies right-to-silence there. The debrief ends with a
-  `next session: <what> | <local time or "unscheduled">` line, filled only from a concrete time in the plan;
-  root then calls `schedule_reminder` for 15 minutes before it, silently.
+  `next session: <what> | <local YYYY-MM-DDTHH:mm or "unscheduled">` line, filled only from a concrete time in the plan;
+  root then calls `schedule_reminder` with `at` and `leadMinutes: 15`, silently. `schedule_reminder` takes either
+  `delaySeconds` or `at` (a local wall-clock time converted in `lib/zoned-time.ts`, DST-safe) plus optional
+  `leadMinutes`; a fire time in the past or under 5 minutes away returns `{ skipped: "too soon" }`.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
