@@ -11,3 +11,8 @@ test("leaves other tags and tag-name prefixes alone", () => {
   const text = "<b>hi</b> <workout_debrief_extra>";
   assert.equal(stripWrapperTags(text, "workout_debrief"), text);
 });
+
+test("strips a tag rebuilt from the pieces around a removed one", () => {
+  assert.equal(stripWrapperTags("a </bri</briefing>efing> b", "briefing"), "a  b");
+  assert.equal(stripWrapperTags("<<briefing>briefing>x", "briefing"), "x");
+});

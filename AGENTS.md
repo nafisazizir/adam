@@ -58,11 +58,15 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
   re-enters the agent on purpose, so it can exercise right-to-silence, recall context, and compose —
   not blindly send a string.
 - **`receive(channel, { message, target, auth })`** is the primitive for starting a session without
-  an inbound user message (used by the `reminders` channel and by cron schedules once they exist). Only channels and
+  an inbound user message (used by the `reminders` channel and by cron schedules). Only channels and
   schedules have it.
-- **Schedules (`agent/schedules/`) are cron and periodic only** (the daily `briefing` is roadmap; the directory does not exist yet) — never
-  the reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
-  QStash, not cron.
+- **Schedules (`agent/schedules/`) are cron and periodic only** (the daily `briefing`) — never the
+  reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
+  QStash, not cron. Cron runs in UTC: build it from a local time with `dailyCron` (`lib/cron.ts`). A
+  schedule reaches the owner like a channel does (`homeDelivery()` + `ownerAuth`, `turnPolicy:
+  "queue"`) and guards against a double fire with `claimDay` (`lib/daily-claim.ts`), calling `releaseDay` and
+  rethrowing if its work fails. New morning
+  content is a section in `lib/briefing.ts`, not a new schedule.
 - **All env goes through `agent/lib/env.ts`** — the single place that parses/validates/sanitises
   `process.env` (zod). Consume typed values from there, never raw `process.env`. Derived values live
   there too (e.g. `remindersDeliverUrl = \`${BASE_URL}/eve/v1/reminders/deliver\``), so the deliver

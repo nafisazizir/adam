@@ -20,7 +20,18 @@ function offsetAt(date: Date): string {
   return part ? part.value.replace("GMT", "UTC") : "";
 }
 
+const localDateFormat = new Intl.DateTimeFormat("en-CA", {
+  timeZone,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 export const userTimeZone = timeZone;
+
+export function userLocalDate(now: Date = new Date()): string {
+  return localDateFormat.format(now);
+}
 
 export function formatUserDateTime(date: Date): string {
   return `${dateTimeFormat.format(date)} ${offsetAt(date)}`.trim();
