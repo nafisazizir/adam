@@ -1,47 +1,43 @@
-import { get, put } from "@vercel/blob";
-import { z } from "zod";
+export interface StoredClaim {
+  day: string | null;
+  etag: string;
+}
 
-import { env } from "#lib/env.js";
+export interface ClaimStore {
+  read(job: string): Promise<StoredClaim | null>;
+  write(job: string, day: string, expected: { etag: string } | "absent"): Promise<{ etag: string }>;
+  remove(job: string, etag: string): Promise<void>;
+}
 
-const claimSchema = z.object({ day: z.string() });
-
-async function readClaim(pathname: string, token: string) {
-  const result = await get(pathname, { access: "private", token, useCache: false });
-  if (result?.statusCode !== 200) return null;
-
-  const text = await new Response(result.stream).text();
-  let payload: unknown;
-  try {
-    payload = JSON.parse(text);
-  } catch {
-    payload = null;
-  }
-  const parsed = claimSchema.safeParse(payload);
-  return { day: parsed.success ? parsed.data.day : null, etag: result.blob.etag };
+export interface DayClaim {
+  job: string;
+  day: string;
+  etag: string;
 }
 
 // Vercel Cron can deliver the same run twice. A conditional write on one pointer per job lets
 // exactly one of them claim the day; any failure counts as not claimed, so a run is missed
 // rather than sent twice.
-export async function claimDay(job: string, day: string): Promise<boolean> {
-  const token = env.BLOB_READ_WRITE_TOKEN;
-  if (!token) return false;
-
-  const pathname = `daily-claims/${job}.json`;
+export async function claimDay(store: ClaimStore, job: string, day: string): Promise<DayClaim | null> {
   try {
-    const current = await readClaim(pathname, token);
-    if (current?.day === day) return false;
+    const current = await store.read(job);
+    if (current?.day === day) return null;
 
-    await put(pathname, JSON.stringify({ day }), {
-      access: "private",
-      addRandomSuffix: false,
-      contentType: "application/json",
-      token,
-      ...(current ? { allowOverwrite: true, ifMatch: current.etag } : { allowOverwrite: false }),
-    });
-    return true;
+    const { etag } = await store.write(job, day, current ? { etag: current.etag } : "absent");
+    return { job, day, etag };
   } catch (error) {
     console.warn(`[daily-claim] could not claim ${job} for ${day}`, error);
+    return null;
+  }
+}
+
+// The etag must still match, so this only ever undoes the caller's own claim.
+export async function releaseDay(store: ClaimStore, claim: DayClaim): Promise<boolean> {
+  try {
+    await store.remove(claim.job, claim.etag);
+    return true;
+  } catch (error) {
+    console.warn(`[daily-claim] could not release ${claim.job} for ${claim.day}`, error);
     return false;
   }
 }

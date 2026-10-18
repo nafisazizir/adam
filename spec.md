@@ -212,7 +212,7 @@ stub the route).
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth` in `lib/owner.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` in
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
   `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
@@ -257,12 +257,16 @@ stub the route).
   (`lib/cron.ts`) turns a local time in `USER_TIMEZONE` into a UTC cron at build time; the zone's
   offset is baked in, so a zone with daylight saving drifts an hour after each change until the
   next deploy. Vercel Cron can fire a run twice, so a daily job claims its local date first with
-  `claimDay` (`lib/daily-claim.ts`, a conditional write to one private Blob pointer per job); a
-  failed claim skips the run rather than risk sending it twice.
+  `claimDay` (`lib/daily-claim.ts`, a conditional write to one pointer per job, kept in private
+  Vercel Blob by `lib/claim-store.ts`); a failed claim skips the run rather than risk sending it
+  twice. If the work after a successful claim fails, `releaseDay` deletes the pointer (only if its
+  etag is still the claim's) and the run rethrows, so Vercel records the cron run as failed and a
+  re-run the same day is not skipped as already claimed.
   - **`briefing`** (7am local, once a day, Hobby-safe). Delivers a `<briefing>` trigger built by
     `lib/briefing.ts` from a list of section providers. Each section renders text or nothing, a
     failing section is left out rather than failing the briefing, and section text cannot close the
-    wrapper tag. The only section today is the static guidance: check today's reminders with
+    wrapper tag (`stripWrapperTags` repeats until nothing is left to strip, so a tag split around
+    another, `</bri</briefing>efing>`, is removed too). The only section today is the static guidance: check today's reminders with
     `list_reminders` and coding sessions waiting on the owner with `list_coding_sessions`, then send
     one short message if something is real and `stay_silent` otherwise, which is the expected
     outcome most mornings. It is a background turn, so it schedules, starts, messages and merges
@@ -326,7 +330,8 @@ adam/
 │   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
 │   │   ├── briefing.ts        # morning briefing message from a list of section providers
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
-│   │   ├── daily-claim.ts     # claimDay: one run per job per local date (private Vercel Blob)
+│   │   ├── daily-claim.ts     # claimDay/releaseDay: one run per job per local date, over a ClaimStore
+│   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts

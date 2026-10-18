@@ -2,6 +2,7 @@ import type { SessionAuthContext } from "eve/context";
 
 import type { HomeOwner } from "#lib/home-target.js";
 import { ownerAuth } from "#lib/owner.js";
+import { stripWrapperTags } from "#lib/untrusted.js";
 
 export const briefingAuthenticator = "briefing";
 
@@ -26,14 +27,10 @@ const guidance: BriefingSection = {
 
 export const briefingSections: readonly BriefingSection[] = [guidance];
 
-function stripBriefingTags(text: string): string {
-  return text.replace(/<\s*\/?\s*briefing\b[^>]*>/giu, "");
-}
-
 async function renderSection(section: BriefingSection): Promise<string | null> {
   try {
     const text = (await section.render())?.trim();
-    return text ? stripBriefingTags(text) : null;
+    return text ? stripWrapperTags(text, "briefing") : null;
   } catch (error) {
     console.error(`[briefing] section ${section.name} failed; leaving it out`, error);
     return null;

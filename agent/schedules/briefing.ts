@@ -1,8 +1,9 @@
 import { defineSchedule } from "eve/schedules";
 
 import { briefingAuth, briefingMessage } from "#lib/briefing.js";
+import { blobClaimStore } from "#lib/claim-store.js";
 import { dailyCron } from "#lib/cron.js";
-import { claimDay } from "#lib/daily-claim.js";
+import { claimDay, releaseDay } from "#lib/daily-claim.js";
 import { homeDelivery } from "#lib/delivery.js";
 import { currentTimeContext, userLocalDate, userTimeZone } from "#lib/time.js";
 
@@ -16,26 +17,31 @@ export default defineSchedule({
     }
 
     const day = userLocalDate();
-    if (!(await claimDay("briefing", day))) {
+    const claim = await claimDay(blobClaimStore, "briefing", day);
+    if (!claim) {
       console.log(`[briefing] skipping; ${day} is already claimed`);
       return;
     }
 
     const { channel, target, owner } = home;
-    const delivery = briefingMessage(currentTimeContext())
-      .then((message) =>
-        channel.deliver({
+    const delivery = (async () => {
+      try {
+        await channel.deliver({
           to,
-          message,
+          message: await briefingMessage(currentTimeContext()),
           target,
           auth: briefingAuth(owner, day),
           turnPolicy: "queue",
-        }),
-      )
-      .then(
-        () => console.log(`[briefing] delivered ${day}`),
-        (error) => console.error(`[briefing] failed to deliver ${day}`, error),
-      );
+        });
+        console.log(`[briefing] delivered ${day}`);
+      } catch (error) {
+        console.error(`[briefing] failed to deliver ${day}; releasing the claim`, error);
+        await releaseDay(blobClaimStore, claim);
+        throw error;
+      }
+    })();
     waitUntil(delivery);
+    // Awaited too, so a failed delivery fails the cron run instead of reporting success.
+    await delivery;
   },
 });

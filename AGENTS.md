@@ -64,7 +64,8 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
   reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
   QStash, not cron. Cron runs in UTC: build it from a local time with `dailyCron` (`lib/cron.ts`). A
   schedule reaches the owner like a channel does (`homeDelivery()` + `ownerAuth`, `turnPolicy:
-  "queue"`) and guards against a double fire with `claimDay` (`lib/daily-claim.ts`). New morning
+  "queue"`) and guards against a double fire with `claimDay` (`lib/daily-claim.ts`), calling `releaseDay` and
+  rethrowing if its work fails. New morning
   content is a section in `lib/briefing.ts`, not a new schedule.
 - **All env goes through `agent/lib/env.ts`** — the single place that parses/validates/sanitises
   `process.env` (zod). Consume typed values from there, never raw `process.env`. Derived values live
