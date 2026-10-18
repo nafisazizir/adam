@@ -6,5 +6,5 @@ export default defineAgent({
   modelContextWindowTokens: 1_050_000,
   // The iMessage thread is Adam's only memory; a timed-out session would start it over empty.
   limits: { sessionTimeoutMs: false },
-  build: { externalDependencies: ["sharp", "@ffmpeg-installer/ffmpeg"] },
+  build: { externalDependencies: ["sharp", "@ffmpeg-installer/ffmpeg", "playwright-core"] },
 });

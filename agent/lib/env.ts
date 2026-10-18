@@ -67,6 +67,8 @@ const schema = z.object({
   VERCEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
+  // Optional so a deploy without Kernel still boots; only the browser tools fail.
+  KERNEL_API_KEY: blankAsUnset(z.string().min(1).optional()),
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
