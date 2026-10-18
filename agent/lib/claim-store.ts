@@ -1,6 +1,7 @@
-import { del, get, put } from "@vercel/blob";
+import { del, get } from "@vercel/blob";
 import { z } from "zod";
 
+import { putConditional } from "#lib/blob-conditional.js";
 import type { ClaimStore } from "#lib/daily-claim.js";
 import { env } from "#lib/env.js";
 
@@ -32,13 +33,7 @@ export const blobClaimStore: ClaimStore = {
     return { day: parseDay(await new Response(result.stream).text()), etag: result.blob.etag };
   },
   async write(job, day, expected) {
-    const { etag } = await put(pathname(job), JSON.stringify({ day }), {
-      access: "private",
-      addRandomSuffix: false,
-      contentType: "application/json",
-      token: token(),
-      ...(expected === "absent" ? { allowOverwrite: false } : { allowOverwrite: true, ifMatch: expected.etag }),
-    });
+    const { etag } = await putConditional(pathname(job), JSON.stringify({ day }), expected, token());
     return { etag };
   },
   async remove(job, etag) {

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export interface ScheduledReminder {
   readonly id: string;
   readonly message: string;
@@ -7,6 +9,21 @@ export interface ScheduledReminder {
 export interface StoredReminders {
   readonly reminders: ScheduledReminder[];
   readonly etag: string;
+}
+
+const documentSchema = z.object({
+  reminders: z.array(z.object({ id: z.string(), message: z.string(), fireAt: z.string() })),
+});
+
+export function parseReminderDocument(text: string): ScheduledReminder[] {
+  try {
+    const parsed = documentSchema.safeParse(JSON.parse(text));
+    if (parsed.success) return parsed.data.reminders;
+  } catch {
+    // falls through to the same repair path as a schema mismatch
+  }
+  console.warn("[reminder-list] stored document is corrupt; treating it as empty so the next write repairs it");
+  return [];
 }
 
 export class ReminderListConflict extends Error {}
@@ -59,16 +76,36 @@ export function forgetReminder(store: ReminderListStore, id: string): Promise<bo
   return bestEffort("forget a reminder", () => update(store, (list) => list.filter((entry) => entry.id !== id)));
 }
 
+// A degraded Blob must not delay a caller with a deadline of its own (QStash retries a slow
+// delivery, which would send the reminder twice).
+export async function forgetReminderWithin(store: ReminderListStore, id: string, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[reminder-list] gave up forgetting ${id} after ${timeoutMs}ms`);
+      resolve(false);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([forgetReminder(store, id), timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function isUpcoming(reminder: ScheduledReminder, now: number): boolean {
   return Date.parse(reminder.fireAt) > now;
 }
 
 export async function listUpcomingReminders(store: ReminderListStore, now: number): Promise<ReminderListRead> {
-  let upcoming: ScheduledReminder[] = [];
+  let stored: ScheduledReminder[] = [];
   const read = await bestEffort("read the reminder list", async () => {
-    upcoming = ((await store.read())?.reminders ?? []).filter((reminder) => isUpcoming(reminder, now));
+    stored = (await store.read())?.reminders ?? [];
   });
   if (!read) return { status: "unavailable" };
+
+  const upcoming = stored.filter((reminder) => isUpcoming(reminder, now));
+  if (upcoming.length === stored.length) return { status: "ok", reminders: upcoming };
 
   await bestEffort("prune the reminder list", () =>
     update(store, (list) => list.filter((reminder) => isUpcoming(reminder, now))),

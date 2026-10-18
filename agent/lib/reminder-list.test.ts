@@ -3,6 +3,8 @@ import { test } from "node:test";
 
 import {
   forgetReminder,
+  forgetReminderWithin,
+  parseReminderDocument,
   listUpcomingReminders,
   recordReminder,
   ReminderListConflict,
@@ -81,4 +83,54 @@ test("a failing store never throws out of record or forget", async () => {
 
 test("an empty store lists no reminders", async () => {
   assert.deepEqual(await listUpcomingReminders(fakeStore(), now), { status: "ok", reminders: [] });
+});
+
+test("listing does not write when nothing is past", async () => {
+  const store = fakeStore();
+  await recordReminder(store, soon("a"));
+  const before = store.writes;
+  await listUpcomingReminders(store, now);
+  await listUpcomingReminders(fakeStore(), now);
+  assert.equal(store.writes, before);
+});
+
+test("a conflict that never clears gives up after bounded retries without throwing", async () => {
+  let reads = 0;
+  const store: ReminderListStore = {
+    async read() {
+      reads += 1;
+      return { reminders: [], etag: "x" };
+    },
+    async write() {
+      throw new ReminderListConflict("always stale");
+    },
+  };
+  assert.equal(await recordReminder(store, soon("a")), false);
+  assert.equal(reads, 6);
+});
+
+test("forgetting gives up on a hanging store within the deadline", async () => {
+  const store: ReminderListStore = { read: () => new Promise(() => {}), write: async () => {} };
+  const started = Date.now();
+  assert.equal(await forgetReminderWithin(store, "a", 50), false);
+  assert.ok(Date.now() - started < 1000);
+});
+
+test("a corrupt or schema-mismatched document parses as an empty list", () => {
+  assert.deepEqual(parseReminderDocument("not json"), []);
+  assert.deepEqual(parseReminderDocument(JSON.stringify({ reminders: [{ id: 1 }] })), []);
+  assert.deepEqual(parseReminderDocument(JSON.stringify({ reminders: [soon("a")] })), [soon("a")]);
+});
+
+test("a repaired empty list with an etag accepts the next write", async () => {
+  let written: ScheduledReminder[] | null = null;
+  const store: ReminderListStore = {
+    read: async () => ({ reminders: parseReminderDocument("garbage"), etag: "corrupt-etag" }),
+    async write(next, expected) {
+      assert.deepEqual(expected, { etag: "corrupt-etag" });
+      written = next;
+    },
+  };
+  assert.equal(await recordReminder(store, soon("a")), true);
+  assert.deepEqual(written, [soon("a")]);
 });
