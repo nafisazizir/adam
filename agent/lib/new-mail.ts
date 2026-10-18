@@ -97,7 +97,7 @@ function emailEntry(email: EmailSummary): string {
   return [`- ${facts || "received just now"}`, view.content].join("\n");
 }
 
-// The account is a GOOGLE_CONNECTORS label, which env.ts limits to [a-z0-9_-].
+// The account is a label, which normalizeAccountLabel limits to [a-z0-9-].
 export function newEmailMessage(account: string, emails: readonly EmailSummary[], timeContext: string): string {
   return [
     timeContext,
@@ -145,6 +145,7 @@ export interface MailboxStateStore {
   read(account: string): Promise<StoredMailboxState | null>;
   // Throws MailboxStateConflict when the document changed since `expected`.
   write(account: string, state: MailboxState, expected: { etag: string } | "absent"): Promise<{ etag: string }>;
+  remove(account: string): Promise<void>;
 }
 
 export interface MailboxReader {
@@ -389,4 +390,20 @@ export async function renewMailboxWatches(
     }
   }
   return outcomes;
+}
+
+// Stopped while its token still works, so a disconnected mailbox stops costing a QStash message per
+// push. Its history goes too: a name reconnected to another Google account starts from that
+// mailbox's own history instead of replaying from a cursor that was never its own.
+export async function forgetMailbox(
+  account: string,
+  deps: { readonly store: MailboxStateStore; readonly cache: SharedCache; stop(): Promise<void> },
+): Promise<void> {
+  try {
+    await deps.stop();
+  } catch (error) {
+    console.warn(`[mail] could not stop the Gmail watch on ${account}; it lapses within seven days`, error);
+  }
+  await deps.cache.delete(cursorKey(account));
+  await deps.store.remove(account);
 }

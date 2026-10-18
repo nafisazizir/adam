@@ -324,21 +324,22 @@ stub the route).
     owner: `googleSubject(owner, label)` is `{ type: "user", id: "<principalId>/google/<label>",
     issuer }`, and connecting a second account never replaces the first. Each token is requested
     with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
-    OpenID userinfo with its own token and is cached for a day by subject in a `SharedCache`
-    (per instance for now). Connecting a name again or disconnecting it forgets that address and
-    Connect's in-process token for the subject (`deleteTokenCacheEntry`). The old grant still
-    answers until the owner finishes consent, so a read in between can cache the old account again;
-    `list_google_accounts`, which the owner's check after a connect goes through, therefore asks
-    Connect for a fresh token (`forceRefresh`) and Google for the address past every cache, and a
-    name reconnected to another Google account shows its new address. Tools name an account by its
-    label or its address.
+    OpenID userinfo with its own token and is cached for a day by subject in `secretCache` (sealed,
+    in Runtime Cache). Connecting a name again or disconnecting it forgets that address, the
+    subject's shared access token and Connect's in-process token (`deleteTokenCacheEntry`). The old
+    grant still answers until the owner finishes consent, so a read in between can cache the old
+    account again; `list_google_accounts`, which the owner's check after a connect goes through,
+    therefore asks Connect for a fresh token (`forceRefresh`) and Google for the address past every
+    cache, and a name reconnected to another Google account shows its new address. Tools name an
+    account by its label or its address.
   - **Account list.** The labels (and when each was added) are the one thing Adam stores for Google:
     `lib/google-accounts.ts` (`googleAccountRegistry`: list, add, remove, plus `normalizeAccountLabel`)
     over a `GoogleAccountStore`, which `lib/google-accounts-store.ts` keeps as `google-accounts.json`
     in private Blob with conditional writes (`putConditional`, retried on a conflict). It is written
-    only when a new name is connected or an account is disconnected. Reads go through a
-    `SharedCache` (`lib/shared-cache.ts`; for now `memoryCache`, per instance, five minutes), so the
-    store is read about once per instance per five minutes of use; a name the cached list misses is
+    only when a new name is connected or an account is disconnected. Reads go through
+    `secretCache`, shared by every instance in the region, refreshed on each connect and disconnect
+    and expiring after an hour (which only bounds a missed refresh), so the store is read about 24
+    times a day at most, whatever the mail traffic; a name the cached list misses is
     looked up once more against the store, since another instance may have just added it. A read
     that misses the cache backfills it only if no write has cached a newer list meanwhile. A
     corrupt document fails the Google tools loudly rather than reading as empty. Besides the list,
@@ -362,12 +363,19 @@ stub the route).
     and says so, and the owner can retry instead of believing access is gone. A name that never
     signed in (Connect has no token for it) is simply removed. A revoke that worked followed by a
     list write that failed is reported as disconnected with a warning (the name shows as needing
-    connecting until a second disconnect removes it).
-  - **Known limits.** Another warm instance can keep listing a disconnected account, holding its
-    last access token, for up to the list cache's five minutes (only owner turns read, and a revoked
-    grant cannot refresh). A sign-in link left unused and opened after its name was disconnected
-    still creates a grant for that subject; Adam cannot see it, and it returns if the name is added
-    again.
+    connecting until a second disconnect removes it). With new-mail triggers on, it first stops the
+    account's Gmail watch (`users.stop`, while the token still works), and only once the revoke
+    worked drops the mailbox's cursor and checkpoint (`stopWatchingMailbox` and
+    `forgetMailboxState` in `lib/mail-watch.ts`); a failed revoke restarts the watch, so heads-ups
+    continue for an account that is still connected. A stop that fails is logged and the watch
+    lapses within seven days; pushes for an address no longer on the list are acknowledged and
+    ignored. A mail run checks its account is still listed before it writes any state, so a run
+    already queued cannot recreate the state of an account just removed.
+  - **Known limits.** Another warm instance may still hold a disconnected account's last access
+    token in Connect's in-process cache, but stops listing it as soon as the shared list is
+    refreshed (only owner turns read by name, and a revoked grant cannot refresh). A sign-in link
+    left unused and opened after its name was disconnected still creates a grant for that subject;
+    Adam cannot see it, and it returns if the name is added again.
   - **Background turns never sign in.** Tokens come from `@vercel/connect`'s `getToken`, which never
     starts a sign-in: a missing or revoked grant (`user_authorization_required` / `no_token`) becomes
     `GoogleNeedsConnectingError` for that account, so the briefing or a mail trigger reports it and
@@ -461,8 +469,7 @@ stub the route).
     `lib/mail-watch.ts`), so an account the owner just (re)connected does not wait for 6am.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery`, `isOwnerChat`, `isOwnerDirectChat` and `ownerChatRefusal` in `lib/delivery.ts`;
-  the `SharedCache` interface and `memoryCache` in `lib/shared-cache.ts`; `googleAccountRegistry` in
-  `lib/google-accounts.ts`; `signInFromOwnerDirectChat`
+  `googleAccountRegistry` in `lib/google-accounts.ts`; `signInFromOwnerDirectChat`
   (interactive sign-in only in the owner's direct chat) and `ownerLinkRefusal` (the same rule for a
   link a tool hands out) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth`, `ownerPrincipal`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
@@ -470,7 +477,7 @@ stub the route).
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` and `stopWatchingMailbox` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -532,7 +539,7 @@ stub the route).
     nothing and never waits on the owner. Later features (calendar and mail highlights, an overnight
     browser digest) add a section to `briefingSections` without touching the schedule.
   - **`mail-watch`** (6am local, once a day). Gmail stops pushing to the topic seven days after a
-    watch, so this renews `watchMailbox` on the inbox for every account in `GOOGLE_CONNECTORS`, as
+    watch, so this renews `watchMailbox` on the inbox for every account on the account list, as
     the home owner, with `GOOGLE_PUBSUB_TOPIC`, and records the returned history id for an account
     with no stored state (`watchMailboxes` in `lib/mail-watch.ts` over `renewMailboxWatches` in
     `lib/new-mail.ts`). An account that needs
@@ -617,7 +624,7 @@ adam/
 │   │   ├── pubsub-push.ts     # Pub/Sub push: verify Google's OIDC token, decode the Gmail notification
 │   │   ├── new-mail.ts        # coalescing, daily cap, the noteworthy filter, <new_email>, processMailbox, watch renewal
 │   │   ├── mail-routes.ts     # the push and run route handlers behind channels/mail.ts
-│   │   ├── mail-watch.ts      # watchMailboxes: start or renew every account's Gmail watch
+│   │   ├── mail-watch.ts      # watchMailboxes: start or renew every account's Gmail watch; stopWatchingMailbox
 │   │   ├── mailbox-state-store.ts # per-account checkpoint, delivered ids and delivery lease in private Vercel Blob
 │   │   ├── shared-cache.ts    # Vercel Runtime Cache, best effort; secretCache seals values and HMACs keys
 │   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
@@ -789,9 +796,10 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   touching every account, so with new-mail triggers on expect about 24 requests per account per
   day: about 720 a month per account, 1,440 with two, roughly $3 a month of overage on Hobby.
   Without new-mail triggers it is far fewer.
-  The account list costs one Blob write per connect of a new name or disconnect,
-  and about one read per instance per five minutes of Google use.
-- New-mail triggers need, in the same Google Cloud project: the Pub/Sub API, a topic, the
+  The account list costs one Blob write per connect of a new name or disconnect, and about four
+  reads a day.
+- New-mail triggers (the PR #39 description is the step-by-step runbook) need, in the same Google
+  Cloud project: the Pub/Sub API, a topic, the
   Pub/Sub Publisher role on it for `gmail-api-push@system.gserviceaccount.com`, and a push
   subscription to `${BASE_URL}/eve/v1/mail/push` with authentication enabled (a service account,
   audience exactly that URL). Set `GOOGLE_PUBSUB_TOPIC` to the full topic name and
@@ -822,8 +830,11 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   - generated audio: one put and one read per voice note (about 10 to 20 each).
   - new mail: one put per delivered heads-up plus a checkpoint at most every six hours per mailbox,
     about 90 + 240 = 330 advanced and a similar number of simple reads with two accounts, plus a
-    daily read per account from `mail-watch`.
-  That is roughly 700 to 1,250 advanced and 2,000 to 3,700 simple a month: inside the limits, with
+    daily read per account from `mail-watch`. Disconnecting deletes the account's checkpoint.
+  - the Google account list: one put per account connected or disconnected (a handful), and a read
+    each time its six-hour Runtime Cache entry lapses, about 120 simple; the address and token
+    lookups behind each push stay in Runtime Cache.
+  That is roughly 700 to 1,250 advanced and 2,100 to 3,800 simple a month: inside the limits, with
   the home pointer the largest variable. Check Observability → Blob after the first month.
 
 ---

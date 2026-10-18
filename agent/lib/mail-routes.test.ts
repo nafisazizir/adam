@@ -123,6 +123,9 @@ function store(initial: MailboxState | null, write?: MailboxStateStore["write"])
   let doc = initial ? { state: initial, etag: "e0" } : null;
   return {
     read: async () => doc,
+    remove: async () => {
+      doc = null;
+    },
     write:
       write ??
       (async (_account, next) => {

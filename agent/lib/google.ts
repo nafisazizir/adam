@@ -659,7 +659,10 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
               body: JSON.stringify(body),
             },
       );
-      if (response.ok) return schema.parse(await response.json());
+      if (response.ok) {
+        const text = await response.text();
+        return schema.parse(text ? JSON.parse(text) : {});
+      }
 
       if (response.status === 401) {
         if (attempt > 0) {
@@ -1032,6 +1035,10 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     },
 
     // Gmail stops pushing to the topic after seven days unless the watch is renewed.
+    async stopMailboxWatch(owner: GoogleOwner | null, name: string): Promise<void> {
+      await googleCall(await only(owner, name), new URL(`${gmailBase}/stop`), z.unknown(), {});
+    },
+
     async watchMailbox(owner: GoogleOwner | null, name: string, topicName: string): Promise<MailboxWatch> {
       const watch = await googleCall(await only(owner, name), new URL(`${gmailBase}/watch`), watchSchema, {
         topicName,
@@ -1071,16 +1078,18 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 
 export type GoogleWorkspace = ReturnType<typeof googleWorkspace>;
 
-// Each instance keeps the list for a few minutes, so a connect on another instance shows up here
-// within that, or at once when it is named.
-const accountListTtlSeconds = 5 * 60;
+// Every mail push maps its address through the account list, so the list lives in Runtime Cache,
+// shared by every instance and refreshed on each connect and disconnect; the lifetime only bounds
+// how long a missed refresh can linger.
+const accountListTtlSeconds = 6 * 60 * 60;
 
 export const google = googleWorkspace({
   connector: env.GOOGLE_CONNECTOR,
   accounts: googleAccountRegistry({
     store: blobGoogleAccountStore,
-    cache: memoryCache(),
+    cache: secretCache,
     cacheTtlSeconds: accountListTtlSeconds,
   }),
+  addressCache: secretCache,
   timeZone: env.USER_TIMEZONE,
 });

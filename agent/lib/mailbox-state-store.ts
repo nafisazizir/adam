@@ -1,4 +1,4 @@
-import { get } from "@vercel/blob";
+import { del, get } from "@vercel/blob";
 
 import { BlobWriteConflict, putConditional } from "#lib/blob-conditional.js";
 import { env } from "#lib/env.js";
@@ -29,5 +29,8 @@ export const blobMailboxStateStore: MailboxStateStore = {
       if (error instanceof BlobWriteConflict) throw new MailboxStateConflict("mailbox state changed underneath the write");
       throw error;
     }
+  },
+  async remove(account) {
+    await del(pathname(account), { token: token() });
   },
 };

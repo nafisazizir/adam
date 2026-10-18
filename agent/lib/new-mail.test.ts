@@ -9,6 +9,7 @@ import {
   dailyMailRunCap,
   maxEmailsPerTrigger,
   mightMatter,
+  forgetMailbox,
   newEmailMessage,
   noteworthy,
   processMailbox,
@@ -128,6 +129,9 @@ function memoryStore(initial?: MailboxState) {
       doc = { state: next, etag: `e${version}` };
       writes.push(next);
       return { etag: doc.etag };
+    },
+    async remove() {
+      doc = null;
     },
   };
   return { store, writes, current: () => doc?.state ?? null, reads: () => reads };
@@ -341,7 +345,7 @@ test("a run that loses the claim write re-reads and decides again", async () => 
   const { store, writes } = memoryStore(state("100"));
   let conflicts = 1;
   const racing: MailboxStateStore = {
-    read: store.read,
+    ...store,
     async write(account, next, expected) {
       if (conflicts-- > 0) throw new MailboxStateConflict("changed");
       return store.write(account, next, expected);
@@ -360,7 +364,7 @@ test("a run that loses the claim write re-reads and decides again", async () => 
 test("a run that keeps losing the write gives up with a conflict so QStash retries it", async () => {
   const { store } = memoryStore(state("100"));
   const racing: MailboxStateStore = {
-    read: store.read,
+    ...store,
     async write() {
       throw new MailboxStateConflict("changed");
     },
@@ -426,4 +430,27 @@ test("after the cache is lost an expired claim from another run is not sent agai
   });
   assert.equal((await outcome).kind, "quiet");
   assert.deepEqual(delivered, []);
+});
+
+test("forgetting a mailbox stops its watch and drops its cursor and checkpoint", async () => {
+  const { store, current } = memoryStore(state("100"));
+  const cache = memoryCache();
+  await cache.set("mail-cursor:work", { historyId: "100", checkpointedAt: 0 }, 60);
+  let stopped = 0;
+  await forgetMailbox("work", { store, cache, stop: async () => void stopped++ });
+  assert.equal(stopped, 1);
+  assert.equal(current(), null);
+  assert.equal(await cache.get("mail-cursor:work"), null);
+});
+
+test("a watch that cannot be stopped still has its state dropped", async () => {
+  const { store, current } = memoryStore(state("100"));
+  await forgetMailbox("work", {
+    store,
+    cache: memoryCache(),
+    stop: async () => {
+      throw new GoogleNeedsConnectingError("work", "is not connected");
+    },
+  });
+  assert.equal(current(), null);
 });

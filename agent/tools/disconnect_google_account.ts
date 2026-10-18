@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { ownerChatRefusal } from "#lib/delivery.js";
 import { google, type GoogleDisconnect, type GoogleOwner } from "#lib/google.js";
+import { stopWatchingMailbox } from "#lib/mail-watch.js";
 import { ownerPrincipal } from "#lib/owner.js";
 
 type Caller = { readonly ok: true; readonly owner: GoogleOwner } | { readonly ok: false; readonly reason: string };
@@ -35,6 +36,7 @@ async function findAccount(owner: GoogleOwner, name: string): Promise<Found> {
 
 async function disconnect(owner: GoogleOwner, account: string): Promise<GoogleDisconnect> {
   "use step";
+  await stopWatchingMailbox(owner, account);
   try {
     return await google.disconnect(owner, account);
   } catch (error) {

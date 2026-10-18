@@ -815,3 +815,29 @@ test("a transient failure looking up an address is thrown, not reported as unkno
   );
   await assert.rejects(workspace(personal, connect, impl).accountWithAddress(owner, "me@gmail.example"), /503/u);
 });
+
+test("stopping a mailbox watch posts to Gmail and accepts its empty answer", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) => (url.pathname.endsWith("/stop") ? new Response(null, { status: 204 }) : undefined));
+  await workspace(personal, connect, impl).stopMailboxWatch(owner, "personal");
+  assert.equal(calls[0]?.init?.method, "POST");
+  assert.match(calls[0]?.url.pathname ?? "", /\/users\/me\/stop$/u);
+});
+
+test("connecting a name again or disconnecting it drops its shared token, so another Google account never inherits it", async () => {
+  const grants: Record<string, string> = { work: "token-old" };
+  const { connect, tokenCalls } = fakeConnect(grants);
+  const tokenCache = memoryCache();
+  const store = fakeAccountStore(["work"]);
+  const { impl, calls } = fakeFetch((url) => (url.pathname.endsWith("/messages") ? Response.json({ messages: [] }) : undefined));
+  const google = workspace(["work"], connect, impl, store, tokenCache);
+  await google.searchEmail(owner, "x", { max: 1 });
+  await google.signIn(owner, "work");
+  grants.work = "token-new";
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal(tokenCalls.length, 2);
+  assert.equal(bearer(calls.at(-1)?.init), "token-new");
+
+  await google.disconnect(owner, "work");
+  assert.equal(await tokenCache.get(`google-token:${connector}:${JSON.stringify(googleSubject(owner, "work"))}`), null);
+});
