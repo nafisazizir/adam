@@ -7,18 +7,18 @@ import { ownerPrincipal } from "#lib/owner.js";
 
 export default defineTool({
   description:
-    "Get a Google sign-in link that connects one of the user's Google accounts (Gmail and " +
-    "Calendar, read-only), or reconnects one that needs it. Only when the user asks in chat, or " +
-    "agrees to reconnect. Text them the link raw on its own line; they open it, pick the Google " +
-    "account for that slot and approve. One account per link. It refuses outside the user's " +
-    "direct chat with you and says why.",
+    "Get a Google sign-in link that adds one of the user's Google accounts (Gmail and Calendar, " +
+    "read-only) under a short name, or reconnects one they already have under that name. Only when " +
+    "the user asks in chat, or agrees to reconnect. Text them the link raw on its own line; they " +
+    "open it, pick the Google account on Google's screen and approve. One account per link; call it " +
+    "again for each further account. It refuses outside the user's direct chat with you and says why.",
   inputSchema: z.object({
     account: z
       .string()
-      .optional()
+      .min(1)
       .describe(
-        "Which account slot to connect, by its name from list_google_accounts (e.g. personal, work). " +
-          "Leave it out only when there is a single slot.",
+        "The short name for the account, from the user's words (e.g. work for 'connect my work gmail', " +
+          "personal, uni). An existing name from list_google_accounts reconnects that account.",
       ),
   }),
   label: { start: () => "Connect a Google account" },
@@ -26,6 +26,11 @@ export default defineTool({
     const refusal = ownerLinkRefusal("Google sign-in", ctx.session.auth.current);
     if (refusal) return { url: null, reason: refusal };
     const signIn = await google.signIn(ownerPrincipal(ctx.session.auth.current), account);
-    return { account: signIn.account, url: signIn.url, expiresAt: signIn.expiresAt?.toISOString() ?? null };
+    return {
+      account: signIn.account,
+      reconnecting: !signIn.added,
+      url: signIn.url,
+      expiresAt: signIn.expiresAt?.toISOString() ?? null,
+    };
   },
 });

@@ -315,24 +315,43 @@ stub the route).
   (no SDK, no `gws`), and the access token stays in the tool process, never in the model's sandbox or
   history. `lib/google.ts` is the only file that knows Google (token requests, Gmail and Calendar
   endpoints, MIME and RFC 2047 decoding); tools speak in account names, `EmailSummary`/`Email` and
-  `CalendarEvent`. Its `googleWorkspace({ connectors, connect, fetch })` factory is what unit tests
-  drive with a fake Connect and `fetch`. Every call takes the owner principal (`ownerPrincipal` in
+  `CalendarEvent`. Its `googleWorkspace({ connector, accounts, connect, fetch })` factory is what
+  unit tests drive with a fake Connect, a fake account store and `fetch`. Every call takes the owner principal (`ownerPrincipal` in
   `lib/owner.ts` from the turn's auth, or `home.owner` outside a turn), so it works the same from a
   chat, the briefing or a channel route.
-  - **Accounts.** One Connect connector per Google account (`GOOGLE_CONNECTORS`, e.g.
-    `personal=scl_…,work=scl_…`), because Connect keys a grant by connector and subject and the
-    subject is always the owner: `{ type: "user", id: principalId, issuer }`, the same subject Eve's
-    `connect()` adapter derives, so Notion and Google grants are keyed alike. Each token is requested
+  - **Accounts.** One Connect connector (`GOOGLE_CONNECTOR`) serves any number of Google accounts.
+    Connect keys a grant by connector and subject, so each account is its own subject under the
+    owner: `googleSubject(owner, label)` is `{ type: "user", id: "<principalId>/google/<label>",
+    issuer }`, and connecting a second account never replaces the first. Each token is requested
     with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
-    OpenID userinfo with its own token and is cached per instance. Tools name an account by its label
-    or its address. Nothing Google-specific is stored by Adam.
+    OpenID userinfo with its own token and is cached per instance by label. Tools name an account by
+    its label or its address.
+  - **Account list.** The labels (and when each was added) are the one thing Adam stores for Google:
+    `lib/google-accounts.ts` (`googleAccountRegistry`: list, add, remove, plus `normalizeAccountLabel`)
+    over a `GoogleAccountStore`, which `lib/google-accounts-store.ts` keeps as `google-accounts.json`
+    in private Blob with conditional writes (`putConditional`, retried on a conflict). It is written
+    only when a new name is connected or an account is disconnected. Reads go through a
+    `SharedCache` (`lib/shared-cache.ts`; for now `memoryCache`, per instance, five minutes), so the
+    store is read about once per instance per five minutes of use; a name the cached list misses is
+    looked up once more against the store, since another instance may have just added it. A
+    corrupt document fails the Google tools loudly rather than reading as empty.
   - **Consent.** `connect_google_account(account)` (the owner's direct chat only, through
     `ownerLinkRefusal` in `lib/connection-auth.ts` on `isOwnerDirectChat`: in a group anyone could
-    open the link first and connect their own account as the owner's) calls Connect's
-    `startAuthorization` for that connector, as the owner with the same scopes, and returns its URL.
-    Connect runs the Google OAuth flow (its Google service adds `access_type=offline` and
-    `prompt=consent`), stores the grant and refreshes it. Adam gets no callback; the owner says when
-    they are done and `list_google_accounts` shows the address.
+    open the link first and connect their own account as the owner's) takes the owner's own name for
+    the account ("connect my work gmail" → `work`), normalised to lowercase letters, digits and
+    dashes. A new name is added to the list first, so the grant the link creates is never one Adam
+    cannot see; then it calls Connect's `startAuthorization` for that name's subject with the same
+    scopes and returns the URL. The owner picks the Google account on Google's screen. The same
+    name again reconnects that account under the same subject. Connect runs the Google OAuth flow
+    (its Google service adds `access_type=offline` and `prompt=consent`), stores the grant and
+    refreshes it. Adam gets no callback; a name stays `needs_connecting` in `list_google_accounts`
+    until its grant exists, and the owner says when they are done.
+  - **Disconnect.** `disconnect_google_account(account)` is a workflow tool like
+    `merge_pull_request`: the owner chatting only (`ownerChatRefusal` in `lib/delivery.ts`), then a
+    `ctx.ask` confirmation naming the account and address. It revokes the grant with Connect's
+    `revokeToken` first and only then removes the name, so a failed revoke leaves the account listed
+    and says so, and the owner can retry instead of believing access is gone. A name that never
+    signed in (Connect has no token for it) is simply removed.
   - **Background turns never sign in.** Tokens come from `@vercel/connect`'s `getToken`, which never
     starts a sign-in: a missing or revoked grant (`user_authorization_required` / `no_token`) becomes
     `GoogleNeedsConnectingError` for that account, so the briefing or a mail trigger reports it and
@@ -360,7 +379,9 @@ stub the route).
     and no image or link from it is embedded with `![](url)`, which the server would fetch. That
     last rule is instruction only; `renderOutbound` does not know which urls came from mail.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
-  `homeDelivery`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
+  `homeDelivery`, `isOwnerChat`, `isOwnerDirectChat` and `ownerChatRefusal` in `lib/delivery.ts`;
+  the `SharedCache` interface and `memoryCache` in `lib/shared-cache.ts`; `googleAccountRegistry` in
+  `lib/google-accounts.ts`; `signInFromOwnerDirectChat`
   (interactive sign-in only in the owner's direct chat) and `ownerLinkRefusal` (the same rule for a
   link a tool hands out) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth`, `ownerPrincipal`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
@@ -373,7 +394,8 @@ stub the route).
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `connect_google_account`, `list_google_accounts`,
+  (confirmed in chat, merged by Devin), `connect_google_account`, `disconnect_google_account` (confirmed
+  in chat), `list_google_accounts`,
   `search_email`, `read_email`, `list_events`, `agent` (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -500,6 +522,9 @@ adam/
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
 │   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
+│   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
+│   │   ├── google-accounts-store.ts # the GoogleAccountStore in private Vercel Blob
+│   │   ├── shared-cache.ts    # SharedCache interface; memoryCache per instance
 │   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
 │   │   ├── untrusted.ts       # wrap untrusted text in tags, strip look-alike tags
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
@@ -516,7 +541,8 @@ adam/
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
-│   │   ├── connect_google_account.ts # owner's direct chat only: a Connect sign-in link for one account
+│   │   ├── connect_google_account.ts # owner's direct chat only: add or reconnect an account by name
+│   │   ├── disconnect_google_account.ts # workflow tool: confirm in chat, revoke, forget the name
 │   │   ├── list_google_accounts.ts
 │   │   ├── search_email.ts    # Gmail query across accounts, per-account errors
 │   │   ├── read_email.ts      # one message, text body, attachments listed
@@ -557,8 +583,8 @@ with `transcribe_audio` · Devin coding sessions started, checked, messaged and 
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
 remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar
-across the owner's connected Google accounts (search, read, list events), with email and invites
-treated as untrusted data.
+across any number of Google accounts the owner connects by chatting (search, read, list events;
+disconnect after a confirmation), with email and invites treated as untrusted data.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
 subagents · sending mail and writing events · new-mail triggers · inbound burst debouncing (low-risk single-user; add a Photon
@@ -584,7 +610,7 @@ QSTASH_URL=...                      # optional; QStash API origin for the region
 RIZ_MCP_URL=...                     # riz-mcp server for Strava activity details and the coach
 RIZ_MCP_JWT_SECRET=...              # signs the JWT riz-mcp expects
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
-BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio, the home delivery target and owner memory
+BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio, the home delivery target, owner memory and the Google account list
 TRANSCRIPTION_MODEL=...             # optional, defaults to microsoft/mai-transcribe-2
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
@@ -596,7 +622,7 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
-GOOGLE_CONNECTORS=...               # optional; label=connector per Google account, e.g. personal=scl_…,work=scl_…
+GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id or UID); accounts are added in chat
 ```
 
 ### Deployment notes
@@ -645,14 +671,20 @@ GOOGLE_CONNECTORS=...               # optional; label=connector per Google accou
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
-- Google needs a Google Cloud project with the Gmail and Calendar APIs enabled, an External consent
-  screen published In production (in Testing, refresh tokens die after 7 days), and a Web OAuth
-  client whose redirect URI is Vercel Connect's `https://connect.vercel.com/callback`. Each account
-  is a Connect connector made from that client with `vercel connect create google --connection-method
-  oauth`, attached to the project, and listed in `GOOGLE_CONNECTORS`. Expect the unverified-app
-  warning at consent. A Workspace admin may have to allow the client before a work account can
-  connect. Connect bills per token request (Hobby includes 500 a month); the SDK caches each token
-  for its hour, so reads cost about one request per account per instance-hour.
+- Google (the PR #33 description is the step-by-step runbook): a Google Cloud project with the
+  Gmail and Calendar APIs enabled; Google Auth Platform set to External, with the four scopes under
+  Data Access, published In production under Audience (in Testing, refresh tokens die after 7
+  days); and a Web application OAuth client whose redirect URI is Vercel Connect's
+  `https://connect.vercel.com/callback`. From that client make one connector with `vercel connect
+  create google --connection-method oauth --name adam-google --data @credentials.json` (delete the
+  file afterwards; the secret never goes into chat or logs), attach it to the project, set
+  `GOOGLE_CONNECTOR`, and redeploy. Then text Adam "connect my <name> gmail" in a direct chat, once
+  per account, and pick that account on Google's screen. The account list needs the Blob store.
+  Expect the unverified-app warning at consent. A Workspace admin may have to allow the client
+  before a work account can connect. Connect bills per token request (Hobby includes 500 a month);
+  the SDK caches each token for its hour, so reads cost about one request per account per
+  instance-hour. The account list costs one Blob write per connect of a new name or disconnect,
+  and about one read per instance per five minutes of Google use.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -670,7 +702,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
 1. **Google Workspace (`inbox`).** Gmail and Calendar across the owner's several Google accounts;
    triages mail, exercises right-to-silence, schedules follow-ups, and feeds `briefing` through
    a section in `lib/briefing.ts`.
-   **Read-only reads are built** (§4): connect, list accounts, search and read mail, list events,
+   **Read-only reads are built** (§4): connect any number of accounts by chatting, disconnect, list
+   accounts, search and read mail, list events,
    on root Adam, with Vercel Connect holding the Google grants. Next: a new-mail trigger (Gmail
    `users.watch` to Pub/Sub to an Adam route, on the primitives `lib/google.ts` already exposes),
    mail in the briefing, writes (`send_email`, `create_event`) behind `ctx.ask`, and an `inbox`
@@ -682,8 +715,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      on-disk login, not an officially supported Google product, pre-1.0, and its README confirms
      neither multi-account nor an MCP mode.
    - **Auth.** One Google Cloud OAuth client the owner creates, brought to Vercel Connect as one
-     `google` connector per account (Connect keys a grant by connector and subject, and the subject
-     is the owner). Connect's Google service sends `access_type=offline` and `prompt=consent`, stores
+     `google` connector; each account is its own Connect subject under the owner, so the owner adds
+     accounts by chatting and no new setup is needed per account. Connect's Google service sends `access_type=offline` and `prompt=consent`, stores
      the refresh token and refreshes. In "Testing" status Google's refresh tokens expire after 7 days,
      so publish the consent screen (an unverified-app warning is fine for one user).
    - **Safety.** Read-only scopes first. Sending mail and writing events are confirmed in chat with

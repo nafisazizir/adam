@@ -6,8 +6,8 @@ import { ownerPrincipal } from "#lib/owner.js";
 
 export default defineTool({
   description:
-    "List the user's Google account slots (e.g. personal, work), the address each is connected " +
-    "to, and whether each works or needs connecting.",
+    "List the user's Google accounts by name (e.g. personal, work), the address behind each, and " +
+    "whether each works or needs connecting (never signed in, or access lapsed).",
   inputSchema: z.object({}),
   async execute(_input, ctx) {
     if (!google.configured) return { configured: false, accounts: [] };

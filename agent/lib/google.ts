@@ -1,14 +1,20 @@
 import {
+  ConnectError,
   getToken,
   NoValidTokenError,
+  revokeToken,
   startAuthorization,
   UserAuthorizationRequiredError,
   type ConnectTokenParams,
+  type ConnectTokenSubject,
 } from "@vercel/connect";
 import { z } from "zod";
 
-import { env, type GoogleConnector } from "#lib/env.js";
+import { env } from "#lib/env.js";
+import { googleAccountRegistry, type GoogleAccountRegistry, normalizeAccountLabel } from "#lib/google-accounts.js";
+import { blobGoogleAccountStore } from "#lib/google-accounts-store.js";
 import type { HomeOwner } from "#lib/home-target.js";
+import { memoryCache } from "#lib/shared-cache.js";
 import { startOfLocalDay } from "#lib/zoned-time.js";
 
 const userinfoUrl = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -30,16 +36,27 @@ const metadataConcurrency = 5;
 export interface GoogleConnect {
   getToken(connector: string, params: ConnectTokenParams, options?: { forceRefresh?: boolean }): Promise<string>;
   startAuthorization(connector: string, params: ConnectTokenParams): Promise<{ url: string; expiresAt?: number }>;
+  revokeToken(connector: string, params: { subject: ConnectTokenSubject }): Promise<void>;
 }
 
 const vercelConnect: GoogleConnect = {
   getToken: (connector, params, options) => getToken(connector, params, options),
   startAuthorization: (connector, params) => startAuthorization(connector, params),
+  revokeToken: (connector, params) => revokeToken(connector, params),
 };
 
 export class GoogleNotConfiguredError extends Error {
   constructor() {
-    super("Google isn't configured: set GOOGLE_CONNECTORS to one Vercel Connect connector per account.");
+    super("Google isn't configured: set GOOGLE_CONNECTOR to the Vercel Connect Google connector.");
+  }
+}
+
+export class NoGoogleAccountsError extends Error {
+  constructor() {
+    super(
+      "No Google account is connected yet. The user adds one by asking in a direct chat with you " +
+        "(connect_google_account, named like work or personal).",
+    );
   }
 }
 
@@ -75,9 +92,14 @@ export interface GoogleAccountInfo {
 
 export interface GoogleSignIn {
   readonly account: string;
+  readonly added: boolean;
   readonly url: string;
   readonly expiresAt: Date | null;
 }
+
+export type GoogleDisconnect =
+  | { readonly disconnected: true; readonly account: string; readonly hadGrant: boolean }
+  | { readonly disconnected: false; readonly account: string; readonly reason: string };
 
 export interface EmailSummary {
   readonly account: string;
@@ -487,12 +509,33 @@ function sameAddress(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-interface Account extends GoogleConnector {
+interface Account {
+  readonly label: string;
   readonly owner: GoogleOwner;
 }
 
+// Connect keys a grant by connector and subject, so each account gets its own subject under the
+// owner and one connector holds them all.
+export function googleSubject(owner: GoogleOwner, label: string): ConnectTokenSubject {
+  return { type: "user", id: `${owner.principalId}/google/${label}`, issuer: owner.issuer };
+}
+
+function isMissingGrant(error: unknown): boolean {
+  if (error instanceof UserAuthorizationRequiredError || error instanceof NoValidTokenError) return true;
+  return error instanceof ConnectError && error.status === 404;
+}
+
+function labelOf(name: string): string | null {
+  try {
+    return normalizeAccountLabel(name);
+  } catch {
+    return null;
+  }
+}
+
 export interface GoogleWorkspaceDeps {
-  readonly connectors: readonly GoogleConnector[];
+  readonly connector: string | undefined;
+  readonly accounts: GoogleAccountRegistry;
   readonly timeZone: string;
   readonly connect?: GoogleConnect;
   readonly fetch?: typeof fetch;
@@ -500,7 +543,7 @@ export interface GoogleWorkspaceDeps {
 }
 
 export function googleWorkspace(deps: GoogleWorkspaceDeps) {
-  const { connectors, timeZone } = deps;
+  const { connector, accounts: registry, timeZone } = deps;
   const connect = deps.connect ?? vercelConnect;
   const request = deps.fetch ?? ((input, init) => fetch(input, init));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -515,13 +558,16 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     }
   }
 
-  // The same subject Eve's connect() adapter derives from a user principal, so every Connect
-  // grant the owner holds is keyed alike.
-  function tokenParams(owner: GoogleOwner): ConnectTokenParams {
-    return {
-      subject: { type: "user", id: owner.principalId, issuer: owner.issuer },
-      scopes: [...googleScopes],
-    };
+  function tokenParams(account: Account): ConnectTokenParams {
+    return { subject: googleSubject(account.owner, account.label), scopes: [...googleScopes] };
+  }
+
+  function connectorFor(owner: GoogleOwner | null): { connector: string; owner: GoogleOwner } {
+    if (!connector) throw new GoogleNotConfiguredError();
+    if (!owner) {
+      throw new Error("Google accounts belong to the user, and this turn carries no user identity to read them as.");
+    }
+    return { connector, owner };
   }
 
   // getToken never starts a sign-in, so a background turn with no grant fails here instead of
@@ -529,8 +575,8 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   async function accessToken(account: Account, fresh: boolean): Promise<string> {
     try {
       return await connect.getToken(
-        account.connector,
-        tokenParams(account.owner),
+        connectorFor(account.owner).connector,
+        tokenParams(account),
         fresh ? { forceRefresh: true } : undefined,
       );
     } catch (error) {
@@ -583,43 +629,60 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     }
   }
 
-  function accountsOf(owner: GoogleOwner | null): Account[] {
-    if (!connectors.length) throw new GoogleNotConfiguredError();
-    if (!owner) {
-      throw new Error("Google accounts belong to the user, and this turn carries no user identity to read them as.");
-    }
-    return connectors.map((connector) => ({ ...connector, owner }));
+  async function accountsOf(owner: GoogleOwner | null, fresh = false): Promise<Account[]> {
+    const caller = connectorFor(owner).owner;
+    const records = await registry.list({ fresh });
+    return records.map((record) => ({ label: record.label, owner: caller }));
+  }
+
+  async function someAccounts(owner: GoogleOwner | null): Promise<Account[]> {
+    const accounts = await accountsOf(owner);
+    if (!accounts.length) throw new NoGoogleAccountsError();
+    return accounts;
   }
 
   async function addressOf(account: Account): Promise<string> {
-    const cached = addresses.get(account.connector);
+    const cached = addresses.get(account.label);
     if (cached) return cached;
     const { email } = await googleCall(account, new URL(userinfoUrl), userinfoSchema);
-    addresses.set(account.connector, email);
+    addresses.set(account.label, email);
     return email;
   }
 
-  // An account is named by its label from GOOGLE_CONNECTORS or by its address.
-  async function selected(owner: GoogleOwner | null, name?: string): Promise<Account[]> {
-    const accounts = accountsOf(owner);
-    if (name === undefined) return accounts;
-    const labelled = accounts.find((account) => account.label === name.trim().toLowerCase());
-    if (labelled) return [labelled];
+  async function withAddress(accounts: readonly Account[], address: string): Promise<Account | undefined> {
     const known = await Promise.all(
       accounts.map(async (account) => ({ account, address: await addressOf(account).catch(() => null) })),
     );
-    const match = known.find(({ address }) => address !== null && sameAddress(address, name));
-    if (match) return [match.account];
-    const names = known
-      .map(({ account, address }) => `${account.label} (${address ?? "not connected or unreachable"})`)
-      .join(", ");
-    throw new Error(`${name} is not one of the user's Google accounts: ${names}.`);
+    return known.find((entry) => entry.address !== null && sameAddress(entry.address, address))?.account;
   }
 
+  async function describeAccounts(accounts: readonly Account[]): Promise<string> {
+    if (!accounts.length) return "none is connected yet";
+    const named = await Promise.all(
+      accounts.map(
+        async (account) => `${account.label} (${await addressOf(account).catch(() => "not connected or unreachable")})`,
+      ),
+    );
+    return named.join(", ");
+  }
+
+  // An account is named by its label or by its address. A name the cached list misses is looked up
+  // once more against the store, since another instance may have just connected it.
   async function only(owner: GoogleOwner | null, name: string): Promise<Account> {
-    const [account] = await selected(owner, name);
-    if (!account) throw new Error(`${name} is not one of the user's Google accounts.`);
-    return account;
+    const label = labelOf(name);
+    let accounts: Account[] = [];
+    for (const fresh of [false, true]) {
+      accounts = await accountsOf(owner, fresh);
+      const match =
+        accounts.find((account) => account.label === label) ??
+        (name.includes("@") ? await withAddress(accounts, name) : undefined);
+      if (match) return match;
+    }
+    throw new Error(`${name} is not one of the user's Google accounts: ${await describeAccounts(accounts)}.`);
+  }
+
+  async function selected(owner: GoogleOwner | null, name?: string): Promise<Account[]> {
+    return name === undefined ? someAccounts(owner) : [await only(owner, name)];
   }
 
   async function acrossAccounts<T>(
@@ -745,12 +808,12 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 
   return {
     get configured(): boolean {
-      return connectors.length > 0;
+      return connector !== undefined;
     },
 
     async listAccounts(owner: GoogleOwner | null): Promise<GoogleAccountInfo[]> {
       return Promise.all(
-        accountsOf(owner).map(async (account): Promise<GoogleAccountInfo> => {
+        (await accountsOf(owner)).map(async (account): Promise<GoogleAccountInfo> => {
           try {
             await accessToken(account, false);
             return { account: account.label, email: await addressOf(account), status: "connected" };
@@ -765,27 +828,49 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     },
 
     // Only for the owner's direct chat: whoever opens the link connects their Google account as the
-    // owner's.
-    async signIn(owner: GoogleOwner | null, name?: string): Promise<GoogleSignIn> {
-      const accounts = accountsOf(owner);
-      const labels = accounts.map((account) => account.label).join(", ");
-      const target = name === undefined ? (accounts.length === 1 ? accounts[0] : undefined) : await only(owner, name);
-      if (!target) throw new Error(`Ask which account to connect: ${labels}.`);
-      addresses.delete(target.connector);
-      const started = await connect.startAuthorization(target.connector, tokenParams(target.owner));
+    // owner's. A new name is added to the list before the link exists, so the grant it creates is
+    // never one Adam cannot see; an existing name gets a fresh link for the same subject.
+    async signIn(owner: GoogleOwner | null, name: string): Promise<GoogleSignIn> {
+      const caller = connectorFor(owner);
+      const label = name.includes("@") ? (await only(owner, name)).label : normalizeAccountLabel(name);
+      const { added } = await registry.add(label);
+      addresses.delete(label);
+      const started = await connect.startAuthorization(caller.connector, tokenParams({ label, owner: caller.owner }));
       return {
-        account: target.label,
+        account: label,
+        added,
         url: started.url,
         expiresAt: started.expiresAt ? new Date(started.expiresAt) : null,
       };
     },
 
-    async accountWithAddress(owner: GoogleOwner | null, address: string): Promise<string | null> {
-      for (const account of accountsOf(owner)) {
-        const known = await addressOf(account).catch(() => null);
-        if (known !== null && sameAddress(known, address)) return account.label;
+    async findAccount(owner: GoogleOwner | null, name: string): Promise<{ account: string; email: string | null }> {
+      const account = await only(owner, name);
+      return { account: account.label, email: await addressOf(account).catch(() => null) };
+    },
+
+    // The grant is revoked before the name goes, so a failed revoke leaves the account listed and
+    // the owner can try again rather than believing access is gone.
+    async disconnect(owner: GoogleOwner | null, name: string): Promise<GoogleDisconnect> {
+      const caller = connectorFor(owner);
+      const account = await only(owner, name);
+      let hadGrant = true;
+      try {
+        await connect.revokeToken(caller.connector, { subject: googleSubject(account.owner, account.label) });
+      } catch (error) {
+        if (!isMissingGrant(error)) {
+          const reason = `Vercel Connect could not revoke it, so it is still connected: ${errorMessage(error)}`;
+          return { disconnected: false, account: account.label, reason };
+        }
+        hadGrant = false;
       }
-      return null;
+      await registry.remove(account.label);
+      addresses.delete(account.label);
+      return { disconnected: true, account: account.label, hadGrant };
+    },
+
+    async accountWithAddress(owner: GoogleOwner | null, address: string): Promise<string | null> {
+      return (await withAddress(await accountsOf(owner), address))?.label ?? null;
     },
 
     async searchEmail(
@@ -873,4 +958,16 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 
 export type GoogleWorkspace = ReturnType<typeof googleWorkspace>;
 
-export const google = googleWorkspace({ connectors: env.GOOGLE_CONNECTORS, timeZone: env.USER_TIMEZONE });
+// Each instance keeps the list for a few minutes, so a connect on another instance shows up here
+// within that, or at once when it is named.
+const accountListTtlSeconds = 5 * 60;
+
+export const google = googleWorkspace({
+  connector: env.GOOGLE_CONNECTOR,
+  accounts: googleAccountRegistry({
+    store: blobGoogleAccountStore,
+    cache: memoryCache(),
+    cacheTtlSeconds: accountListTtlSeconds,
+  }),
+  timeZone: env.USER_TIMEZONE,
+});

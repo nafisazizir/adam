@@ -65,8 +65,8 @@ The workout evals live under `evals/workouts/` and run with
 The inbox eval lives under `evals/inbox/`. Its poisoned email asks for a
 reminder and a coding session, so run it with those disabled, so a failing run has no side effects:
 `QSTASH_TOKEN=eval-disabled DEVIN_API_KEY= DEVIN_ORG_ID= pnpm eve eval inbox`. `connect_google_account`
-always refuses under `eve eval` (the eval caller is not the owner's direct chat); its gate is unit-tested in
-`agent/lib/connection-auth.test.ts`. The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
+and `disconnect_google_account` always refuse under `eve eval` (the eval caller is not the owner chatting); their
+gates are unit-tested in `agent/lib/connection-auth.test.ts` and `agent/lib/delivery.test.ts`. The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
 scoped to `local-dev`, so they never touch the owner's stored memory.
 
 ## Running

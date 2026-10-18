@@ -7,20 +7,26 @@ import {
   emailBody,
   type GoogleConnect,
   googleScopes,
+  googleSubject,
   googleWorkspace,
   GoogleNeedsConnectingError,
   htmlToText,
   trimQuotedReply,
   truncate,
 } from "#lib/google.js";
+import {
+  googleAccountRegistry,
+  GoogleAccountsConflict,
+  type GoogleAccountRecord,
+  type GoogleAccountStore,
+} from "#lib/google-accounts.js";
+import { memoryCache } from "#lib/shared-cache.js";
 
 const b64 = (text: string) => Buffer.from(text).toString("base64url");
 
 const owner = { issuer: "photon-imessage", principalId: "+61400000000" };
-const both = [
-  { label: "personal", connector: "scl_personal" },
-  { label: "work", connector: "scl_work" },
-];
+const connector = "scl_google";
+const both = ["personal", "work"];
 
 interface TokenCall {
   readonly connector: string;
@@ -28,25 +34,58 @@ interface TokenCall {
   readonly forceRefresh: boolean;
 }
 
-// A connector mapped to a token has a grant; one mapped to an error fails with it; one left out
+function labelOf(params: { subject: ConnectTokenParams["subject"] }): string {
+  const { subject } = params;
+  return subject.type === "user" ? (subject.id.split("/google/")[1] ?? "") : "";
+}
+
+// An account mapped to a token has a grant; one mapped to an error fails with it; one left out
 // has never been connected.
-function fakeConnect(grants: Record<string, string | Error>) {
+function fakeConnect(grants: Record<string, string | Error>, options: { revokeError?: Error } = {}) {
   const tokenCalls: TokenCall[] = [];
   const started: { connector: string; params: ConnectTokenParams }[] = [];
+  const revoked: string[] = [];
   const connect: GoogleConnect = {
-    async getToken(connector, params, options) {
-      tokenCalls.push({ connector, params, forceRefresh: options?.forceRefresh ?? false });
-      const grant = grants[connector];
+    async getToken(connectorId, params, tokenOptions) {
+      tokenCalls.push({ connector: connectorId, params, forceRefresh: tokenOptions?.forceRefresh ?? false });
+      const grant = grants[labelOf(params)];
       if (grant instanceof Error) throw grant;
       if (grant === undefined) throw new UserAuthorizationRequiredError("User authorization is required");
-      return options?.forceRefresh ? `${grant}-fresh` : grant;
+      return tokenOptions?.forceRefresh ? `${grant}-fresh` : grant;
     },
-    async startAuthorization(connector, params) {
-      started.push({ connector, params });
-      return { url: `https://connect.test/authorize/${connector}`, expiresAt: Date.parse("2026-10-18T01:00:00Z") };
+    async startAuthorization(connectorId, params) {
+      started.push({ connector: connectorId, params });
+      return {
+        url: `https://connect.test/authorize/${labelOf(params)}`,
+        expiresAt: Date.parse("2026-10-18T01:00:00Z"),
+      };
+    },
+    async revokeToken(_connectorId, params) {
+      if (options.revokeError) throw options.revokeError;
+      const label = labelOf(params);
+      if (grants[label] === undefined) throw new ConnectError("no token", { status: 404 });
+      revoked.push(label);
+      delete grants[label];
     },
   };
-  return { connect, tokenCalls, started };
+  return { connect, tokenCalls, started, revoked };
+}
+
+function fakeAccountStore(labels: readonly string[]) {
+  let version = 0;
+  let accounts: GoogleAccountRecord[] = labels.map((label) => ({ label, addedAt: "2026-10-01T00:00:00.000Z" }));
+  const store: GoogleAccountStore & { labels(): string[] } = {
+    labels: () => accounts.map((account) => account.label),
+    async read() {
+      return { accounts: [...accounts], etag: String(version) };
+    },
+    async write(next, expected) {
+      if (expected === "absent" || expected.etag !== String(version)) throw new GoogleAccountsConflict("stale");
+      accounts = next;
+      version += 1;
+    },
+  };
+  return store;
 }
 
 type Route = (url: URL, init: RequestInit | undefined) => Response | undefined;
@@ -77,12 +116,14 @@ function addresses(byToken: Record<string, string>): Route {
 }
 
 function workspace(
-  connectors: { label: string; connector: string }[],
+  labels: readonly string[],
   connect: GoogleConnect,
   fetchImpl: typeof fetch,
+  store: GoogleAccountStore = fakeAccountStore(labels),
 ) {
   return googleWorkspace({
-    connectors,
+    connector,
+    accounts: googleAccountRegistry({ store, cache: memoryCache(), cacheTtlSeconds: 60 }),
     connect,
     timeZone: "Australia/Brisbane",
     fetch: fetchImpl,
@@ -90,7 +131,7 @@ function workspace(
   });
 }
 
-const personal = [both[0]!];
+const personal = ["personal"];
 
 test("prefers text/plain inside nested multipart and lists attachments without their data", () => {
   const { text, attachments } = emailBody({
@@ -169,23 +210,33 @@ const oneMessage: Route = (url) => {
   return undefined;
 };
 
-test("tokens come from Vercel Connect as the owner, with the Gmail and Calendar scopes", async () => {
-  const { connect, tokenCalls } = fakeConnect({ scl_personal: "token-personal" });
-  const { impl, calls } = fakeFetch(oneMessage);
-  await workspace(personal, connect, impl).searchEmail(owner, "in:inbox", { max: 5 });
-  assert.deepEqual(tokenCalls[0], {
-    connector: "scl_personal",
-    params: {
-      subject: { type: "user", id: owner.principalId, issuer: owner.issuer },
-      scopes: [...googleScopes],
-    },
-    forceRefresh: false,
+test("each account is its own Connect subject under the owner, on the one connector", () => {
+  assert.deepEqual(googleSubject(owner, "work"), {
+    type: "user",
+    id: "+61400000000/google/work",
+    issuer: "photon-imessage",
   });
-  assert.ok(calls.every((call) => bearer(call.init) === "token-personal"));
+  assert.notDeepEqual(googleSubject(owner, "work"), googleSubject(owner, "personal"));
+});
+
+test("tokens come from the one connector, as that account's subject, with the Gmail and Calendar scopes", async () => {
+  const { connect, tokenCalls } = fakeConnect({ personal: "token-personal", work: "token-work" });
+  const { impl, calls } = fakeFetch(oneMessage);
+  await workspace(both, connect, impl).searchEmail(owner, "in:inbox", { max: 5 });
+  assert.ok(tokenCalls.every((call) => call.connector === connector && !call.forceRefresh));
+  assert.deepEqual(tokenCalls.find((call) => labelOf(call.params) === "personal")?.params, {
+    subject: googleSubject(owner, "personal"),
+    scopes: [...googleScopes],
+  });
+  assert.deepEqual(tokenCalls.find((call) => labelOf(call.params) === "work")?.params.subject, googleSubject(owner, "work"));
+  assert.deepEqual(
+    [...new Set(calls.map((call) => bearer(call.init)))].sort(),
+    ["token-personal", "token-work"],
+  );
 });
 
 test("an account with no grant is reported as needing connecting without hiding the others", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token-personal" });
+  const { connect } = fakeConnect({ personal: "token-personal" });
   const { impl } = fakeFetch(oneMessage);
   const found = await workspace(both, connect, impl).searchEmail(owner, "in:inbox", { max: 5 });
   assert.equal(found.results.length, 1);
@@ -200,14 +251,14 @@ test("an account with no grant is reported as needing connecting without hiding 
 });
 
 test("a Connect outage is an error for that account, not a request to connect it", async () => {
-  const { connect } = fakeConnect({ scl_personal: new ConnectError("Failed to get token: 503") });
+  const { connect } = fakeConnect({ personal: new ConnectError("Failed to get token: 503") });
   const { impl } = fakeFetch();
   const found = await workspace(personal, connect, impl).searchEmail(owner, "x", { max: 5 });
   assert.deepEqual(found.errors, [{ account: "personal", error: "Failed to get token: 503", needsConnecting: false }]);
 });
 
 test("a 401 asks Connect for a fresh token once and retries", async () => {
-  const { connect, tokenCalls } = fakeConnect({ scl_personal: "token" });
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch((url, init) => {
     if (!url.pathname.endsWith("/messages")) return undefined;
     return bearer(init) === "token" ? new Response("expired", { status: 401 }) : Response.json({ messages: [] });
@@ -221,7 +272,7 @@ test("a 401 asks Connect for a fresh token once and retries", async () => {
 });
 
 test("a 401 after a fresh token means the account needs connecting", async () => {
-  const { connect, tokenCalls } = fakeConnect({ scl_personal: "token" });
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch((url) =>
     url.pathname.endsWith("/messages") ? new Response("revoked", { status: 401 }) : undefined,
   );
@@ -234,7 +285,7 @@ test("a 401 after a fresh token means the account needs connecting", async () =>
 });
 
 test("an account is named by its label or by its address", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token-personal", scl_work: "token-work" });
+  const { connect } = fakeConnect({ personal: "token-personal", work: "token-work" });
   const { impl, calls } = fakeFetch(
     addresses({ "token-personal": "me@gmail.example", "token-work": "me@work.example" }),
     (url) => (url.pathname.endsWith("/messages/m1") ? Response.json(message) : undefined),
@@ -260,15 +311,27 @@ test("reading from an account with no grant says it needs connecting", async () 
   await assert.rejects(workspace(personal, connect, impl).readEmail(owner, "personal", "m1"), GoogleNeedsConnectingError);
 });
 
-test("without connectors the tools say Google isn't configured", async () => {
-  const { connect } = fakeConnect({});
-  const google = workspace([], connect, fakeFetch().impl);
+test("without a connector the tools say Google isn't configured", async () => {
+  const google = googleWorkspace({
+    connector: undefined,
+    accounts: googleAccountRegistry({ store: fakeAccountStore(both), cache: memoryCache(), cacheTtlSeconds: 60 }),
+    connect: fakeConnect({}).connect,
+    timeZone: "Australia/Brisbane",
+  });
   assert.equal(google.configured, false);
-  await assert.rejects(google.searchEmail(owner, "x", { max: 1 }), /set GOOGLE_CONNECTORS/u);
+  await assert.rejects(google.searchEmail(owner, "x", { max: 1 }), /set GOOGLE_CONNECTOR to/u);
+  await assert.rejects(google.signIn(owner, "work"), /set GOOGLE_CONNECTOR to/u);
+});
+
+test("with no account yet, a read says how to add one and listing is empty", async () => {
+  const google = workspace([], fakeConnect({}).connect, fakeFetch().impl);
+  assert.equal(google.configured, true);
+  assert.deepEqual(await google.listAccounts(owner), []);
+  await assert.rejects(google.searchEmail(owner, "x", { max: 1 }), /No Google account is connected yet/u);
 });
 
 test("a turn with no user identity cannot read Google", async () => {
-  const { connect, tokenCalls } = fakeConnect({ scl_personal: "token" });
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" });
   await assert.rejects(
     workspace(personal, connect, fakeFetch().impl).searchEmail(null, "x", { max: 1 }),
     /no user identity/u,
@@ -277,7 +340,7 @@ test("a turn with no user identity cannot read Google", async () => {
 });
 
 test("accounts list their address, or that they need connecting", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token-personal" });
+  const { connect } = fakeConnect({ personal: "token-personal" });
   const { impl } = fakeFetch(addresses({ "token-personal": "me@gmail.example" }));
   const accounts = await workspace(both, connect, impl).listAccounts(owner);
   assert.deepEqual(accounts, [
@@ -286,39 +349,114 @@ test("accounts list their address, or that they need connecting", async () => {
   ]);
 });
 
-test("a sign-in link comes from Connect for the named slot, as the owner with the same scopes", async () => {
-  const { connect, started, tokenCalls } = fakeConnect({ scl_work: "token-work" });
-  const google = workspace(both, connect, fakeFetch().impl);
+test("connecting a new name adds it to the list and links its own subject, with the same scopes", async () => {
+  const { connect, started, tokenCalls } = fakeConnect({ personal: "token-personal" });
+  const store = fakeAccountStore(["personal"]);
+  const google = workspace(["personal"], connect, fakeFetch(addresses({})).impl, store);
 
-  await assert.rejects(google.signIn(owner), /Ask which account to connect: personal, work/u);
-
-  const link = await google.signIn(owner, "work");
+  const link = await google.signIn(owner, "  Work ");
   assert.deepEqual(link, {
     account: "work",
-    url: "https://connect.test/authorize/scl_work",
+    added: true,
+    url: "https://connect.test/authorize/work",
     expiresAt: new Date("2026-10-18T01:00:00Z"),
   });
-  assert.equal(started[0]?.connector, "scl_work");
-  await google.listAccounts(owner);
-  assert.deepEqual(started[0]?.params, tokenCalls.find((call) => call.connector === "scl_work")?.params);
+  assert.deepEqual(store.labels(), ["personal", "work"]);
+  assert.equal(started[0]?.connector, connector);
+  assert.deepEqual(started[0]?.params, { subject: googleSubject(owner, "work"), scopes: [...googleScopes] });
+
+  assert.deepEqual(await google.listAccounts(owner), [
+    { account: "personal", email: "unknown@example.com", status: "connected" },
+    { account: "work", email: null, status: "needs_connecting" },
+  ]);
+  assert.deepEqual(started[0]?.params, tokenCalls.find((call) => labelOf(call.params) === "work")?.params);
 });
 
-test("a single slot needs no name to connect, and reconnecting forgets its old address", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token-personal" });
+test("reconnecting an existing name reuses its subject, writes nothing and forgets its old address", async () => {
+  const { connect, started } = fakeConnect({ personal: "token-personal" });
   let address = "old@gmail.example";
   const { impl } = fakeFetch((url) =>
     url.hostname === "openidconnect.googleapis.com" ? Response.json({ email: address }) : undefined,
   );
-  const google = workspace(personal, connect, impl);
+  const store = fakeAccountStore(["personal"]);
+  let writes = 0;
+  const counting: GoogleAccountStore = { read: () => store.read(), write: (...args) => (writes++, store.write(...args)) };
+  const google = workspace(["personal"], connect, impl, counting);
   assert.equal((await google.listAccounts(owner))[0]?.email, "old@gmail.example");
 
-  assert.equal((await google.signIn(owner)).account, "personal");
+  const link = await google.signIn(owner, "Personal");
+  assert.equal(link.added, false);
+  assert.equal(writes, 0);
+  assert.deepEqual(started[0]?.params.subject, googleSubject(owner, "personal"));
   address = "new@gmail.example";
   assert.equal((await google.listAccounts(owner))[0]?.email, "new@gmail.example");
 });
 
+test("an account can be reconnected by its address, and a bad name adds nothing", async () => {
+  const { connect, started } = fakeConnect({ work: "token-work" });
+  const store = fakeAccountStore(both);
+  const google = workspace(both, connect, fakeFetch(addresses({ "token-work": "me@work.example" })).impl, store);
+  assert.equal((await google.signIn(owner, "ME@work.example")).account, "work");
+  assert.deepEqual(started[0]?.params.subject, googleSubject(owner, "work"));
+  await assert.rejects(google.signIn(owner, "!!!"), /can't name an account/u);
+  await assert.rejects(google.signIn(owner, "stranger@else.example"), /not one of the user's Google accounts/u);
+  assert.deepEqual(store.labels(), both);
+});
+
+test("disconnecting revokes that account's grant and drops it from the list", async () => {
+  const { connect, revoked } = fakeConnect({ personal: "token-personal", work: "token-work" });
+  const store = fakeAccountStore(both);
+  const google = workspace(both, connect, fakeFetch(addresses({ "token-work": "me@work.example" })).impl, store);
+  assert.deepEqual(await google.findAccount(owner, "me@work.example"), { account: "work", email: "me@work.example" });
+
+  assert.deepEqual(await google.disconnect(owner, "me@work.example"), {
+    disconnected: true,
+    account: "work",
+    hadGrant: true,
+  });
+  assert.deepEqual(revoked, ["work"]);
+  assert.deepEqual(store.labels(), ["personal"]);
+  assert.deepEqual(
+    (await google.listAccounts(owner)).map((account) => account.account),
+    ["personal"],
+  );
+});
+
+test("an account that never signed in is still removed when disconnected", async () => {
+  const { connect, revoked } = fakeConnect({});
+  const store = fakeAccountStore(["work"]);
+  const result = await workspace(["work"], connect, fakeFetch().impl, store).disconnect(owner, "work");
+  assert.deepEqual(result, { disconnected: true, account: "work", hadGrant: false });
+  assert.deepEqual(revoked, []);
+  assert.deepEqual(store.labels(), []);
+});
+
+test("a revoke that fails keeps the account listed so the owner can try again", async () => {
+  const { connect } = fakeConnect({ work: "token-work" }, { revokeError: new ConnectError("Failed to revoke token: 503") });
+  const store = fakeAccountStore(["work"]);
+  const result = await workspace(["work"], connect, fakeFetch().impl, store).disconnect(owner, "work");
+  assert.equal(result.disconnected, false);
+  assert.match(result.disconnected ? "" : result.reason, /still connected: Failed to revoke token: 503/u);
+  assert.deepEqual(store.labels(), ["work"]);
+});
+
+test("a name connected on another instance is found by going back to the store once", async () => {
+  const { connect } = fakeConnect({ personal: "token-personal", work: "token-work" });
+  const store = fakeAccountStore(["personal"]);
+  const google = workspace(["personal"], connect, fakeFetch(oneMessage).impl, store);
+  assert.deepEqual(
+    (await google.listAccounts(owner)).map((account) => account.account),
+    ["personal"],
+  );
+  const current = await store.read();
+  assert.ok(current);
+  await store.write([...current.accounts, { label: "work", addedAt: "2026-10-18T00:00:00.000Z" }], current);
+  const found = await google.searchEmail(owner, "x", { account: "work", max: 5 });
+  assert.equal(found.results[0]?.account, "work");
+});
+
 test("a Gmail 403 rate limit is retried like a 429", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   let lists = 0;
   const { impl } = fakeFetch((url) => {
     if (!url.pathname.endsWith("/messages")) return undefined;
@@ -333,7 +471,7 @@ test("a Gmail 403 rate limit is retried like a 429", async () => {
 });
 
 test("a grant missing a scope asks for the account to be connected again", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch((url) =>
     url.pathname.endsWith("/messages")
       ? Response.json({ error: { message: "Request had insufficient authentication scopes." } }, { status: 403 })
@@ -345,7 +483,7 @@ test("a grant missing a scope asks for the account to be connected again", async
 });
 
 test("search reports truncated when Gmail has more matches", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch(
     (url) =>
       url.pathname.endsWith("/messages")
@@ -359,7 +497,7 @@ test("search reports truncated when Gmail has more matches", async () => {
 });
 
 test("events merge across calendars earliest first, and a failing shared calendar is reported", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch(
     (url) =>
       url.pathname.endsWith("/calendarList")
@@ -408,7 +546,7 @@ test("events merge across calendars earliest first, and a failing shared calenda
 });
 
 test("events follow page tokens and flag what the bound cut off", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const pages: string[] = [];
   const event = (id: string, hour: number) => ({
     id,
@@ -436,7 +574,7 @@ test("events follow page tokens and flag what the bound cut off", async () => {
 });
 
 test("all-day events end on their last day and sort at local midnight", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl } = fakeFetch((url) =>
     url.pathname.endsWith("/events")
       ? Response.json({
@@ -461,7 +599,7 @@ test("all-day events end on their last day and sort at local midnight", async ()
 });
 
 test("a mailbox watch on the inbox posts to Gmail and returns its expiry", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl, calls } = fakeFetch((url) =>
     url.pathname.endsWith("/watch") ? Response.json({ historyId: "100", expiration: "1790604800000" }) : undefined,
   );
@@ -476,7 +614,7 @@ test("a mailbox watch on the inbox posts to Gmail and returns its expiry", async
 });
 
 test("mailbox history lists each added inbox message once", async () => {
-  const { connect } = fakeConnect({ scl_personal: "token" });
+  const { connect } = fakeConnect({ personal: "token" });
   const { impl, calls } = fakeFetch((url) =>
     url.pathname.endsWith("/history")
       ? Response.json({
