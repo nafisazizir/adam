@@ -328,8 +328,10 @@ adam/
 - **Per-session working memory** → `defineState` (durable, dies with the session).
 - **Per-(channel, user) conversation history + context window** → **Eve durable sessions**
   (built-in; nothing to build).
-- **Cross-session long-term memory** (durable facts that span sessions/channels) → **deferred to the
-  Redis layer** (§8). For v1 single-user, the per-chat session _is_ the memory.
+- **Cross-session long-term memory** (durable facts that span sessions/channels) → **deferred**;
+  when a second surface or separate sessions need it, an Eve memory slot (§8). For v1 single-user,
+  the per-chat session _is_ the memory, so `agent.ts` disables Eve's session timeout
+  (`sessionTimeoutMs: false`; the default 30 days would start the thread over empty).
 
 ---
 
@@ -413,24 +415,71 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 Ordered roughly by value. Each specialist is a **declared subagent** (`agent/subagents/<id>/`,
 own instructions/tools/connections; inherits nothing from root).
 
-1. **Cross-session memory + the Redis layer.** When multi-user/multi-channel arrives, Eve still owns
-   per-`(channel, user)` history. **Redis becomes the _identity + long-term memory_ layer, NOT
-   history:** durable per-user facts keyed `user:<id>` that span sessions/channels, plus mapping an
-   iMessage handle + a WhatsApp number to the same logical user. (Postgres/pgvector if memory needs
-   semantic recall.)
-2. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Pre-session reminders
+Each item names its seam: the one file that knows the vendor, and what the rest of Adam talks to.
+Settle the seam here before briefing a coding session, so a capability lands as a primitive rather
+than a one-off tool, and a vendor swap stays a one-file change. Steps only the owner can do (vendor
+plans, OAuth consent screens, logging in to accounts) are listed so a brief can name them.
+
+1. **Google Workspace (`inbox`).** Gmail and Calendar across the owner's several Google accounts;
+   triages mail, exercises right-to-silence, schedules follow-ups, and feeds `briefing`.
+   - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts keyed by
+     email address and take an `account` argument or search all of them. Candidate backends: the
+     Google APIs directly, or Google's `gws` CLI (multi-account, has a `gws mcp` mode; labelled not an
+     officially supported Google product, pre-1.0).
+   - **Auth.** One Google Cloud OAuth client the owner creates. In "Testing" status its refresh
+     tokens expire after 7 days, so publish it (an unverified-app warning is fine for one user) and
+     confirm tokens persist. Per-account refresh tokens live in private Vercel Blob, or in Vercel
+     Connect if it covers Google.
+   - **Safety.** Read-only scopes first. Sending mail and writing events are confirmed in chat with
+     `ctx.ask`, as `merge_pull_request` is. Mail is untrusted input: bodies reach the model as
+     content, never instructions, so nothing read from an email acts without that confirmation.
+2. **Voice calls.** Call Adam like texting it, with the same context, and have it act mid-call.
+   - **Line.** Photon's Spectrum voice provider adds inbound and outbound SIP calls to the iMessage
+     line, with cookbooks for ElevenLabs, Retell, LiveKit and Twilio; that would make the call
+     number the text number. The docs don't say which plan or line type includes voice — confirm
+     with Photon first. Fallback: an Australian number (Twilio local ≈ US$3/month, ≈ 1¢/min
+     inbound) so calls from the owner's phone stay domestic. FaceTime is not on offer.
+   - **Front end.** A realtime voice agent (ElevenLabs, Retell or LiveKit) holds the conversation.
+     Eve's built-in `twilioChannel` answers with `<Gather input="speech">`, one full agent turn per
+     utterance, which is too slow to converse with.
+   - **Seam.** The voice agent is a thin front end with one tool, `ask_adam(request)`, which
+     delivers the request into the home iMessage session through a `calls` channel, the way
+     `coding-sessions` delivers updates. Adam stays the only agent, so a call can do anything chat
+     can because chat is what does it: "text me photos of that place" lands in iMessage mid-call.
+     `lib/voice.ts` is the only file that knows the voice vendor. Open question: how Adam's answer
+     returns to the call (Eve's HTTP session stream vs. a callback the `calls` channel resolves).
+   - **After the call.** A `<call_ended>` trigger carrying the transcript summary enters the home
+     session with `turnPolicy: "queue"`, and Adam calls `stay_silent`: the call joins chat history
+     without a recap on the phone. At call start the voice agent needs a short briefing of recent
+     context, which is the first real need for memory (item 4).
+3. **A computer (`operator` subagent).** Read-only browsing of logged-in sites: X and LinkedIn
+   notifications, research, an overnight digest.
+   - **Seam.** A subagent with computer-use tools over a hosted browser that keeps logins
+     (Browserbase, Steel, Kernel); `lib/browser.ts` is the only file that knows the vendor. The
+     Vercel Sandbox stays for headless work. A digest is a schedule that delegates to it.
+   - **Risk.** X and LinkedIn prohibit automated access, and LinkedIn bans accounts for it. Keep it
+     read-only, low-volume and human-paced, or use a secondary account. Least certain value and
+     most risk of the three, so it comes last.
+4. **Cross-session memory.** Not needed while Adam is one iMessage thread: the durable session is
+   the memory, and compaction keeps it inside the context window. It becomes needed when a second
+   surface needs context (voice, item 2), when separate sessions need the owner's facts (workout
+   analyses, `deep` tasks, subagents, which inherit nothing), or when durable facts erode through
+   repeated compaction. Then: an Eve memory slot (`agent/memory/`, `defineMemory`) scoped to the
+   owner through `ownerAuth`, starting with the built-in file provider and moving to Supermemory or
+   Upstash only if semantic recall is needed. This replaces the earlier plan of a Redis memory layer.
+5. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Pre-session reminders
    based on its recommendations, about 15 minutes before the next workout, remain roadmap.
-3. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
+6. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
    plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
    (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
-4. **`inbox`.** Gmail connection; triages mail, exercises right-to-silence, schedules follow-ups.
-5. **`finance`.** Spend tracking, anomaly surfacing, weekly summary (cron).
-6. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
+7. **`finance`.** Spend tracking, anomaly surfacing, weekly summary (cron).
+8. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
    "life review" running `coach` + `finance` in parallel and merging).
-7. **External event triggers.** Strava/Hevy workout webhooks are built in `workouts`; email
-   integration remains roadmap.
-8. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
-   auth on inbound routes.
+9. **External event triggers.** Strava/Hevy workout webhooks are built in `workouts`; new-mail
+   triggers follow `inbox` (item 1).
+10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
+    auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
+    a WhatsApp number to the same logical user.
 
 ---
 

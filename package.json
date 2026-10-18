@@ -11,6 +11,8 @@
     "dev": "eve dev",
     "start": "eve start",
     "typecheck": "tsgo",
+    "test": "node --import ./scripts/test-hooks.ts --test \"agent/**/*.test.ts\"",
+    "verify": "scripts/verify.sh",
     "sync:riz-mcp-skill": "node scripts/sync-riz-mcp-skill.ts"
   },
   "dependencies": {
