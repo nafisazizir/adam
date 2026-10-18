@@ -127,9 +127,23 @@ stub the route).
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
-  knows how to `receive` back into it. `homeDelivery()` provides the last chat the user messaged
-  from and who they are, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging
+  knows how to `receive` back into it. `homeDelivery()` provides the last direct chat the owner
+  messaged from and who they are, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging
   surface is a channel file plus one entry here.
+- **Only the owner** (`admitSender` in `agent/lib/owner.ts`): the photon `onMessage` drops every
+  message not from the owner (returns `null` and logs the sender's handle, never the content), so
+  no one else starts a turn, steers one, answers a confirmation, or moves the home pointer. The owner
+  is `OWNER_IMESSAGE_USER_ID` when set, otherwise the `owner.principalId` already in the home pointer,
+  otherwise the first person to text Adam directly; the photon principal id is the sender's iMessage
+  handle (`message.author.userId`: a phone number such as `+61412345678` or an Apple ID email).
+  Handles compare exactly, apart from case for emails and spacing and punctuation for numbers. Only
+  a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's `isDM`
+  (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores everyone
+  else's; a sign-in link is never posted there, Adam asks the owner to text directly instead. If the
+  Blob read fails while no override is set, messages are dropped rather than let through. Without a
+  Blob store or an override nothing records the owner across instances, so set the override there.
+  Because only the owner reaches a photon turn, `deliveryChannelForAuth` resolving a photon auth
+  still means "the owner is chatting", which the owner-chat gates rely on.
 - **Acting as the owner** (`agent/lib/owner.ts`): `ownerAuth(owner, source)` builds a user-principal
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
   User-scoped connections key grants by issuer and principal id, so workout runs reuse the grant the
@@ -253,7 +267,7 @@ stub the route).
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
-  `lib/home-target.ts`; `ownerAuth`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
+  `lib/home-target.ts`; `ownerAuth`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
@@ -363,9 +377,9 @@ adam/
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry plus homeDelivery
-│   │   ├── home-target.ts     # last chat the user messaged from, in private Vercel Blob
+│   │   ├── home-target.ts     # owner and the last direct chat they messaged from, in private Vercel Blob
 │   │   ├── notion.ts          # shared Notion connection config
-│   │   ├── owner.ts           # ownerAuth plus the owner memory scope and namespace
+│   │   ├── owner.ts           # admitSender (only the owner gets in), ownerAuth, and the owner memory scope and namespace
 │   │   ├── owner-memory.ts    # the owner memory slot definition shared by root, coach and deep
 │   │   ├── memory.ts          # guardedMemory: best-effort recall, write tools only for allowed callers
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
@@ -451,6 +465,7 @@ BASE_URL=...                        # app's public origin, e.g. https://adam.ver
 IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
 IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
+OWNER_IMESSAGE_USER_ID=...          # optional; the owner's iMessage handle, else the one in the home pointer, else the first direct sender
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
@@ -490,6 +505,9 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - Owner memory lives in the same private Blob store, read by Eve from the store's own `BLOB_*`
   variables; no extra setup. Without a store, turns run without memory and saves fail. It also needs
   Vercel's system environment variables exposed (the default), or memory stays off.
+- Adam answers only its owner (see "Only the owner" in §4). With the home pointer already holding
+  the owner nothing needs setting. To change number, or to run without a Blob store, set
+  `OWNER_IMESSAGE_USER_ID` to the handle the logs show for your ignored message.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.
@@ -580,7 +598,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    triggers follow `inbox` (item 1).
 10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
     auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
-    a WhatsApp number to the same logical user.
+    a WhatsApp number to the same logical user. `admitSender` becomes a lookup of the sender in
+    that layer instead of a single owner.
 
 ---
 

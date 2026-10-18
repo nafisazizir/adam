@@ -54,3 +54,38 @@ function isVercelNamespace(namespace: string): boolean {
     return false;
   }
 }
+
+export interface InboundSender {
+  readonly id: string;
+  readonly isDirect: boolean;
+}
+
+export interface KnownOwner {
+  readonly pinned?: string;
+  readonly recorded?: string;
+}
+
+export type SenderAdmission =
+  | { readonly admitted: false }
+  | { readonly admitted: true; readonly updatesHome: boolean };
+
+// Emails compare case-insensitively; phone numbers ignore the spaces and punctuation people type.
+// Nothing looser, since a near-miss would hand a stranger the owner's identity.
+function canonicalHandle(handle: string): string {
+  const trimmed = handle.trim().toLowerCase();
+  return trimmed.includes("@") ? trimmed : trimmed.replace(/[\s().-]/gu, "");
+}
+
+export function sameHandle(a: string, b: string): boolean {
+  return canonicalHandle(a) === canonicalHandle(b);
+}
+
+// With no owner known yet, the first person to text directly becomes the owner; a group chat
+// never claims it, and only a direct chat moves the home thread.
+export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
+  if (canonicalHandle(sender.id) === "") return { admitted: false };
+
+  const ownerId = owner.pinned ?? owner.recorded;
+  const admitted = ownerId === undefined ? sender.isDirect : sameHandle(sender.id, ownerId);
+  return admitted ? { admitted, updatesHome: sender.isDirect } : { admitted };
+}
