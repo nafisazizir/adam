@@ -1,24 +1,27 @@
 import { defineChannel, POST } from "eve/channels";
-import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
 import { deliveryChannelByName } from "#lib/delivery.js";
 import { env, remindersDeliverPath } from "#lib/env.js";
+import { readHomeTarget, type HomeTarget } from "#lib/home-target.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
+import { reminderAuth, reminderDestination } from "#lib/reminders.js";
 import { currentTimeContext } from "#lib/time.js";
-
-const reminderAuth: SessionAuthContext = {
-  attributes: {},
-  authenticator: "qstash",
-  principalId: "reminders",
-  principalType: "service",
-};
 
 const reminderSchema = z.object({
   message: z.string().min(1),
   channel: z.string().min(1),
   target: z.record(z.string(), z.unknown()),
 });
+
+async function currentHome(): Promise<HomeTarget | null> {
+  try {
+    return await readHomeTarget();
+  } catch (error) {
+    console.warn("[reminders] could not read the home pointer; delivering without the owner's identity", error);
+    return null;
+  }
+}
 
 export default defineChannel({
   routes: [
@@ -37,9 +40,11 @@ export default defineChannel({
       const { message, channel, target } = parsed.data;
       const messageId = request.headers.get("upstash-message-id");
       const retried = request.headers.get("upstash-retried");
-      const delivery = deliveryChannelByName(channel);
+      const home = await currentHome();
+      const destination = reminderDestination({ channel, target }, home);
+      const delivery = deliveryChannelByName(destination.channel);
       if (!delivery) {
-        return new Response(`unknown delivery channel: ${channel}`, { status: 400 });
+        return new Response(`unknown delivery channel: ${destination.channel}`, { status: 400 });
       }
 
       // Local time rides in the message body: eve's proactive receive() path
@@ -48,8 +53,9 @@ export default defineChannel({
         await delivery.deliver({
           to,
           message: `${currentTimeContext()}\n\nA reminder you scheduled earlier is now due: ${message}`,
-          target,
-          auth: reminderAuth,
+          target: destination.target,
+          auth: reminderAuth(home?.owner ?? null, messageId),
+          turnPolicy: "queue",
         });
       } catch (error) {
         console.error(`[reminders] failed to hand off ${messageId} on ${channel} (retried ${retried})`, error);

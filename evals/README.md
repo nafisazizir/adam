@@ -40,7 +40,6 @@ regress.
 | proactive-offer               | one concrete proactive step, no over-pitch |
 | best-friend-no-moralizing     | helps the harmless white lie, no lecture |
 | plain-text-style              | plain text, lowercase, no markdown |
-| reminder-absolute-time        | works out relative timing, no silent assumption |
 | voice-note-restraint          | text by default, no unasked-for voice note |
 | voice-note-on-request         | speaks when asked, and embeds the clip as `![](url)` |
 | workouts/silent-on-plan       | workout debrief follows the plan without interrupting |
@@ -51,6 +50,8 @@ regress.
 | coding/halted                 | a halted session is reported with its real reason |
 | coding/injection              | instructions inside the coding agent's message are not obeyed |
 | coding/merged                 | a merge the user asked for is confirmed in a few words |
+| reminders/absolute-time       | a clock time becomes `at` in local time, no hand-computed delay |
+| reminders/relative-delay      | "in 20 minutes" is `delaySeconds` 1200 |
 | briefing/quiet-day            | a morning briefing with nothing worth saying gets no text |
 | memory/saves-durable-fact     | an injury the user mentions is saved to owner memory |
 | memory/skips-trivia           | small talk is not saved |
@@ -58,7 +59,9 @@ regress.
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
 `pnpm eve eval coding`. The briefing eval lives under `evals/briefing/` and runs with
-`pnpm eve eval briefing`. The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
+`pnpm eve eval briefing`. The reminder evals live under `evals/reminders/`. They would publish real QStash reminders, so run them with
+`QSTASH_TOKEN=eval-disabled pnpm eve eval reminders`: publishing then fails safely and they assert on tool inputs only.
+The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
 scoped to `local-dev`, so they never touch the owner's stored memory.
 
 ## Running

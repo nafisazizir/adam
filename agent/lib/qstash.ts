@@ -70,6 +70,12 @@ export async function publishReminder(input: {
   });
 }
 
-export async function cancelReminder(messageId: string): Promise<void> {
-  await client.messages.cancel(messageId);
+export async function cancelReminder(messageId: string): Promise<"cancelled" | "gone"> {
+  try {
+    await client.messages.cancel(messageId);
+    return "cancelled";
+  } catch (error) {
+    if ((error as { status?: unknown } | null)?.status === 404) return "gone";
+    throw error;
+  }
 }
