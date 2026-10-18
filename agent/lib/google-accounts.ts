@@ -117,7 +117,14 @@ export function googleAccountRegistry(deps: GoogleAccountRegistryDeps): GoogleAc
         const cached = accountsSchema.safeParse(await cache.get(cacheKey));
         if (cached.success) return cached.data;
       }
-      return remember((await store.read())?.accounts ?? []);
+      const read = (await store.read())?.accounts ?? [];
+      // A connect or disconnect that landed while this read was in flight has cached a newer list;
+      // backfilling over it would bring back the old one for the cache's lifetime.
+      if (!options?.fresh) {
+        const landed = accountsSchema.safeParse(await cache.get(cacheKey));
+        if (landed.success) return landed.data;
+      }
+      return remember(read);
     },
 
     add(raw) {

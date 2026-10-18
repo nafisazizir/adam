@@ -157,3 +157,34 @@ test("a corrupt document fails loudly rather than reading as empty", () => {
     assert.throws(() => parseGoogleAccountsDocument(text), /unreadable/u);
   }
 });
+
+test("a read that overlaps a write does not put the older list back in the cache", async () => {
+  const store = fakeStore();
+  const cache = memoryCache();
+  await registry(store, cache).add("work");
+  await cache.delete("google-accounts");
+
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let readDone: () => void = () => {};
+  const readStarted = new Promise<void>((resolve) => {
+    readDone = resolve;
+  });
+  const slow: GoogleAccountStore = {
+    read: async () => {
+      const before = await store.read();
+      readDone();
+      await gate;
+      return before;
+    },
+    write: (accounts, expected) => store.write(accounts, expected),
+  };
+  const reading = registry(slow, cache).list();
+  await readStarted;
+  await registry(store, cache).remove("work");
+  release();
+  assert.deepEqual(await reading, []);
+  assert.deepEqual(await registry(store, cache).list(), []);
+});

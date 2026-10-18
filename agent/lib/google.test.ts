@@ -40,18 +40,28 @@ function labelOf(params: { subject: ConnectTokenParams["subject"] }): string {
 }
 
 // An account mapped to a token has a grant; one mapped to an error fails with it; one left out
-// has never been connected.
+// has never been connected. Like the SDK, it keeps the last token per account in process until a
+// forced refresh, a cache-entry delete or a revoke; a forced refresh hands out `<grant>-fresh`.
 function fakeConnect(grants: Record<string, string | Error>, options: { revokeError?: Error } = {}) {
   const tokenCalls: TokenCall[] = [];
   const started: { connector: string; params: ConnectTokenParams }[] = [];
   const revoked: string[] = [];
+  const cached = new Map<string, string>();
   const connect: GoogleConnect = {
     async getToken(connectorId, params, tokenOptions) {
       tokenCalls.push({ connector: connectorId, params, forceRefresh: tokenOptions?.forceRefresh ?? false });
-      const grant = grants[labelOf(params)];
+      const label = labelOf(params);
+      const held = cached.get(label);
+      if (held && !tokenOptions?.forceRefresh) return held;
+      const grant = grants[label];
       if (grant instanceof Error) throw grant;
       if (grant === undefined) throw new UserAuthorizationRequiredError("User authorization is required");
-      return tokenOptions?.forceRefresh ? `${grant}-fresh` : grant;
+      const token = tokenOptions?.forceRefresh ? `${grant}-fresh` : grant;
+      cached.set(label, token);
+      return token;
+    },
+    deleteTokenCacheEntry(_connectorId, params) {
+      cached.delete(labelOf(params));
     },
     async startAuthorization(connectorId, params) {
       started.push({ connector: connectorId, params });
@@ -66,6 +76,7 @@ function fakeConnect(grants: Record<string, string | Error>, options: { revokeEr
       if (grants[label] === undefined) throw new ConnectError("no token", { status: 404 });
       revoked.push(label);
       delete grants[label];
+      cached.clear();
     },
   };
   return { connect, tokenCalls, started, revoked };
@@ -111,7 +122,7 @@ function bearer(init: RequestInit | undefined): string | undefined {
 function addresses(byToken: Record<string, string>): Route {
   return (url, init) =>
     url.hostname === "openidconnect.googleapis.com"
-      ? Response.json({ email: byToken[bearer(init) ?? ""] ?? "unknown@example.com" })
+      ? Response.json({ email: byToken[(bearer(init) ?? "").replace(/-fresh$/u, "")] ?? "unknown@example.com" })
       : undefined;
 }
 
@@ -414,6 +425,57 @@ test("with a shared address cache, a reconnect on one instance is seen by the ot
   await one.signIn(owner, "personal");
   address = "new@gmail.example";
   assert.equal((await two.listAccounts(owner))[0]?.email, "new@gmail.example");
+});
+
+test("a name reconnected to another Google account lists the new address, even after a read cached the old one", async () => {
+  const grants: Record<string, string> = { work: "token-a" };
+  const { connect } = fakeConnect(grants);
+  const { impl, calls } = fakeFetch(
+    addresses({ "token-a": "a@work.example", "token-b": "b@work.example" }),
+    oneMessage,
+  );
+  const google = workspace(["work"], connect, impl);
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal((await google.findAccount(owner, "work")).email, "a@work.example");
+
+  await google.signIn(owner, "work");
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal(bearer(calls.at(-1)?.init), "token-a");
+  grants.work = "token-b";
+
+  assert.deepEqual(await google.listAccounts(owner), [
+    { account: "work", email: "b@work.example", status: "connected" },
+  ]);
+  assert.equal((await google.findAccount(owner, "work")).email, "b@work.example");
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal(bearer(calls.at(-1)?.init), "token-b-fresh");
+});
+
+test("reconnecting drops Connect's cached token for that name", async () => {
+  const grants: Record<string, string> = { work: "token-a" };
+  const { connect } = fakeConnect(grants);
+  const { impl, calls } = fakeFetch(oneMessage);
+  const google = workspace(["work"], connect, impl);
+  await google.searchEmail(owner, "x", { max: 1 });
+  grants.work = "token-b";
+  await google.signIn(owner, "work");
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal(bearer(calls.at(-1)?.init), "token-b");
+});
+
+test("a disconnect whose revoke worked but whose list write failed says so, without claiming failure", async () => {
+  const { connect, revoked } = fakeConnect({ work: "token-work" });
+  const store = fakeAccountStore(["work"]);
+  const broken: GoogleAccountStore = {
+    read: () => store.read(),
+    write: async () => {
+      throw new Error("blob down");
+    },
+  };
+  const result = await workspace(["work"], connect, fakeFetch().impl, broken).disconnect(owner, "work");
+  assert.equal(result.disconnected, true);
+  assert.deepEqual(revoked, ["work"]);
+  assert.match(result.disconnected ? (result.warning ?? "") : "", /revoked, but the name could not be taken off the list \(blob down\)/u);
 });
 
 test("an account can be reconnected by its address, and a bad name adds nothing", async () => {

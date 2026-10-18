@@ -325,8 +325,13 @@ stub the route).
     issuer }`, and connecting a second account never replaces the first. Each token is requested
     with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
     OpenID userinfo with its own token and is cached for a day by subject in a `SharedCache`
-    (per instance for now), forgotten when that name is connected again or disconnected. Tools name
-    an account by its label or its address.
+    (per instance for now). Connecting a name again or disconnecting it forgets that address and
+    Connect's in-process token for the subject (`deleteTokenCacheEntry`). The old grant still
+    answers until the owner finishes consent, so a read in between can cache the old account again;
+    `list_google_accounts`, which the owner's check after a connect goes through, therefore asks
+    Connect for a fresh token (`forceRefresh`) and Google for the address past every cache, and a
+    name reconnected to another Google account shows its new address. Tools name an account by its
+    label or its address.
   - **Account list.** The labels (and when each was added) are the one thing Adam stores for Google:
     `lib/google-accounts.ts` (`googleAccountRegistry`: list, add, remove, plus `normalizeAccountLabel`)
     over a `GoogleAccountStore`, which `lib/google-accounts-store.ts` keeps as `google-accounts.json`
@@ -334,7 +339,8 @@ stub the route).
     only when a new name is connected or an account is disconnected. Reads go through a
     `SharedCache` (`lib/shared-cache.ts`; for now `memoryCache`, per instance, five minutes), so the
     store is read about once per instance per five minutes of use; a name the cached list misses is
-    looked up once more against the store, since another instance may have just added it. A
+    looked up once more against the store, since another instance may have just added it. A read
+    that misses the cache backfills it only if no write has cached a newer list meanwhile. A
     corrupt document fails the Google tools loudly rather than reading as empty.
   - **Consent.** `connect_google_account(account)` (the owner's direct chat only, through
     `ownerLinkRefusal` in `lib/connection-auth.ts` on `isOwnerDirectChat`: in a group anyone could
@@ -352,7 +358,14 @@ stub the route).
     `ctx.ask` confirmation naming the account and address. It revokes the grant with Connect's
     `revokeToken` first and only then removes the name, so a failed revoke leaves the account listed
     and says so, and the owner can retry instead of believing access is gone. A name that never
-    signed in (Connect has no token for it) is simply removed.
+    signed in (Connect has no token for it) is simply removed. A revoke that worked followed by a
+    list write that failed is reported as disconnected with a warning (the name shows as needing
+    connecting until a second disconnect removes it).
+  - **Known limits.** Another warm instance can keep listing a disconnected account, holding its
+    last access token, for up to the list cache's five minutes (only owner turns read, and a revoked
+    grant cannot refresh). A sign-in link left unused and opened after its name was disconnected
+    still creates a grant for that subject; Adam cannot see it, and it returns if the name is added
+    again.
   - **Background turns never sign in.** Tokens come from `@vercel/connect`'s `getToken`, which never
     starts a sign-in: a missing or revoked grant (`user_authorization_required` / `no_token`) becomes
     `GoogleNeedsConnectingError` for that account, so the briefing or a mail trigger reports it and

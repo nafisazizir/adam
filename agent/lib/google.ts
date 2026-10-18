@@ -1,5 +1,6 @@
 import {
   ConnectError,
+  deleteTokenCacheEntry,
   getToken,
   NoValidTokenError,
   revokeToken,
@@ -38,12 +39,14 @@ export interface GoogleConnect {
   getToken(connector: string, params: ConnectTokenParams, options?: { forceRefresh?: boolean }): Promise<string>;
   startAuthorization(connector: string, params: ConnectTokenParams): Promise<{ url: string; expiresAt?: number }>;
   revokeToken(connector: string, params: { subject: ConnectTokenSubject }): Promise<void>;
+  deleteTokenCacheEntry(connector: string, params: ConnectTokenParams): void;
 }
 
 const vercelConnect: GoogleConnect = {
   getToken: (connector, params, options) => getToken(connector, params, options),
   startAuthorization: (connector, params) => startAuthorization(connector, params),
   revokeToken: (connector, params) => revokeToken(connector, params),
+  deleteTokenCacheEntry: (connector, params) => deleteTokenCacheEntry(connector, params),
 };
 
 export class GoogleNotConfiguredError extends Error {
@@ -99,7 +102,12 @@ export interface GoogleSignIn {
 }
 
 export type GoogleDisconnect =
-  | { readonly disconnected: true; readonly account: string; readonly hadGrant: boolean }
+  | {
+      readonly disconnected: true;
+      readonly account: string;
+      readonly hadGrant: boolean;
+      readonly warning?: string;
+    }
   | { readonly disconnected: false; readonly account: string; readonly reason: string };
 
 export interface EmailSummary {
@@ -643,15 +651,21 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     return accounts;
   }
 
-  // Keyed by subject, and forgotten on connect and disconnect, so a name reconnected to another
-  // Google account never answers with the old address.
   function addressKey(account: Account): string {
     return `google-address:${JSON.stringify(googleSubject(account.owner, account.label))}`;
   }
 
-  async function addressOf(account: Account): Promise<string> {
+  // Connect's SDK keeps its own per-process token cache, which only a revoke or a forced refresh
+  // otherwise clears. Until the owner finishes consent the old grant still answers, so a read in
+  // between can cache the old account again; listAccounts is what gets past that.
+  async function forget(account: Account): Promise<void> {
+    if (connector) connect.deleteTokenCacheEntry(connector, tokenParams(account));
+    await addresses.delete(addressKey(account));
+  }
+
+  async function addressOf(account: Account, fresh = false): Promise<string> {
     const key = addressKey(account);
-    const cached = await addresses.get(key);
+    const cached = fresh ? null : await addresses.get(key);
     if (typeof cached === "string" && cached) return cached;
     const { email } = await googleCall(account, new URL(userinfoUrl), userinfoSchema);
     await addresses.set(key, email, addressTtlSeconds);
@@ -820,12 +834,14 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       return connector !== undefined;
     },
 
+    // The owner checks a connect with this, so it asks Connect for a fresh token and Google for the
+    // address, past every cache: a name reconnected to another Google account shows the new address.
     async listAccounts(owner: GoogleOwner | null): Promise<GoogleAccountInfo[]> {
       return Promise.all(
         (await accountsOf(owner)).map(async (account): Promise<GoogleAccountInfo> => {
           try {
-            await accessToken(account, false);
-            return { account: account.label, email: await addressOf(account), status: "connected" };
+            await accessToken(account, true);
+            return { account: account.label, email: await addressOf(account, true), status: "connected" };
           } catch (error) {
             if (error instanceof GoogleNeedsConnectingError) {
               return { account: account.label, email: null, status: "needs_connecting" };
@@ -844,7 +860,7 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       const label = name.includes("@") ? (await only(owner, name)).label : normalizeAccountLabel(name);
       const account = { label, owner: caller.owner };
       const { added } = await registry.add(label);
-      await addresses.delete(addressKey(account));
+      await forget(account);
       const started = await connect.startAuthorization(caller.connector, tokenParams(account));
       return {
         account: label,
@@ -874,8 +890,15 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         }
         hadGrant = false;
       }
-      await registry.remove(account.label);
-      await addresses.delete(addressKey(account));
+      await forget(account);
+      try {
+        await registry.remove(account.label);
+      } catch (error) {
+        const warning =
+          `Its sign-in was revoked, but the name could not be taken off the list (${errorMessage(error)}), ` +
+          "so it shows as needing connecting; disconnecting it again finishes the job.";
+        return { disconnected: true, account: account.label, hadGrant, warning };
+      }
       return { disconnected: true, account: account.label, hadGrant };
     },
 
