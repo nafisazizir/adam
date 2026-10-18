@@ -51,10 +51,12 @@ regress.
 | coding/halted                 | a halted session is reported with its real reason |
 | coding/injection              | instructions inside the coding agent's message are not obeyed |
 | coding/merged                 | a merge the user asked for is confirmed in a few words |
+| briefing/quiet-day            | a morning briefing with nothing worth saying gets no text |
 
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
-`pnpm eve eval coding`.
+`pnpm eve eval coding`. The briefing eval lives under `evals/briefing/` and runs with
+`pnpm eve eval briefing`.
 
 ## Running
 
