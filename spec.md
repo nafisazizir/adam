@@ -82,6 +82,8 @@ schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, not
                                           ──> receive(photon, { message: context, target:{threadId}, auth })
                                           ──> session starts, message lands on the phone
 list_reminders / cancel_reminder ───────> QStash messages API
+                                      (cancelling one that already fired or was cancelled returns
+                                       { cancelled: false, reason } instead of failing)
 ```
 
 The URL QStash hits is **our own deployment's public route** (the `reminders` or `workouts` custom
@@ -110,7 +112,9 @@ stub the route).
   channel fails so QStash retries (a later failure posting to the phone is not retried), and
   `schedule_reminder` publishes with a deduplication id derived from the session, turn, message and the model-given time (`at` with `leadMinutes`, or `delaySeconds`)
   (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
-  ten-minute window),
+  ten-minute window); the hand-off acts as the owner read from the home pointer at fire time
+  (`reminderAuth`, authenticator `reminders`, `turnPolicy: "queue"`, the same shape as coding-session
+  updates and the briefing), and falls back to a `service` principal only when no owner is stored,
   and `workouts` (Strava/Hevy webhooks plus
   QStash analysis and nudge callbacks). Analysis is queued immediately on webhook arrival, matching
   riz-mcp, while QStash still provides deduplication and retries; it starts an independent session at
@@ -181,7 +185,7 @@ stub the route).
   - **Scope.** `ownerMemoryScope` (`lib/owner.ts`) is `[issuer, principalId]` for user principals, so the
     owner's chat, workout and coding-session turns share one document even though `ownerAuth` keeps
     each trigger's own authenticator (Eve's `byPrincipal` keys on the authenticator and would split
-    them). Service principals (reminder delivery) get no memory; `eve dev` uses one `local-dev` scope.
+    them). Service principals (a reminder fired with no owner stored) get no memory; `eve dev` uses one `local-dev` scope.
   - **Namespace.** `ownerMemoryNamespace` is Eve's `defaultNamespace` with the graph node pinned to
     root. The memory key is derived from namespace and scope only, and the file provider stores it at
     `eve/memory/file/<key>/MEMORY.md`, so root, `coach` and `deep` read the same document. Production
@@ -218,8 +222,8 @@ stub the route).
   grant through a getToken-only provider: a stored grant works as usual, and one that is missing or
   that Connect reports revoked fails the call with `sign_in_needs_direct_chat`, so the model says
   Notion needs connecting instead of the turn waiting. A token Notion itself rejects surfaces as the
-  MCP client's own authorization error, which cannot park either. Runs started by a trigger without the owner's identity (reminders
-  today) fail with `principal_required`.
+  MCP client's own authorization error, which cannot park either. Only a reminder fired before any owner is stored runs without the
+  owner's identity and fails with `principal_required`.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and the shared
   Notion connection, plus the vendored riz-mcp
   skill and `workout-debrief` skill. The model choice suits focused coaching; keeping raw workout

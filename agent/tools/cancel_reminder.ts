@@ -15,9 +15,16 @@ export default defineTool({
       .describe("The reminder id from schedule_reminder or list_reminders."),
   }),
   async execute({ id }) {
-    await cancelReminder(id);
+    const outcome = await cancelReminder(id);
     scheduledReminders.update((list) => list.filter((reminder) => reminder.id !== id));
 
+    if (outcome === "gone") {
+      return {
+        id,
+        cancelled: false,
+        reason: "That reminder has already fired or was cancelled, so there is nothing left to cancel.",
+      };
+    }
     return { id, cancelled: true };
   },
 });

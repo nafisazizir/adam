@@ -1,24 +1,27 @@
 import { defineChannel, POST } from "eve/channels";
-import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
 import { deliveryChannelByName } from "#lib/delivery.js";
 import { env, remindersDeliverPath } from "#lib/env.js";
+import { readHomeTarget } from "#lib/home-target.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
+import { reminderAuth } from "#lib/reminders.js";
 import { currentTimeContext } from "#lib/time.js";
-
-const reminderAuth: SessionAuthContext = {
-  attributes: {},
-  authenticator: "qstash",
-  principalId: "reminders",
-  principalType: "service",
-};
 
 const reminderSchema = z.object({
   message: z.string().min(1),
   channel: z.string().min(1),
   target: z.record(z.string(), z.unknown()),
 });
+
+async function currentOwner() {
+  try {
+    return (await readHomeTarget())?.owner ?? null;
+  } catch (error) {
+    console.warn("[reminders] could not read the home pointer; delivering without the owner's identity", error);
+    return null;
+  }
+}
 
 export default defineChannel({
   routes: [
@@ -42,6 +45,8 @@ export default defineChannel({
         return new Response(`unknown delivery channel: ${channel}`, { status: 400 });
       }
 
+      const owner = await currentOwner();
+
       // Local time rides in the message body: eve's proactive receive() path
       // has no `context` field, unlike an inbound channel dispatch.
       try {
@@ -49,7 +54,8 @@ export default defineChannel({
           to,
           message: `${currentTimeContext()}\n\nA reminder you scheduled earlier is now due: ${message}`,
           target,
-          auth: reminderAuth,
+          auth: reminderAuth(owner, messageId),
+          turnPolicy: "queue",
         });
       } catch (error) {
         console.error(`[reminders] failed to hand off ${messageId} on ${channel} (retried ${retried})`, error);
