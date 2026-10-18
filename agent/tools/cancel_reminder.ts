@@ -2,7 +2,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { cancelReminder } from "#lib/qstash.js";
-import { scheduledReminders } from "#lib/reminders.js";
+import { forgetReminder } from "#lib/reminder-list.js";
+import { blobReminderListStore } from "#lib/reminder-list-store.js";
 
 export default defineTool({
   description:
@@ -16,7 +17,7 @@ export default defineTool({
   }),
   async execute({ id }) {
     const outcome = await cancelReminder(id);
-    scheduledReminders.update((list) => list.filter((reminder) => reminder.id !== id));
+    await forgetReminder(blobReminderListStore, id);
 
     if (outcome === "gone") {
       return {

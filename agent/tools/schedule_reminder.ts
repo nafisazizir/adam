@@ -4,7 +4,8 @@ import { z } from "zod";
 import { deliveryChannelForAuth, homeDelivery } from "#lib/delivery.js";
 import { publishReminder } from "#lib/qstash.js";
 import { replayStableKey } from "#lib/replay-key.js";
-import { scheduledReminders } from "#lib/reminders.js";
+import { recordReminder } from "#lib/reminder-list.js";
+import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderTiming } from "#lib/reminder-timing.js";
 import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
 
@@ -83,10 +84,7 @@ export default defineTool({
       idempotencyKey: replayStableKey(ctx, message, at ?? relativeDelay!, leadMinutes),
     });
     const fireAt = new Date(fireAtMs);
-    scheduledReminders.update((list) => [
-      ...list,
-      { id, message, fireAt: fireAt.toISOString() },
-    ]);
+    await recordReminder(blobReminderListStore, { id, message, fireAt: fireAt.toISOString() });
 
     return { id, message, fireAt: formatUserDateTime(fireAt) };
   },

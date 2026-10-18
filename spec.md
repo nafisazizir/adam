@@ -81,9 +81,10 @@ schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, not
                                           ──> verify Upstash-Signature
                                           ──> receive(photon, { message: context, target:{threadId}, auth })
                                           ──> session starts, message lands on the phone
-list_reminders / cancel_reminder ───────> QStash messages API
-                                      (cancelling one that already fired or was cancelled returns
-                                       { cancelled: false, reason } instead of failing)
+list_reminders ──> shared reminder list (private Blob JSON; every session reads the same one)
+cancel_reminder ─> QStash messages API, then drops the list entry
+                  (cancelling one that already fired or was cancelled returns
+                   { cancelled: false, reason } instead of failing)
 ```
 
 The URL QStash hits is **our own deployment's public route** (the `reminders` or `workouts` custom
@@ -112,7 +113,10 @@ stub the route).
   channel fails so QStash retries (a later failure posting to the phone is not retried), and
   `schedule_reminder` publishes with a deduplication id derived from the session, turn, message and the model-given time (`at` with `leadMinutes`, or `delaySeconds`)
   (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
-  ten-minute window); the hand-off acts as the owner read from the home pointer at fire time
+  ten-minute window; the owner's upcoming reminders live in one private Blob document shared by every session
+  (`lib/reminder-list.ts` over `lib/reminder-list-store.ts`, conditional writes with retry): `schedule_reminder` appends,
+  `cancel_reminder` and the delivery here remove, `list_reminders` prunes past entries. QStash stays the source of truth for
+  firing, so a Blob failure never blocks scheduling and listing then says it could not read the list); the hand-off acts as the owner read from the home pointer at fire time
   (`reminderAuth`, authenticator `reminders`, `turnPolicy: "queue"`, the same shape as coding-session
   updates and the briefing), and falls back to a `service` principal only when no owner is stored,
   and `workouts` (Strava/Hevy webhooks plus
@@ -440,6 +444,8 @@ adam/
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
 │   │   ├── daily-claim.ts     # claimDay/releaseDay: one run per job per local date, over a ClaimStore
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
+│   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
+│   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
