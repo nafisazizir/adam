@@ -68,6 +68,13 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
   there too (e.g. `remindersDeliverUrl = \`${BASE_URL}/eve/v1/reminders/deliver\``), so the deliver
 URL is computed from `BASE_URL`, not its own env var.
 
+## Verifying
+
+`pnpm verify` typechecks and runs `eve build`, filling placeholders for required env the local
+`.env` may lack. `pnpm verify <evalId...>` (e.g. `pnpm verify coding`) also runs those eval groups,
+which call live models and cost tokens. A new vendor's env vars stay optional so Adam still boots
+without them and only that vendor's tools fail, as with Devin.
+
 ## Conventions
 
 - **Comments are minimal — treat them as a code smell.** Make the code self-explanatory through clear
