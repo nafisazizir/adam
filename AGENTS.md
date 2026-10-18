@@ -58,10 +58,10 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
   re-enters the agent on purpose, so it can exercise right-to-silence, recall context, and compose —
   not blindly send a string.
 - **`receive(channel, { message, target, auth })`** is the primitive for starting a session without
-  an inbound user message (used by the `reminders` channel and by cron schedules). Only channels and
+  an inbound user message (used by the `reminders` channel and by cron schedules once they exist). Only channels and
   schedules have it.
-- **Schedules (`agent/schedules/`) are cron and periodic only** (daily `briefing`) — never the
-  reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
+- **Schedules (`agent/schedules/`) are cron and periodic only** (the daily `briefing` is roadmap; the directory does not exist yet) — never
+  the reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
   QStash, not cron.
 - **All env goes through `agent/lib/env.ts`** — the single place that parses/validates/sanitises
   `process.env` (zod). Consume typed values from there, never raw `process.env`. Derived values live

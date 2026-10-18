@@ -96,7 +96,7 @@ stub the route).
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
    QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
-   Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
+   Vercel Cron      ──▶│ (roadmap) periodic briefing/sweep      │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
    (future) webhooks──▶│ external events (email)                 │
                        └────────────────────────────────────────┘
@@ -106,7 +106,12 @@ stub the route).
 
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
-  the reminder was scheduled from, via `receive`), and `workouts` (Strava/Hevy webhooks plus
+  the reminder was scheduled from, via `receive`; it answers 500 when the hand-off to the delivery
+  channel fails so QStash retries (a later failure posting to the phone is not retried), and
+  `schedule_reminder` publishes with a deduplication id derived from the session, turn and reminder
+  content (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
+  ten-minute window),
+  and `workouts` (Strava/Hevy webhooks plus
   QStash analysis and nudge callbacks). Analysis is queued immediately on webhook arrival, matching
   riz-mcp, while QStash still provides deduplication and retries; it starts an independent session at
   `strava:<id>` or `hevy:<id>`. Strava activity details are fetched through riz-mcp; `WeightTraining`
@@ -115,7 +120,7 @@ stub the route).
   iMessage thread; root Adam applies right-to-silence there.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
-  deduplication IDs, retained for 90 days, for at most one analysis and one message per workout.
+  deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
   knows how to `receive` back into it. `homeDelivery()` provides the last chat the user messaged
@@ -219,7 +224,11 @@ stub the route).
   the allowlist (`image/*` plus common audio types), and hands the bytes to the channel. The Photon
   channel sends audio through its native voice-note path and everything else as an attachment, so
   generated speech gets iMessage's waveform UI instead of a downloadable file. An unreachable or
-  disallowed url degrades to a raw link in the text. `lib/speech.ts` (text → audio, via the AI
+  disallowed url degrades to a raw link in the text. Model-chosen urls are untrusted: only `https` is
+  fetched, every resolved address must be public (loopback, private, link-local, metadata and
+  IPv4-embedding IPv6 ranges are refused, checked at connect time in `lib/public-fetch.ts`),
+  redirects are followed manually for at most three hops with the same checks, and the body is
+  streamed with a 10 MiB cap. Urls Adam published itself are read back through `lib/assets.ts`. `lib/speech.ts` (text → audio, via the AI
   Gateway) and `lib/assets.ts` (bytes → url, via a **private** Vercel Blob store) are the two seams
   behind `generate_speech`; a different TTS provider or blob store is a one-file change.
   Nothing Adam generates is ever world-readable: the url is only a handle, and `readAsset` is the
@@ -240,8 +249,8 @@ stub the route).
   (`lib/photon-inbound.ts`). `transcribe_audio` reads the staged audio file from the sandbox and calls
   `lib/transcription.ts`, the STT seam. `lib/transcribable-audio.ts` uses ffmpeg to convert CAF and
   other unsupported types to 16 kHz mono WAV before sending audio through the AI Gateway.
-- **Schedules** (`agent/schedules/`): `briefing` (daily, Hobby-safe). Periodic only — _never_ the
-  reminder timer.
+- **Schedules** (`agent/schedules/`): none yet; the daily `briefing` is on the roadmap (Hobby-safe,
+  once a day). Periodic only — _never_ the reminder timer.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
   is the actual product surface; right-to-silence is applied to workout debriefs when they re-enter
   the user's iMessage thread.
@@ -313,8 +322,7 @@ adam/
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
-│   └── schedules/
-│       └── briefing.ts        # daily cron only
+│   └── schedules/             # roadmap: briefing.ts (daily cron only); absent today
 ├── scripts/
 │   ├── sync-riz-mcp-skill.ts
 │   └── riz-mcp-skill.lock.json
@@ -338,7 +346,7 @@ adam/
 ## 7. v1 scope & non-goals
 
 **In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · daily
-`briefing` cron · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
+Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
@@ -346,7 +354,7 @@ with `transcribe_audio` · Devin coding sessions started, checked, messaged and 
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR.
 
-**Out (deferred):** Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
+**Out (deferred):** daily `briefing` cron (roadmap) · Redis / cross-session memory · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
@@ -357,6 +365,7 @@ from there, never via raw `process.env`. Derived values live there too, so the d
 its own env var; it's computed from `BASE_URL` as `remindersDeliverUrl = \`${BASE_URL}/eve/v1/reminders/deliver\``.
 
 ```
+USER_TIMEZONE=...                   # optional, IANA name, defaults to Australia/Brisbane; drives every time prompt
 BASE_URL=...                        # app's public origin, e.g. https://adam.vercel.app (deliver URL derived in env.ts)
 IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
@@ -364,6 +373,9 @@ IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
+QSTASH_URL=...                      # optional; QStash API origin for the region
+RIZ_MCP_URL=...                     # riz-mcp server for Strava activity details and the coach
+RIZ_MCP_JWT_SECRET=...              # signs the JWT riz-mcp expects
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
 BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio and the home delivery target
 TRANSCRIPTION_MODEL=...             # optional, defaults to microsoft/mai-transcribe-2

@@ -5,6 +5,7 @@ import { env } from "#lib/env.js";
 import type { HomeOwner } from "#lib/home-target.js";
 import { ownerAuth } from "#lib/owner.js";
 import { currentTimeContext } from "#lib/time.js";
+import { stripWrapperTags } from "#lib/untrusted.js";
 
 export type WorkoutSource = "strava" | "hevy";
 
@@ -62,7 +63,7 @@ export function debriefMessage(debrief: string): string {
     "<workout_debrief>",
     "The user just finished a workout. The coach has analysed it and saved the full write-up in their Notion. This is the coach's debrief:",
     "",
-    debrief.trim(),
+    stripWrapperTags(debrief, "workout_debrief").trim(),
     "</workout_debrief>",
     "",
     "Follow your workout rules: text them only if this clears the bar, otherwise call the stay_silent tool.",

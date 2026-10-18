@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { deliveryChannelForAuth, homeDelivery } from "#lib/delivery.js";
 import { publishReminder } from "#lib/qstash.js";
+import { replayStableKey } from "#lib/replay-key.js";
 import { scheduledReminders } from "#lib/reminders.js";
 import { formatUserDateTime } from "#lib/time.js";
 
@@ -42,6 +43,7 @@ export default defineTool({
       channel: resolved.channel.name,
       target: resolved.target,
       delaySeconds,
+      idempotencyKey: replayStableKey(ctx, message, delaySeconds),
     });
     const fireAt = new Date(Date.now() + delaySeconds * 1000);
     scheduledReminders.update((list) => [

@@ -60,25 +60,16 @@ export async function publishReminder(input: {
   channel: string;
   target: Record<string, unknown>;
   delaySeconds: number;
+  idempotencyKey: string;
 }): Promise<string> {
   return publishCallback({
     url: env.remindersDeliverUrl,
     body: { message: input.message, channel: input.channel, target: input.target },
     delaySeconds: input.delaySeconds,
+    deduplicationId: `reminder-${input.idempotencyKey}`.replace(/[^\w-]/gu, "_"),
   });
 }
 
 export async function cancelReminder(messageId: string): Promise<void> {
   await client.messages.cancel(messageId);
-}
-
-export function verifyReminderSignature(input: {
-  signature: string;
-  body: string;
-}): Promise<boolean> {
-  return verifyCallbackSignature({
-    signature: input.signature,
-    body: input.body,
-    url: env.remindersDeliverUrl,
-  });
 }

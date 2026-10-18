@@ -7,6 +7,7 @@ import type { HomeOwner } from "#lib/home-target.js";
 import { ownerAuth } from "#lib/owner.js";
 import { publishCallback } from "#lib/qstash.js";
 import { currentTimeContext, formatUserDateTime } from "#lib/time.js";
+import { stripWrapperTags } from "#lib/untrusted.js";
 
 export type CodingSessionState =
   | "starting"
@@ -198,7 +199,7 @@ export function nextWatchTick(
 }
 
 function stripUpdateTags(text: string): string {
-  return text.replace(/<\s*\/?\s*coding_session_update\b[^>]*>/giu, "");
+  return stripWrapperTags(text, "coding_session_update");
 }
 
 export function codingUpdateFor(
