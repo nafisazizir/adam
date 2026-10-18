@@ -4,7 +4,7 @@ import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import { readHomeTargetState, rememberHomeTarget } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
-import { resolveAttachmentIds, sentOverIMessage, unreadableInbound } from "#lib/photon-inbound.js";
+import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import {
   admitSender,
@@ -128,7 +128,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     const admission = await admit({
       id: message.author.userId,
       isDirect,
-      isIMessage: sentOverIMessage(message.raw),
+      isIMessage: !sentOverAnotherService(message.raw),
     });
     if (!admission.admitted) return null;
 

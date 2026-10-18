@@ -144,11 +144,12 @@ stub the route).
   punctuation for numbers. Only a 404 counts as "no owner yet": a pointer that is not JSON, fails
   the schema, names another issuer, or cannot be read drops every message, and without a Blob store
   only listed handles get in. A recorded owner is cached per instance; nothing else is.
-  Only iMessage senders get in: Apple authenticates a handle, while an SMS or RCS originator can be
-  spoofed. `sentOverIMessage` in `lib/photon-inbound.ts` reads the sender's `service`, falling back
-  to the webhook's `platform`, and fails closed when neither says iMessage, so the owner's own SMS
-  fallback during an iMessage outage is dropped too. Photon's webhook documents only `platform`, so
-  an SMS that Photon labels `iMessage` would still pass; the line is an iMessage line.
+  SMS and RCS senders are refused: Apple authenticates an iMessage handle, while an SMS or RCS
+  originator can be spoofed. `sentOverAnotherService` in `lib/photon-inbound.ts` reads the sender's
+  `service`, falling back to the webhook's `platform`, and refuses only a sender explicitly marked as
+  another service, so the owner's own SMS fallback during an iMessage outage is dropped too. A payload
+  naming no service is admitted rather than locking the owner out; Photon's webhook documents only
+  `platform`, so an SMS that Photon labels `iMessage` would still pass; the line is an iMessage line.
   Only a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's
   `isDM` (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores
   everyone else's; its context says others can read the replies, and a sign-in link is never posted
