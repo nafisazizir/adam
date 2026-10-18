@@ -158,9 +158,16 @@ stub the route).
   Only a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's
   `isDM` (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores
   everyone else's; its context says others can read the replies, and a sign-in link is never posted
-  there, Adam asks the owner to text directly instead. Because only the owner reaches a photon
-  turn, `deliveryChannelForAuth` resolving a photon auth still means "the owner is chatting", which
-  the owner-chat gates rely on.
+  there, Adam asks the owner to text directly instead. The photon auth carries `thread_id` and
+  `direct` (`"true"`/`"false"`, from `ctx.thread.isDM` on the inbound message).
+- **Owner-chat gates** (`isOwnerChat`, `isOwnerDirectChat` in `agent/lib/delivery.ts`): because only
+  the owner reaches a photon turn, an auth that `deliveryChannelForAuth` resolves means "the owner is
+  chatting"; background turns (debriefs, coding updates, the briefing, reminders) keep their own
+  authenticators and never resolve. `isOwnerChat` gates anything that needs the owner's say-so in
+  chat (merge confirmations, memory writes). `isOwnerDirectChat` also requires `direct: "true"` and
+  gates anything that hands out a link granting access to the owner's accounts (sign-in and consent
+  links): in a group anyone could open it first and connect their own account in the owner's name.
+  A tool that mints such a link refuses outside it with "Text me directly and ask again".
 - **Acting as the owner** (`agent/lib/owner.ts`): `ownerAuth(owner, source)` builds a user-principal
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
   User-scoped connections key grants by issuer and principal id, so workout runs reuse the grant the
@@ -187,8 +194,8 @@ stub the route).
     read it. Their instructions say they cannot change memories, despite the recall header naming the
     remove tool.
   - **Writes only from owner chat.** `guardedMemory` (`lib/memory.ts`) wraps the provider and offers
-    the save and remove tools only when `isOwnerChat` holds: the turn resolves to a delivery channel
-    (`deliveryChannelForAuth`, the gate `merge_pull_request` uses) or is `local-dev`. Workout debriefs
+    the save and remove tools only when `canWriteMemory` holds: the turn is the owner's chat
+    (`isOwnerChat`, the gate `merge_pull_request` uses) or is `local-dev`. Workout debriefs
     and coding-session updates carry text the owner did not write, so they can read memory but have
     no tool to write it. Untrusted content inside a chat turn (a forwarded email, a web result) is
     guarded by the instructions only.
@@ -204,9 +211,15 @@ stub the route).
     old one, which breaks the prompt cache from the old copy onward; keep the list stable and short.
     Over-limit saves are rejected rather than evicting, so the model prunes stale entries.
 - **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam,
-  the coach and the deep worker. The first Notion call parks the turn and the Photon channel's `authorization.required`
-  handler texts the sign-in link; the turn resumes after consent. Runs started by a trigger without
-  the owner's identity (reminders today) cannot use Notion.
+  the coach and the deep worker, its auth wrapped in `signInFromOwnerDirectChat`
+  (`lib/connection-auth.ts`). In the owner's direct chat the first Notion call parks the turn, the
+  Photon channel's `authorization.required` handler texts the sign-in link, and the turn resumes
+  after consent. Every other turn (group chat, debrief, coding update, briefing) gets the same
+  grant through a getToken-only provider: a stored grant works as usual, and one that is missing or
+  that Connect reports revoked fails the call with `sign_in_needs_direct_chat`, so the model says
+  Notion needs connecting instead of the turn waiting. A token Notion itself rejects surfaces as the
+  MCP client's own authorization error, which cannot park either. Runs started by a trigger without the owner's identity (reminders
+  today) fail with `principal_required`.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and the shared
   Notion connection, plus the vendored riz-mcp
   skill and `workout-debrief` skill. The model choice suits focused coaching; keeping raw workout
@@ -265,12 +278,18 @@ stub the route).
   - **Turns that never park.** An update turn's principal differs from the owner's own iMessages,
     so Eve queues the owner's replies behind it rather than letting them steer it. Nothing in an
     update turn may therefore wait on the owner. Tools that need the owner's confirmation refuse
-    outside a chat turn, and `schedule_reminder` resolves the current turn's channel, then the
-    session initiator's, then the home thread.
+    outside a chat turn (`isOwnerChat`), and `schedule_reminder` resolves the current turn's channel,
+    then the session initiator's, then the home thread. A sign-in is the other way to wait: Eve holds
+    a turn on one until the caller connects, the turn is cancelled or that same caller writes again,
+    and documents no expiry. Eve parks only for an interactive provider (one with
+    `startAuthorization`; `startScopedAuthorization` in `eve/dist/src/runtime/connections/scoped-authorization.js`
+    is the only caller of `requestAuthorization` and returns early otherwise), and resolves an `auth`
+    function per execution step from the current caller. `signInFromOwnerDirectChat` returns the
+    interactive provider only in the owner's direct chat, so no other turn can open one, whichever
+    trigger started it. Every user-scoped connection goes through it.
 - **Merging** goes through Devin, whose own GitHub access opens the pull requests, so Adam holds no
   GitHub credentials. `merge_pull_request` is a workflow tool (`defineWorkflowTool`). A step
-  refuses unless the current turn is the owner chatting (`deliveryChannelForAuth` resolves its
-  auth). Another finds the coding session that opened the PR among Adam's tagged sessions; a PR no
+  refuses unless the current turn is the owner chatting (`isOwnerChat`). Another finds the coding session that opened the PR among Adam's tagged sessions; a PR no
   session of Adam's opened is refused, and a merged or closed one is reported, all without
   prompting. Otherwise it asks with `ctx.ask`, a plain-text confirmation naming the PR
   (`Merge owner/repo#n ("<session title>")? It gets squash-merged as it is now.`, options Merge and
@@ -283,7 +302,8 @@ stub the route).
   reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
-  `homeDelivery` in `lib/delivery.ts`; the single home pointer (delivery target and owner identity) in
+  `homeDelivery`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
+  (interactive sign-in only in the owner's direct chat) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
@@ -393,7 +413,8 @@ adam/
 │   │       └── tools/owner.ts # disableTool(): no save/remove in the deep worker
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
-│   │   ├── delivery.ts        # delivery registry plus homeDelivery
+│   │   ├── delivery.ts        # delivery registry, homeDelivery, and the owner-chat gates
+│   │   ├── connection-auth.ts # signInFromOwnerDirectChat: no sign-in outside the owner's direct chat
 │   │   ├── home-target.ts     # owner and the last direct chat they messaged from, in private Vercel Blob
 │   │   ├── notion.ts          # shared Notion connection config
 │   │   ├── owner.ts           # admitSender (only the owner gets in), ownerAuth, and the owner memory scope and namespace
@@ -515,7 +536,7 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   `STRAVA_WEBHOOK_SUBSCRIPTION_ID` in Adam's environment.
 - Set the Hevy webhook URL to `${BASE_URL}/eve/v1/workouts/hevy`.
 - Set up the user-scoped Notion connector with `eve add connection/notion --skip-install`, attach it
-  to the project, then ask Adam for something in Notion over iMessage and follow the link it texts.
+  to the project, then ask Adam for something in Notion in a direct iMessage chat and follow the link it texts.
   Configure both Notion data source IDs in Adam's environment.
 - Workout analyses and nudges require a connected private Vercel Blob store and are skipped until the
   user has texted Adam once after deploy; that chat becomes the remembered home target and owner.

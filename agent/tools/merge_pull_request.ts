@@ -2,7 +2,7 @@ import { defineWorkflowTool, type WorkflowStepToolContext } from "eve/tools";
 import { z } from "zod";
 
 import { tryWatchCodingSession } from "#lib/coding-sessions.js";
-import { deliveryChannelForAuth } from "#lib/delivery.js";
+import { isOwnerChat } from "#lib/delivery.js";
 import { listCodingSessions, sendCodingSessionMessage } from "#lib/devin.js";
 import {
   type MergeMethod,
@@ -31,8 +31,7 @@ type Found =
 // the owner's reply would queue behind a prompt parked there instead of answering it.
 async function isOwnerChatTurn(ctx: WorkflowStepToolContext): Promise<boolean> {
   "use step";
-  const auth = ctx.session.auth.current;
-  return auth !== null && deliveryChannelForAuth(auth) !== null;
+  return isOwnerChat(ctx.session.auth.current);
 }
 
 async function findSessionFor(url: string): Promise<Found> {

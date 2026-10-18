@@ -67,6 +67,11 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
   "queue"`) and guards against a double fire with `claimDay` (`lib/daily-claim.ts`), calling `releaseDay` and
   rethrowing if its work fails. New morning
   content is a section in `lib/briefing.ts`, not a new schedule.
+- **Owner-only actions gate on the caller** with `isOwnerChat` / `isOwnerDirectChat` in
+  `lib/delivery.ts`: a confirmation needs the owner chatting; a link that grants access to the
+  owner's accounts needs their direct (1:1) chat. Background turns must never park on the owner, so
+  every user-scoped connection wraps its auth in `signInFromOwnerDirectChat`
+  (`lib/connection-auth.ts`), and only the owner's direct chat can open a sign-in.
 - **All env goes through `agent/lib/env.ts`** — the single place that parses/validates/sanitises
   `process.env` (zod). Consume typed values from there, never raw `process.env`. Derived values live
   there too (e.g. `remindersDeliverUrl = \`${BASE_URL}/eve/v1/reminders/deliver\``), so the deliver
