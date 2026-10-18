@@ -55,6 +55,10 @@ regress.
 | briefing/quiet-day            | a morning briefing with nothing worth saying gets no text |
 | memory/saves-durable-fact     | an injury the user mentions is saved to owner memory |
 | memory/skips-trivia           | small talk is not saved |
+| calls/spoken-reply            | a call request is answered through `reply_to_call`, briefly, and the route's stream scan finds it |
+| calls/text-a-link             | a link asked for on a call is texted, not read out |
+| calls/silent-after-call       | a finished call joins the history without a text recap |
+| calls/note-call-started       | a call starting gets one short text line, never silence |
 
 The workout evals live under `evals/workouts/` and run with
 `pnpm eve eval workouts`. The coding session evals live under `evals/coding/` and run with
@@ -63,6 +67,8 @@ The workout evals live under `evals/workouts/` and run with
 `QSTASH_TOKEN=eval-disabled pnpm eve eval reminders`: publishing then fails safely and they assert on tool inputs only.
 The memory evals live under `evals/memory/`; under `eve eval` memory is process-local and
 scoped to `local-dev`, so they never touch the owner's stored memory.
+The call evals live under `evals/calls/` (`pnpm verify calls`); an eval session is not a live
+call, so `reply_to_call` answers that nothing was said and Adam may text the answer too.
 
 ## Running
 
