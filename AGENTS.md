@@ -93,10 +93,12 @@ without them and only that vendor's tools fail, as with Devin.
   and never leave commented-out code. Reserve a comment for the rare _why_ that the code can't show:
   a non-obvious constraint, a workaround, a deliberate trade-off. If a comment is needed to explain
   _what_ something does, refactor until it isn't.
-- **Scope discipline:** v1 is single-user, no Redis, and messaging is iMessage (Photon)
-  only — a new surface is a `channels/` file plus a `lib/delivery.ts` entry, never a special case.
+- **Scope discipline:** v1 is single-user and no Redis. Messaging is iMessage (Photon) and
+  WhatsApp (Cloud API via Chat SDK), one owner across both (`ownerIssuer`; never change its value).
+  A new surface is a `channels/` file plus a `lib/delivery.ts` entry (with its `canReach` rule),
+  never a special case; chat channels share `lib/reply.ts`.
   The `coach` subagent handles post-workout debriefs; `inbox` and `finance` remain deferred.
   Cross-session memory is one Eve slot, `agent/memory/owner.ts`: owner facts only, written by root
   in owner-chat turns, recall-only in `coach`/`deep`. Semantic memory and multi-user support remain
   deferred — see `spec.md` §6–8.
-  The home target in Vercel Blob is a single pointer (where to reach the owner and who they are), not memory.
+  The home target in Vercel Blob is a single pointer (where to reach the owner on each channel and who they are), not memory.

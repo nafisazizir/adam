@@ -98,6 +98,7 @@ stub the route).
 ```
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
+   Meta webhook     ──▶│ inbound WhatsApp (reactive)            │
    QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
@@ -107,9 +108,10 @@ stub the route).
                  every trigger's payload becomes the session's first message
 ```
 
-- **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
+- **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), `whatsapp` (the same, over
+  the WhatsApp Cloud API; below), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
-  the reminder was scheduled from, via `receive` (or to the home thread whenever one is stored, so a reminder set from a group chat never posts in the group); it answers 500 when the hand-off to the delivery
+  the reminder was scheduled from, via `receive` (or to `homeDelivery()` whenever a home pointer is stored, so a reminder set from a group chat never posts in the group, and one set on WhatsApp comes back there while its window is open and on iMessage otherwise); it answers 500 when the hand-off to the delivery
   channel fails so QStash retries (a later failure posting to the phone is not retried), and
   `schedule_reminder` publishes with a deduplication id derived from the session, turn, message and the model-given time (`at` with `leadMinutes`, or `delaySeconds`)
   (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
@@ -133,11 +135,51 @@ stub the route).
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
+- **WhatsApp** (`agent/channels/whatsapp.ts`): Eve's `chatSdkChannel` with `@chat-adapter/whatsapp`
+  and an in-memory Chat SDK state (the pattern Eve's own Photon channel uses), webhook at
+  `/eve/v1/whatsapp`. The adapter answers Meta's `hub.challenge` GET against
+  `WHATSAPP_VERIFY_TOKEN`, checks `X-Hub-Signature-256` with `WHATSAPP_APP_SECRET`, and does media
+  upload and download, read receipts and typing. `chat`, the adapter and the state adapter are pinned
+  to 4.41.0, the `chat` Eve 0.73 compiles in, so the adapter and Eve agree on one version. Without all
+  four `WHATSAPP_*` credentials the route answers 503 `WhatsApp is not configured` (a partial set logs
+  which are needed) and nothing else changes. `bot.onDirectMessage` takes every message (the Cloud API
+  is 1:1 only, so every turn has `direct: "true"`): it admits the sender (`admitSender`, below), drops
+  a Meta redelivery by claiming the message id once across instances (`tryClaimOnce` over the Blob
+  claim store; a Blob outage handles the message anyway, so a blip never costs the owner a message,
+  and a failed hand-off releases the claim so the retry gets through), marks it read, records the
+  owner's presence on WhatsApp, and sends `messageToUserContent(message)` as
+  `ownerAuth(owner, { authenticator: "whatsapp", attributes: { thread_id, direct: "true" } })`.
+  Confirmation buttons (`ctx.ask`) render as WhatsApp reply buttons (up to three, else text with the
+  labels) and resume as the owner through `resolveInputAuth`; a typed `1` or label answers too. The
+  Notion sign-in link is posted in the thread. Replies go out through the shared reply loop
+  (`lib/reply.ts`) as `{ raw }` text, because the adapter's Markdown conversion wraps links in angle
+  brackets and backslash-escapes asterisks; Adam writes plain text anyway. Inbound images are jpeg,
+  png or webp, so no HEIC normalisation; a voice note arrives as `audio/ogg` (Opus) for
+  `transcribe_audio`. Generated speech goes out as a plain audio message (mp3), not a push-to-talk
+  voice bubble, which would need an ogg/opus transcode and a direct Graph call with `voice: true`.
+  A sender with a WhatsApp username can arrive with only a business-scoped user id and no number;
+  Adam knows the owner by number, so that message is dropped and logged with how to fix it.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
-  channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
-  knows how to `receive` back into it. `homeDelivery()` provides the last direct chat the owner
-  messaged from and who they are, remembered by `lib/home-target.ts` in Vercel Blob. Adding a messaging
-  surface is a channel file plus one entry here.
+  channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair,
+  knows how to `receive` back into it, and says whether it `canReach` the owner now given when they
+  last wrote there: iMessage always, WhatsApp only within Meta's 24-hour customer service window
+  minus a 30-minute margin (outside it only pre-approved templates go through, and a turn runs a
+  model before it posts, so a nearly closed window is treated as closed; `lib/whatsapp.ts`).
+  `homeDelivery()` is the delivery policy: of the channels in the home pointer it can reach, the one
+  the owner last wrote from, with who they are. So Adam speaks up where the owner is talking, and once
+  WhatsApp's window closes, on iMessage. A reply to a message always goes back to the thread it came
+  from. The briefing, coding updates, workout debriefs and reminders all go through it. A WhatsApp
+  send that fails anyway (Meta error 131047) is logged by the adapter, not retried elsewhere.
+  Adding a messaging surface is a channel file plus one entry here.
+- **Home pointer** (`agent/lib/home-target.ts`): one private Blob document. Its top-level `channel`,
+  `target` and `owner` keep their first meaning (the iMessage home thread and the owner), so the
+  pointer every earlier deploy wrote still parses. An optional `channels` map adds
+  `{ [delivery channel]: { target, lastInboundAt } }` for every surface the owner writes from; a
+  malformed map is dropped rather than making the pointer unusable. Two channels write it, so every
+  write is a fresh read, a change to only the caller's own part, and a conditional put (`ifMatch` on
+  the etag, or create-only when absent), retried once on a lost race. `lastInboundAt` is refreshed at
+  most every 10 minutes and never moves backwards, which costs nothing against the window margin.
+  WhatsApp only adds its entry to an existing pointer; it never creates one.
 - **Only the owner** (`admitSender` in `agent/lib/owner.ts`): the photon `onMessage` drops every
   message not from the owner (returns `null` and logs the sender's handle and the reason, never the
   content), so no one else starts a turn, steers one, answers a confirmation, or moves the home
@@ -149,7 +191,11 @@ stub the route).
   pointer's `owner.principalId`; with no pointer either, the first person to text Adam directly
   claims ownership, logged as `[photon] <handle> claimed ownership`. One principal for every alias
   keeps `home.owner` and user-scoped Connect grants from moving; only the home thread follows the
-  latest direct chat. Handles compare exactly, apart from ASCII case for emails and spacing and
+  latest direct chat. Over WhatsApp the sender's `wa_id` is normalised to `+digits` (`waIdToE164` in
+  `lib/whatsapp.ts`) and admitted, as that same principal, when it is the principal itself, a number in
+  `OWNER_IMESSAGE_HANDLES`, or one in `OWNER_WHATSAPP_NUMBERS` (for a number the owner uses only on
+  WhatsApp). WhatsApp never claims ownership: with no pointer, or an unusable one, every WhatsApp
+  message is dropped, so a fresh install is claimed over iMessage first. Handles compare exactly, apart from ASCII case for emails and spacing and
   punctuation for numbers. Only a 404 counts as "no owner yet": a pointer that is not JSON, fails
   the schema, names another issuer, or cannot be read drops every message, and without a Blob store
   only listed handles get in. A first claim is written with `allowOverwrite: false` before it is
@@ -168,8 +214,17 @@ stub the route).
   everyone else's; its context says others can read the replies, and a sign-in link is never posted
   there, Adam asks the owner to text directly instead. The photon auth carries `thread_id` and
   `direct` (`"true"`/`"false"`, from `ctx.thread.isDM` on the inbound message).
+- **One owner across channels** (`ownerIssuer` in `agent/lib/owner.ts`): iMessage and WhatsApp turns
+  carry the same `{ issuer, principalId }`, so the Notion grant, the owner memory document and
+  `home.owner` are shared; only the authenticator (`photon-imessage` or `whatsapp`) names the
+  surface. The issuer is `"photon-imessage"` for history and must never change, or all three are
+  orphaned and the existing pointer turns unusable. Each thread is its own Eve session, so history
+  is per channel while memory is shared; each chat turn says so in one context line (`<other_channel>`,
+  `otherSurfaceContext` in `lib/reply.ts`; on iMessage only while WhatsApp is configured), so Adam
+  asks rather than pretending to remember. Reminders live in session state, so `list_reminders`
+  shows only those set in the same thread.
 - **Owner-chat gates** (`isOwnerChat`, `isOwnerDirectChat` in `agent/lib/delivery.ts`): because only
-  the owner reaches a photon turn, an auth that `deliveryChannelForAuth` resolves means "the owner is
+  the owner reaches a photon or WhatsApp turn, an auth that `deliveryChannelForAuth` resolves means "the owner is
   chatting"; background turns (debriefs, coding updates, the briefing, reminders) keep their own
   authenticators and never resolve. `isOwnerChat` gates anything that needs the owner's say-so in
   chat (merge confirmations, memory writes). `isOwnerDirectChat` also requires `direct: "true"` and
@@ -221,7 +276,7 @@ stub the route).
 - **Notion** (`lib/notion.ts`): one user-scoped Vercel Connect connection shared by root Adam,
   the coach and the deep worker, its auth wrapped in `signInFromOwnerDirectChat`
   (`lib/connection-auth.ts`). In the owner's direct chat the first Notion call parks the turn, the
-  Photon channel's `authorization.required` handler texts the sign-in link, and the turn resumes
+  chat channel's `authorization.required` handler (Photon's or WhatsApp's) texts the sign-in link, and the turn resumes
   after consent. Every other turn (group chat, debrief, coding update, briefing) gets the same
   grant through a getToken-only provider: a stored grant works as usual, and one that is missing or
   that Connect reports revoked fails the call with `sign_in_needs_direct_chat`, so the model says
@@ -309,14 +364,18 @@ stub the route).
   by the exact requesting principal; a prompt parked in a background turn (debrief, coding update,
   reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
+- **Shared reply loop** (`agent/lib/reply.ts`): `completedReply` (a tool-calls step becomes the
+  typing status, not a message) and `deliverReply` (bubble split, `renderOutbound` media, audio to the
+  surface's voice path, the 400 ms gap, `releaseAssets`) behind a two-method transport, plus the
+  sign-in prompt text, used by both chat channels.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `homeDelivery`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
   (interactive sign-in only in the owner's direct chat) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
   `lib/home-target.ts`; `ownerAuth`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `tryClaim`/`tryClaimOnce` (claimed, taken or unavailable, so each caller picks its own failure policy),
+  `claimDay`, `claimOnce` and `releaseDay` in `lib/daily-claim.ts`; `deliverReply` and `completedReply` in `lib/reply.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -394,6 +453,7 @@ adam/
 │   │   └── owner.ts           # owner memory slot (file provider, private Blob)
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
+│   │   ├── whatsapp.ts        # chatSdkChannel + @chat-adapter/whatsapp: WhatsApp Cloud API
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
 │   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
 │   │   └── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
@@ -423,7 +483,9 @@ adam/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry, homeDelivery, and the owner-chat gates
 │   │   ├── connection-auth.ts # signInFromOwnerDirectChat: no sign-in outside the owner's direct chat
-│   │   ├── home-target.ts     # owner and the last direct chat they messaged from, in private Vercel Blob
+│   │   ├── home-target.ts     # owner, the iMessage home thread and per-channel presence, in private Vercel Blob
+│   │   ├── reply.ts           # shared chat reply loop, sign-in prompt, cross-channel context line
+│   │   ├── whatsapp.ts        # wa_id → E.164, the 24h service window, message claim keys
 │   │   ├── notion.ts          # shared Notion connection config
 │   │   ├── owner.ts           # admitSender (only the owner gets in), ownerAuth, and the owner memory scope and namespace
 │   │   ├── owner-memory.ts    # the owner memory slot definition shared by root, coach and deep
@@ -442,7 +504,7 @@ adam/
 │   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
 │   │   ├── briefing.ts        # morning briefing message from a list of section providers
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
-│   │   ├── daily-claim.ts     # claimDay/releaseDay: one run per job per local date, over a ClaimStore
+│   │   ├── daily-claim.ts     # tryClaim/claimDay/claimOnce/releaseDay: one winner per key, over a ClaimStore
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
@@ -480,14 +542,15 @@ adam/
   and surfaces) → the `owner` Eve memory slot (§4): a bounded, model-maintained document in private
   Vercel Blob, recalled before every turn of root, `coach` and `deep`, and preserved verbatim across
   compaction. It holds facts, not history.
-- **The conversation itself** is still the one iMessage session, so `agent.ts` disables Eve's
+- **The conversation itself** is one long session per chat thread (iMessage, WhatsApp), so `agent.ts` disables Eve's
   session timeout (`sessionTimeoutMs: false`; the default 30 days would start the thread over empty).
 
 ---
 
 ## 7. v1 scope & non-goals
 
-**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · a daily
+**In:** iMessage round-trip · WhatsApp round-trip as the same owner with shared memory (separate
+history), proactive messages where the owner last wrote while WhatsApp's 24-hour window allows · `schedule_reminder` + `reminders` delivery via QStash · a daily
 morning `briefing` cron into the home thread that stays silent unless something matters · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
@@ -497,7 +560,9 @@ with their questions, finished pull requests and failures texted back as they ha
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
 remembered across sessions with the `owner` memory slot.
 
-**Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
+**Out (deferred):** Redis · semantic memory recall · multi-user · WhatsApp template messages
+outside the 24-hour window, push-to-talk voice bubbles and voice calls · channels beyond iMessage and
+WhatsApp · cross-channel history and a reminder list shared across threads · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
@@ -514,6 +579,11 @@ IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
 IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
 OWNER_IMESSAGE_HANDLES=...          # optional; the owner's E.164 numbers and Apple ID emails, comma-separated; when set, the only handles admitted
+WHATSAPP_ACCESS_TOKEN=...           # optional; permanent System User token; all four WHATSAPP_* or the channel is disabled
+WHATSAPP_APP_SECRET=...             # optional; Meta app secret, verifies X-Hub-Signature-256
+WHATSAPP_PHONE_NUMBER_ID=...        # optional; the business number's id from WhatsApp > API Setup
+WHATSAPP_VERIFY_TOKEN=...           # optional; any secret, entered as the webhook's verify token
+OWNER_WHATSAPP_NUMBERS=...          # optional; E.164 numbers the owner uses only on WhatsApp
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
@@ -553,6 +623,15 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - Owner memory lives in the same private Blob store, read by Eve from the store's own `BLOB_*`
   variables; no extra setup. Without a store, turns run without memory and saves fail. It also needs
   Vercel's system environment variables exposed (the default), or memory stays off.
+- WhatsApp needs a Meta developer app (type Business) with the WhatsApp product, a WhatsApp Business
+  Account, and a dedicated number that is not on the consumer WhatsApp app (any country; the owner
+  messaging first needs no business verification), registered with a two-step PIN. Generate a
+  permanent System User token with `whatsapp_business_messaging` and `whatsapp_business_management`,
+  set the four `WHATSAPP_*` variables, redeploy, then point the app's webhook at
+  `${BASE_URL}/eve/v1/whatsapp` with the verify token and subscribe it to `messages`. The owner must
+  have texted Adam on iMessage once, and messages Adam's WhatsApp number from their own. Each inbound
+  WhatsApp message costs a Blob read and write for the redelivery claim (one tiny file per message
+  under `daily-claims/`, never cleaned up), plus a pointer write at most every 10 minutes.
 - Adam answers only its owner (see "Only the owner" in §4). With the home pointer already holding
   the owner nothing needs setting. To text from another handle (a second number, the Apple ID
   email), or to run without a Blob store, list it in `OWNER_IMESSAGE_HANDLES`; the logs show the
@@ -645,9 +724,14 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
 5. **Extend `coach`.** Post-workout debriefs are built with riz-mcp and Notion. Done: pre-session
    reminders, about 15 minutes before the next workout, scheduled by root through `schedule_reminder` when the
    debrief carries a concrete next-session time (the plan has no clock times, so otherwise nothing is scheduled).
-6. **Multi-channel.** iMessage (`photon`) is the primary surface; WhatsApp and friends are a file in `channels/`
-   plus an entry in `lib/delivery.ts`. The trigger model and reminder loop are channel-agnostic
-   (`receive` takes any channel; reminder payloads carry `{ channel, target }`).
+6. **Multi-channel.** Built: WhatsApp next to iMessage (`channels/whatsapp.ts` plus an entry in
+   `lib/delivery.ts`), as the same owner, with the home pointer's per-channel presence and the
+   `canReach` delivery policy. Remaining: approved template messages so Adam can start a WhatsApp
+   conversation outside the 24-hour window (and make WhatsApp the only surface), push-to-talk voice
+   notes (ogg/opus plus `voice: true`), WhatsApp calling (needs Business Verification and the 2,000
+   messaging limit tier; a separate brief), a WhatsApp claim path for an install with no iMessage,
+   and moving reminders out of session state so every thread lists them. Any further surface is a
+   file in `channels/` plus an entry in `lib/delivery.ts`.
 7. **`finance`.** Spend tracking, anomaly surfacing, weekly summary (cron).
 8. **Orchestration.** Enable the experimental `Workflow` tool to fan out subagents (e.g. a weekly
    "life review" running `coach` + `finance` in parallel and merging).
@@ -656,7 +740,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
 10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
     auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
     a WhatsApp number to the same logical user. `admitSender` becomes a lookup of the sender in
-    that layer instead of a single owner.
+    that layer instead of a single owner; today `OWNER_IMESSAGE_HANDLES` and
+    `OWNER_WHATSAPP_NUMBERS` are its single-user form.
 
 ---
 
