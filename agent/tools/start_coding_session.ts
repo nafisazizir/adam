@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
 import { codingBrief, describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
 import { createCodingSession } from "#lib/devin.js";
 import { replayStableKey } from "#lib/replay-key.js";
@@ -30,6 +31,7 @@ export default defineTool({
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
   async execute({ brief, title, repos }, ctx) {
+    if (isCallTurn(ctx.session.auth.current)) return { started: false, reason: notFromOwnerChat };
     const hinted = [...new Set(repos ?? [])];
     const session = await createCodingSession({
       prompt: codingBrief(brief, hinted),

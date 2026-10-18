@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
 import { cancelReminder } from "#lib/qstash.js";
 import { forgetReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
@@ -15,7 +16,8 @@ export default defineTool({
       .min(1)
       .describe("The reminder id from schedule_reminder or list_reminders."),
   }),
-  async execute({ id }) {
+  async execute({ id }, ctx) {
+    if (isCallTurn(ctx.session.auth.current)) return { id, cancelled: false, reason: notFromOwnerChat };
     const outcome = await cancelReminder(id);
     await forgetReminder(blobReminderListStore, id);
 

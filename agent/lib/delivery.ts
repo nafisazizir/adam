@@ -1,4 +1,4 @@
-import type { RouteHandlerArgs, TurnPolicy } from "eve/channels";
+import type { RouteHandlerArgs, Session, TurnPolicy } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
@@ -19,7 +19,7 @@ export interface DeliveryChannel {
     target: Record<string, unknown>;
     auth: SessionAuthContext;
     turnPolicy?: TurnPolicy;
-  }): Promise<unknown>;
+  }): Promise<Session>;
 }
 
 type ThreadTarget = { threadId: string; adapterName: string };
@@ -106,14 +106,36 @@ export function pickHomeDelivery(
   return best && { channel: best.channel, target: best.target };
 }
 
-export async function homeDelivery(now: number = Date.now()): Promise<{
+export interface OwnerDelivery {
   channel: DeliveryChannel;
   target: Record<string, unknown>;
   owner: HomeOwner;
-} | null> {
+}
+
+export async function homeDelivery(now: number = Date.now()): Promise<OwnerDelivery | null> {
   const home = await readHomeTarget();
   if (!home) return null;
 
   const picked = pickHomeDelivery(home, now);
+  return picked ? { ...picked, owner: home.owner } : null;
+}
+
+// Something that belongs to one surface, such as a call placed over WhatsApp, goes to the owner's
+// thread there while it can still reach them, and otherwise wherever homeDelivery would send it.
+export function pickDeliveryOn(
+  name: string,
+  home: HomeTarget,
+  now: number,
+  channels: readonly DeliveryChannel[] = deliveryChannels,
+): { channel: DeliveryChannel; target: Record<string, unknown> } | null {
+  const own = channels.filter((channel) => channel.name === name);
+  return pickHomeDelivery(home, now, own) ?? pickHomeDelivery(home, now, channels);
+}
+
+export async function deliveryOn(name: string, now: number = Date.now()): Promise<OwnerDelivery | null> {
+  const home = await readHomeTarget();
+  if (!home) return null;
+
+  const picked = pickDeliveryOn(name, home, now);
   return picked ? { ...picked, owner: home.owner } : null;
 }

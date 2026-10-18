@@ -102,6 +102,7 @@ stub the route).
    QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
+   Voice call       ──▶│ WhatsApp or phone voice calls (calls)  │
    (future) webhooks──▶│ external events (email)                 │
                        └────────────────────────────────────────┘
                                          │
@@ -380,20 +381,120 @@ stub the route).
   typing status, not a message) and `deliverReply` (bubble split, `renderOutbound` media, audio to the
   surface's voice path, the 400 ms gap, `releaseAssets`) behind a two-method transport, plus the
   sign-in prompt text, used by both chat channels.
+- **Calls** (`agent/channels/calls.ts`, `agent/lib/calls.ts`, `agent/lib/voice.ts`): the owner
+  calls one ElevenLabs Agents voice agent over either transport: a **WhatsApp call** to Adam's
+  WhatsApp Business number (ElevenLabs' WhatsApp integration with "Enable messaging" off, so Adam's
+  own WhatsApp channel keeps the messages; Meta enables calling only after Business Verification)
+  or a **phone call** to a number on a SIP trunk or Twilio (Telnyx is the cheaper SIP option), the
+  fallback until WhatsApp calling is enabled. Both reach the same agent and the same three routes.
+  The voice agent is a thin front end that holds the conversation and has one webhook tool,
+  `ask_adam(request)`; Adam stays the only agent, so a call reaches the same context and tools as
+  chat, except the few that only the owner's own chat may trigger (see "Only the owner" below).
+  `lib/voice.ts` is the only file that knows ElevenLabs: signature and secret checks, payload
+  parsing into neutral `CallStart`, `CallRequest` and `CallEnded`, each carrying a `Caller`
+  (`transport` and an E.164 `number`), and the response shapes. Retell or Photon SIP stays a
+  one-file swap.
+  - **Which transport.** A call counts as WhatsApp only when its called line
+    (`system__called_number`, Meta's phone number id on WhatsApp) equals the configured
+    `WHATSAPP_PHONE_NUMBER_ID`; every other call, including one whose line is missing, is the
+    phone transport. On WhatsApp the caller id is the wa_id (bare digits), on a phone line it is
+    E.164; both become E.164 through `waIdToE164`. A WhatsApp username id (BSUID) with no number
+    carries no number and is refused, as WhatsApp messages are. The transport is recorded on every
+    call turn's auth (`transport` attribute).
+  - **Start** (`/eve/v1/calls/start`, the conversation initiation webhook) returns dynamic
+    variables only: `call_briefing` (persona, the owner's local time, and the rule to use `ask_adam` for
+    anything beyond small talk), `greeting` and `local_time`. No private data goes to the vendor;
+    the context lives in the owner's thread, one `ask_adam` away. The agent's system prompt in the
+    dashboard is just `{{call_briefing}}`, so the persona is versioned here. A caller who is not the
+    owner gets a briefing that declines and ends the call. An admitted call also queues a
+    `<call_started>` into the call's thread, and Adam texts one short line ("📞 call started"),
+    never `stay_silent`, so the owner notices a call they did not make once the thread is free.
+  - **Which thread.** `deliveryOn("whatsapp")` (`lib/delivery.ts`) sends a WhatsApp call's
+    request, notes and summary to the owner's WhatsApp thread while Meta's 24-hour window lets
+    Adam write there, so photos land in the owner's WhatsApp chat (the one the home pointer last saw
+    them write from; with two WhatsApp numbers it may not be the one they are calling from);
+    otherwise, and for every phone call, they go where `homeDelivery()` would send them. Whether a
+    WhatsApp call itself opens the 24-hour window is not documented, so a call-only owner may get
+    iMessage texts. Each route (`start`, `ask`, `ended`) picks its thread when it runs, so if the
+    owner writes on another channel mid-call the rest of a phone call can move threads; pinning the
+    thread per conversation id is a follow-up.
+  - **Ask** (`/eve/v1/calls/ask`, the `ask_adam` tool) delivers a `<call_request id="nonce">` into
+    that thread with `turnPolicy: "queue"`, acting as the owner with a `calls` authenticator
+    (attributes `call: "live"`, `reply_by`, the route's deadline, and `transport`), and taps that
+    session's event stream. The `Session` handle comes back from `deliver` (`DeliveryChannel.deliver`
+    returns it), and the read starts 1000 events before the tail, since the handle only exists after
+    the send and an idle session may already have started the turn. The scan (`scanCallReply`, a
+    pure function over stream events) finds the `message.received` carrying the nonce, takes its
+    `turnId`, and resolves on that turn's first `actions.requested` call to
+    `reply_to_call({ speech })`; the speech is the webhook's answer, so the caller hears Adam before
+    the turn finishes. The same turn then texts anything better read (photos, links) as its normal
+    reply in that chat, or calls `stay_silent`. If the turn ends without speaking, parks on the owner
+    (`turn.waiting` on input), fails, or misses the 25 s deadline (the ElevenLabs tool waits 30), the
+    caller hears a fixed line; on a timeout the route also queues a `<call_missed>` so Adam texts the
+    answer instead. `reply_to_call` refuses outside a live call turn and never ends the turn; a
+    request turn that only starts after `reply_by` (it queued behind a busy or parked thread) is not
+    live, so a late reply says nothing was spoken and Adam texts. Adam calls `reply_to_call` only
+    once the turn's other tools have returned.
+  - **Ended** (`/eve/v1/calls/ended`, the post-call webhook) verifies the `ElevenLabs-Signature`
+    HMAC (`t=<unix>,v0=<hex HMAC-SHA256 of "t.body">`, 30-minute tolerance) and delivers a
+    `<call_ended>` with the summary and the end of the transcript into the call's thread with
+    `turnPolicy: "queue"` and `call: "after"`. The caller and line come from
+    `metadata.phone_call` on a phone call and from the `system__caller_id`/`system__called_number`
+    variables otherwise. Adam calls `stay_silent`, so the call joins the history without a recap.
+    ElevenLabs retries, and a signed payload stays valid for 30 minutes, so each conversation id is
+    claimed once (`claimOnce` over the Blob `ClaimStore`, released again if delivery fails).
+    Look-alike tags of every call wrapper are stripped from relayed call text with `stripWrapperTags`.
+  - **Only the owner.** `start` and `ask` share a secret header (`x-calls-secret`, compared in
+    constant time). The caller is checked with `isOwnerHandle` from `lib/owner.ts`, the same
+    predicate both chat channels admit with, for the call's surface: a WhatsApp caller must be a
+    number that may message Adam on WhatsApp (the principal, the iMessage handles or
+    `OWNER_WHATSAPP_NUMBERS`, once an owner is recorded), and a phone caller a number that may text
+    over iMessage (a set `OWNER_IMESSAGE_HANDLES` overrules the recorded owner). `start` declines
+    anyone else, and `ask` and `ended` check again, so a dashboard preview or web widget with no
+    caller id is refused.
+  - **What a forged caller can and can't do.** A WhatsApp call's caller is the WhatsApp account
+    that placed it, authenticated by WhatsApp, so forging it means taking over the owner's WhatsApp
+    account (SIM swap, a stolen unlocked phone). A phone line's caller ID is cheap to fake from VoIP,
+    and Australia has no STIR/SHAKEN, so on the **phone transport** the number is only a first gate.
+    The rest of this applies to phone calls, and to WhatsApp only through account takeover.
+    - **Refused on call turns of both transports** (`isCallTurn`): `start_coding_session`,
+      `message_coding_session` and `stop_coding_session` (Devin works in the owner's GitHub org)
+      and `cancel_reminder`; `merge_pull_request` and memory writes, through the owner-chat gate
+      (`isOwnerChat` is false for a `calls` auth); and, on their branches, the browser login and
+      `connect_google_account` tools, which use the same gate. These stay on WhatsApp too, since
+      what was said reaches Adam paraphrased by the voice agent. Adam texts a one-line confirmation
+      instead and acts on the owner's reply in chat. A call can never start a sign-in: like every
+      turn outside the owner's direct chat it gets Notion's token-only provider
+      (`lib/connection-auth.ts`), so a missing grant fails the request rather than parking it or
+      sending a link. Nothing in a call turn may wait on the owner.
+    - **Still allowed, and the owner's decision to approve for the phone transport.** A call turn
+      acts as the owner's principal, so a spoofer who knows the number can make Adam read out the
+      thread's history, owner memory, Notion through an existing grant, and the owner's health and
+      training data through riz-mcp (Strava, Hevy, Garmin), and, once they land, Gmail and Calendar
+      and the logged-in browser. It can also **change** things: write, edit or trash Notion pages
+      through the same grant (the training plan included), and schedule reminders, which only ever
+      land in the owner's own thread.
+    - **Mitigations.** The `<call_started>` text tells the owner a call is happening as soon as the
+      thread is free; it queues like every call delivery, so it waits behind a running or parked
+      turn. Running only the WhatsApp transport removes the spoofing risk. Otherwise the follow-up
+      is a spoken passcode the voice agent collects and `ask_adam` sends as a body field, checked
+      server-side (not built), which covers reads and Notion writes alike, or restricting reads and
+      Notion on phone-transport call turns.
 - **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
-  `homeDelivery`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
+  `homeDelivery`, `deliveryOn`, `isOwnerChat` and `isOwnerDirectChat` in `lib/delivery.ts`; `signInFromOwnerDirectChat`
   (interactive sign-in only in the owner's direct chat) in `lib/connection-auth.ts`; the single home pointer (delivery target and owner identity) in
-  `lib/home-target.ts`; `ownerAuth`, `admitSender`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
+  `lib/home-target.ts`; `ownerAuth`, `admitSender`, `isOwnerHandle`, `ownerMemoryScope` and `ownerMemoryNamespace` in `lib/owner.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay` and `releaseDay` in
-  `lib/daily-claim.ts`; `deliverReply` and `completedReply` in `lib/reply.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
+  `lib/daily-claim.ts`; `stripWrapperTags` in `lib/untrusted.ts`; `deliverReply` and `completedReply` in `lib/reply.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool), plus the
-  memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
+  (confirmed in chat, merged by Devin), `reply_to_call` (speak on the live call), `agent` (disables
+  the built-in root-copy tool), plus the memory slot's `owner__save_memory` and
+  `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
   the allowlist (`image/*` plus common audio types), and hands the bytes to the channel. The Photon
@@ -468,6 +569,7 @@ adam/
 │   │   ├── whatsapp.ts        # chatSdkChannel + @chat-adapter/whatsapp: WhatsApp Cloud API
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
 │   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
+│   │   ├── calls.ts           # voice agent webhooks: call start briefing, ask_adam, post-call summary
 │   │   └── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
 │   ├── connections/
 │   │   ├── notion.ts
@@ -520,6 +622,8 @@ adam/
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
+│   │   ├── voice.ts           # ElevenLabs only: webhook auth, payloads → CallStart/CallRequest/CallEnded
+│   │   ├── calls.ts           # vendor-free: call auth, owner caller check, messages, stream tap for replies
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -534,6 +638,7 @@ adam/
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
+│   │   ├── reply_to_call.ts   # what the caller hears; only in a live call turn
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
@@ -570,10 +675,12 @@ voice note (text stays the default; see `agent/instructions.md`) · inbound voic
 with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
-remembered across sessions with the `owner` memory slot.
+remembered across sessions with the `owner` memory slot · calls to Adam over WhatsApp or a phone
+line through one ElevenLabs voice agent, answered from the owner's own thread, with texts mid-call
+and the call joining the chat history afterwards.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · WhatsApp template messages
-outside the 24-hour window, push-to-talk voice bubbles and voice calls · channels beyond iMessage and
+outside the 24-hour window and push-to-talk voice bubbles · channels beyond iMessage and
 WhatsApp · cross-channel history · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
@@ -615,6 +722,8 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
+CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
+ELEVENLABS_WEBHOOK_SECRET=...       # optional; ElevenLabs post-call webhook HMAC secret
 ```
 
 ### Deployment notes
@@ -671,6 +780,18 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
+- Calls need one ElevenLabs agent reachable over WhatsApp (Adam's WhatsApp Business number
+  imported into ElevenLabs with "Enable messaging" off, once Meta Business Verification allows
+  calling) or over a phone number (Telnyx SIP or Twilio), an agent whose system prompt is
+  `{{call_briefing}}` and first message `{{greeting}}`, the `end_call` system tool, a webhook tool
+  `ask_adam` (`POST ${BASE_URL}/eve/v1/calls/ask`, secret header `x-calls-secret`, body `request`
+  from the LLM plus `conversation_id`, `caller_id` and `called_number` bound to
+  `system__conversation_id`, `system__caller_id` and `system__called_number`, response timeout
+  30 s), the conversation initiation webhook at
+  `${BASE_URL}/eve/v1/calls/start` with the same header, authentication enabled on the agent
+  (signed URLs only, so no web or SDK client can open a conversation), and the post-call transcription webhook
+  (audio off) at `${BASE_URL}/eve/v1/calls/ended`. Without `CALLS_TOOL_SECRET` and
+  `ELEVENLABS_WEBHOOK_SECRET` the calls routes answer 503 and nothing else changes.
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -700,6 +821,11 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      `ctx.ask`, as `merge_pull_request` is. Mail is untrusted input: bodies reach the model as
      content, never instructions, so nothing read from an email acts without that confirmation.
 2. **Voice calls.** Call Adam like texting it, with the same context, and have it act mid-call.
+   - **Status: built** (§4 "Calls") on ElevenLabs Agents, over WhatsApp calling (after Meta
+     Business Verification) or a phone number (Telnyx SIP or Twilio) as the fallback, pending the
+     owner's setup. The open question below is answered: the `calls` route taps the owner thread's
+     event stream for Adam's `reply_to_call`. Photon's voice line remains a later swap in the
+     dashboards with no change in Adam.
    - **Line.** Photon's Spectrum voice provider adds inbound and outbound SIP calls to the iMessage
      line, with cookbooks for ElevenLabs, Retell, LiveKit and Twilio; that would make the call
      number the text number. The docs don't say which plan or line type includes voice — confirm
@@ -709,15 +835,15 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      Eve's built-in `twilioChannel` answers with `<Gather input="speech">`, one full agent turn per
      utterance, which is too slow to converse with.
    - **Seam.** The voice agent is a thin front end with one tool, `ask_adam(request)`, which
-     delivers the request into the home iMessage session through a `calls` channel, the way
-     `coding-sessions` delivers updates. Adam stays the only agent, so a call can do anything chat
-     can because chat is what does it: "text me photos of that place" lands in iMessage mid-call.
-     `lib/voice.ts` is the only file that knows the voice vendor. Open question: how Adam's answer
-     returns to the call (Eve's HTTP session stream vs. a callback the `calls` channel resolves).
+     delivers the request into the owner's thread through a `calls` channel, the way
+     `coding-sessions` delivers updates. Adam stays the only agent, so a call works through chat's
+     context and tools, apart from the chat-only actions §4 lists: "text me photos of that place"
+     lands in the owner's chat mid-call. `lib/voice.ts` is the only file that knows the voice vendor. Adam's answer returns to the call
+     through the session's event stream (see Status).
    - **After the call.** A `<call_ended>` trigger carrying the transcript summary enters the home
      session with `turnPolicy: "queue"`, and Adam calls `stay_silent`: the call joins chat history
-     without a recap on the phone. At call start the voice agent needs a short briefing of recent
-     context, which is the first real need for memory (item 4).
+     without a recap on the phone. The call-start briefing is persona, local time and the
+     `ask_adam` rule only; a briefing of recent context is the first real need for memory (item 4).
 3. **A computer (`operator` subagent).** Read-only browsing of logged-in sites: X and LinkedIn
    notifications, research, an overnight digest.
    - **Seam.** A subagent with computer-use tools over a hosted browser that keeps logins

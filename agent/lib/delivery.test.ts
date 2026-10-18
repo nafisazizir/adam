@@ -8,6 +8,7 @@ import {
   deliveryChannelForAuth,
   isOwnerChat,
   isOwnerDirectChat,
+  pickDeliveryOn,
   pickHomeDelivery,
 } from "#lib/delivery.js";
 import type { HomeTarget } from "#lib/home-target.js";
@@ -105,7 +106,14 @@ const now = Date.parse("2026-10-18T12:00:00Z");
 const hoursAgo = (hours: number) => new Date(now - hours * 60 * 60 * 1000).toISOString();
 
 function fakeChannel(name: string, canReach: DeliveryChannel["canReach"]): DeliveryChannel {
-  return { name, canReach, targetFromAuth: () => null, deliver: async () => undefined };
+  return {
+    name,
+    canReach,
+    targetFromAuth: () => null,
+    deliver: async () => {
+      throw new Error("not delivered in tests");
+    },
+  };
 }
 
 const channels = [
@@ -154,4 +162,16 @@ test("a channel the pointer names but Adam cannot deliver on is skipped", () => 
 
 test("the WhatsApp delivery target is the thread it last heard from", () => {
   assert.deepEqual(pickHomeDelivery(home(hoursAgo(5), hoursAgo(1)), now, channels)?.target, whatsappTarget);
+});
+
+const pickedOn = (name: string, target: HomeTarget) => pickDeliveryOn(name, target, now, channels)?.channel.name;
+
+test("a WhatsApp call's replies go to the owner's WhatsApp thread even if they last wrote on iMessage", () => {
+  assert.equal(pickedOn("whatsapp", home(hoursAgo(1), hoursAgo(5))), "whatsapp");
+  assert.deepEqual(pickDeliveryOn("whatsapp", home(hoursAgo(1), hoursAgo(5)), now, channels)?.target, whatsappTarget);
+});
+
+test("a WhatsApp call falls back to the home pick when its thread is closed or unknown", () => {
+  assert.equal(pickedOn("whatsapp", home(hoursAgo(1), hoursAgo(30))), "photon");
+  assert.equal(pickedOn("whatsapp", home(hoursAgo(1), undefined)), "photon");
 });

@@ -17,6 +17,9 @@ export const workoutsNudgePath = "/eve/v1/workouts/nudge";
 export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
 export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
 export const whatsappPath = "/eve/v1/whatsapp";
+export const callsStartPath = "/eve/v1/calls/start";
+export const callsAskPath = "/eve/v1/calls/ask";
+export const callsEndedPath = "/eve/v1/calls/ended";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
@@ -78,6 +81,9 @@ const schema = z.object({
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
+  // Optional so a deploy without a voice line still boots; only the calls routes refuse.
+  CALLS_TOOL_SECRET: blankAsUnset(z.string().min(1).optional()),
+  ELEVENLABS_WEBHOOK_SECRET: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);

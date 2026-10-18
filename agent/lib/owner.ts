@@ -135,22 +135,35 @@ export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdm
   }
 
   const principalId = ownerPrincipal(handles, recorded)!;
-  const known = handles.length > 0 ? listed(handles, sender.id) : sameHandle(principalId, sender.id);
-  if (!known) return rejected("not the owner");
+  if (!isOwnerHandle(sender.id, owner, "imessage")) return rejected("not the owner");
   return { admitted: true, principalId, claimed: false, updatesHome };
 }
 
-// The owner's numbers are the principal itself when it is a number, any number in the iMessage
-// handle list, and OWNER_WHATSAPP_NUMBERS for a WhatsApp-only one.
 function admitWhatsAppSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
-  const { handles, whatsappNumbers = [], record } = owner;
+  const { handles, record } = owner;
   if (record.kind !== "recorded") {
     return rejected("no owner is recorded yet; the owner texts Adam on iMessage first");
   }
-
+  if (!isOwnerHandle(sender.id, owner, "whatsapp")) return rejected("not the owner");
   const principalId = ownerPrincipal(handles, record.principalId)!;
-  if (!listed([principalId, ...handles, ...whatsappNumbers], sender.id)) return rejected("not the owner");
   return { admitted: true, principalId, claimed: false, updatesHome: sender.isDirect };
+}
+
+// Who the owner is, for every surface that reaches Adam (chat and calls alike). On iMessage a set
+// handle list overrules the recorded owner, otherwise the recorded owner alone. A WhatsApp number
+// is the owner's when it is the principal itself, any number in the iMessage handle list, or one in
+// OWNER_WHATSAPP_NUMBERS, and only once an owner is recorded. Claiming an unknown owner is
+// admitSender's business, not this.
+export function isOwnerHandle(handle: string, owner: KnownOwner, surface: "imessage" | "whatsapp"): boolean {
+  const { handles, whatsappNumbers = [], record } = owner;
+  if (canonicalHandle(handle) === "" || record.kind === "invalid") return false;
+  const recorded = record.kind === "recorded" ? record.principalId : undefined;
+  if (surface === "whatsapp") {
+    if (recorded === undefined) return false;
+    return listed([ownerPrincipal(handles, recorded)!, ...handles, ...whatsappNumbers], handle);
+  }
+  if (handles.length > 0) return listed(handles, handle);
+  return recorded !== undefined && sameHandle(recorded, handle);
 }
 
 export function ownerRecordFrom(read: HomeTargetRead, issuer: string): OwnerRecord {
