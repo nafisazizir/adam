@@ -42,6 +42,7 @@ export default defineTool({
       channel: resolved.channel.name,
       target: resolved.target,
       delaySeconds,
+      idempotencyKey: ctx.callId,
     });
     const fireAt = new Date(Date.now() + delaySeconds * 1000);
     scheduledReminders.update((list) => [

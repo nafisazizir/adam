@@ -1,4 +1,5 @@
-import { readAsset, type StoredAsset } from "#lib/assets.js";
+import { readAsset } from "#lib/assets.js";
+import { fetchPublicBytes } from "#lib/public-fetch.js";
 
 const MEDIA_LINK = /!\[[^\]]*\]\(\s*<?([^)\s>]+)>?\s*\)/g;
 const BUBBLE_BREAK = /^[ \t]*---[ \t]*$/m;
@@ -55,19 +56,6 @@ function errorForLog(error: unknown): { message: string; name: string } {
   return { name, message: message.replace(/https?:\/\/\S+/gu, "[redacted-url]") };
 }
 
-async function fetchPublic(
-  url: URL,
-  signal: AbortSignal,
-): Promise<StoredAsset | null> {
-  const response = await fetch(url, { signal });
-  if (!response.ok) return null;
-
-  return {
-    data: new Uint8Array(await response.arrayBuffer()),
-    mimeType: (response.headers.get("content-type") ?? "").split(";")[0].trim(),
-  };
-}
-
 async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   let url: URL;
   try {
@@ -76,7 +64,7 @@ async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
     console.warn("[outbound:attachment.rejected]", { reason: "invalid-url" });
     return null;
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  if (url.protocol !== "https:") {
     console.warn("[outbound:attachment.rejected]", { reason: "unsupported-protocol" });
     return null;
   }
@@ -84,7 +72,7 @@ async function fetchAttachment(rawUrl: string): Promise<OutboundFile | null> {
   const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   // What Adam hosts is private, so it can only be read back through the seam.
   const asset =
-    (await readAsset(rawUrl, signal)) ?? (await fetchPublic(url, signal));
+    (await readAsset(rawUrl, signal)) ?? (await fetchPublicBytes(url, { signal, maxBytes: MAX_BYTES }));
   if (!asset) {
     console.warn("[outbound:attachment.rejected]", { reason: "unreadable" });
     return null;
