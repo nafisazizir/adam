@@ -94,12 +94,16 @@ export function sameHandle(a: string, b: string): boolean {
 
 const rejected = (reason: string): SenderAdmission => ({ admitted: false, reason });
 
-// Every alias of the owner acts as one principal (the recorded one, else the first listed handle)
-// so `home.owner` and user-scoped grants stay put. With no owner known at all, the first person to
+const listed = (handles: readonly string[], handle: string) =>
+  handles.some((candidate) => sameHandle(candidate, handle));
+
+// Every alias of the owner acts as one principal so `home.owner` and user-scoped grants stay put:
+// the recorded one, unless a handle list is set and leaves it out, which makes the list the
+// authority and its first handle the principal. With no owner known at all, the first person to
 // text directly claims it; a group never does, and only a direct chat moves the home thread.
 export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
   if (canonicalHandle(sender.id) === "") return rejected("no sender handle");
-  if (!sender.isIMessage) return rejected("not sent over iMessage");
+  if (!sender.isIMessage) return rejected("sent over SMS or RCS");
 
   const { handles, record } = owner;
   if (record.kind === "invalid") return rejected(`the home pointer is unusable (${record.reason})`);
@@ -108,20 +112,22 @@ export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdm
   }
 
   const recorded = record.kind === "recorded" ? record.principalId : undefined;
-  const known = recorded === undefined ? handles : [...handles, recorded];
-  if (known.length === 0) {
+  const updatesHome = sender.isDirect;
+  if (handles.length > 0) {
+    if (!listed(handles, sender.id)) return rejected("not the owner");
+    const principalId =
+      recorded !== undefined && listed(handles, recorded) ? recorded : canonicalHandle(handles[0]!);
+    return { admitted: true, principalId, claimed: false, updatesHome };
+  }
+
+  if (recorded === undefined) {
     return sender.isDirect
-      ? { admitted: true, principalId: sender.id, claimed: true, updatesHome: true }
+      ? { admitted: true, principalId: sender.id, claimed: true, updatesHome }
       : rejected("a group chat cannot claim ownership");
   }
 
-  if (!known.some((handle) => sameHandle(handle, sender.id))) return rejected("not the owner");
-  return {
-    admitted: true,
-    principalId: recorded ?? handles[0]!,
-    claimed: false,
-    updatesHome: sender.isDirect,
-  };
+  if (!sameHandle(recorded, sender.id)) return rejected("not the owner");
+  return { admitted: true, principalId: recorded, claimed: false, updatesHome };
 }
 
 export function ownerRecordFrom(read: HomeTargetRead, issuer: string): OwnerRecord {
@@ -158,6 +164,16 @@ export function ownerRecordLookup(read: () => Promise<HomeTargetRead>, issuer: s
     },
     remember(principalId: string): void {
       cached = principalId;
+    },
+    // A claim counts only once `persist` lands, so no instance admits an owner others cannot see.
+    async claim(principalId: string, persist: () => Promise<void>): Promise<boolean> {
+      try {
+        await persist();
+      } catch {
+        return false;
+      }
+      cached = principalId;
+      return true;
     },
   };
 }

@@ -135,20 +135,25 @@ stub the route).
   content), so no one else starts a turn, steers one, answers a confirmation, or moves the home
   pointer. A handle is the sender's iMessage address as Photon reports it (`message.author.userId`):
   a phone number in E.164 with country code (`+61412345678`) or an Apple ID email, and the two are
-  different handles. The owner's handles are any listed in `OWNER_IMESSAGE_HANDLES`
-  (comma-separated) plus the `owner.principalId` in the home pointer; with neither, the first person
-  to text Adam directly claims ownership, logged as `[photon] <handle> claimed ownership`. Whichever
-  alias writes, Adam acts as one principal, the pointer's `principalId` or else the first listed
-  handle, so `home.owner` and user-scoped Connect grants never move; only the home thread follows
-  the latest direct chat. Handles compare exactly, apart from ASCII case for emails and spacing and
+  different handles. When `OWNER_IMESSAGE_HANDLES` (comma-separated) is set it is the authority:
+  only listed handles get in, and they all act as the pointer's `owner.principalId` if that is
+  listed, otherwise as the first listed handle in canonical form. When it is unset, the owner is the
+  pointer's `owner.principalId`; with no pointer either, the first person to text Adam directly
+  claims ownership, logged as `[photon] <handle> claimed ownership`. One principal for every alias
+  keeps `home.owner` and user-scoped Connect grants from moving; only the home thread follows the
+  latest direct chat. Handles compare exactly, apart from ASCII case for emails and spacing and
   punctuation for numbers. Only a 404 counts as "no owner yet": a pointer that is not JSON, fails
   the schema, names another issuer, or cannot be read drops every message, and without a Blob store
-  only listed handles get in. A recorded owner is cached per instance; nothing else is.
+  only listed handles get in. A first claim is written with `allowOverwrite: false` before it is
+  cached or admitted, so two people texting a fresh install at once cannot both become the owner
+  and a failed write drops the message. After that, a recorded owner is cached per instance;
+  nothing else is.
   SMS and RCS senders are refused: Apple authenticates an iMessage handle, while an SMS or RCS
   originator can be spoofed. `sentOverAnotherService` in `lib/photon-inbound.ts` reads the sender's
-  `service`, falling back to the webhook's `platform`, and refuses only a sender explicitly marked as
-  another service, so the owner's own SMS fallback during an iMessage outage is dropped too. A payload
-  naming no service is admitted rather than locking the owner out; Photon's webhook documents only
+  `service`, falling back to the webhook's `platform`, and refuses only a sender marked `SMS` or
+  `RCS` (any case), so the owner's own SMS fallback during an iMessage outage is dropped too. A
+  payload naming no service, or another one such as `unknown`, is admitted rather than locking the
+  owner out; Photon's webhook documents only
   `platform`, so an SMS that Photon labels `iMessage` would still pass; the line is an iMessage line.
   Only a direct (1:1) chat claims ownership or moves the home pointer, decided by the adapter's
   `isDM` (`;-;` in the chat GUID). In a group chat Adam answers the owner's messages and ignores
@@ -477,7 +482,7 @@ BASE_URL=...                        # app's public origin, e.g. https://adam.ver
 IMESSAGE_PROJECT_ID=...             # Photon project
 IMESSAGE_PROJECT_SECRET=...
 IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
-OWNER_IMESSAGE_HANDLES=...          # optional; the owner's E.164 numbers and Apple ID emails, comma-separated, admitted alongside the home pointer's owner
+OWNER_IMESSAGE_HANDLES=...          # optional; the owner's E.164 numbers and Apple ID emails, comma-separated; when set, the only handles admitted
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
@@ -520,9 +525,15 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 - Adam answers only its owner (see "Only the owner" in §4). With the home pointer already holding
   the owner nothing needs setting. To text from another handle (a second number, the Apple ID
   email), or to run without a Blob store, list it in `OWNER_IMESSAGE_HANDLES`; the logs show the
-  handle of every ignored message. Adding an alias keeps the recorded principal and its Notion
-  grant. Replacing the owner means deleting `home-target.json`, and then Notion has to be
-  connected again, since grants follow the principal.
+  handle of every ignored message. List the recorded owner's handle too: adding aliases then keeps
+  the recorded principal and its Notion grant, while a list that leaves it out locks that handle out.
+- To replace the owner, in this order: set `OWNER_IMESSAGE_HANDLES` to the new owner's handles,
+  delete `home-target.json`, then redeploy so no warm instance keeps the old owner cached. Deleting
+  the pointer first opens a window in which any stranger's direct message claims ownership. Notion
+  then has to be connected again, since grants follow the principal.
+- If the logs show `the home pointer is unusable`, every message is being dropped: fix or delete
+  `home-target.json` as above. Keep any new pointer field optional, or the existing pointer turns
+  unusable on deploy.
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.

@@ -129,13 +129,31 @@ test("a phone number and an email of the same person are different handles", () 
   assert.equal(admitSender(direct(email), { handles: [], record: recorded(phone) }).admitted, false);
 });
 
-test("listed handles get in and act as the recorded principal", () => {
-  const owner = { handles: [email], record: recorded(phone) };
+test("every listed alias acts as the recorded principal when it is listed", () => {
+  const owner = { handles: [email, phone], record: recorded(phone) };
   const admission = admitSender(direct(email), owner);
   assert.ok(admission.admitted);
   assert.equal(admission.principalId, phone);
   assert.equal(admitSender(direct(phone), owner).admitted, true);
   assert.equal(admitSender(direct(stranger), owner).admitted, false);
+});
+
+test("a handle list that leaves the recorded owner out locks them out and takes over", () => {
+  const owner = { handles: [phone], record: recorded(stranger) };
+  assert.equal(admitSender(direct(stranger), owner).admitted, false);
+  const admission = admitSender(direct(phone), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+});
+
+test("a listed handle used as the principal is canonical", () => {
+  const owner = { handles: ["+61 412 345 678", email], record: absent };
+  const admission = admitSender(direct(email), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, phone);
+  const emailFirst = admitSender(direct(phone), { handles: ["Owner@iCloud.com", phone], record: absent });
+  assert.ok(emailFirst.admitted);
+  assert.equal(emailFirst.principalId, email);
 });
 
 test("with no pointer, listed handles act as the first one and nobody else can claim", () => {
@@ -231,4 +249,17 @@ test("a claim is remembered without another read", async () => {
   lookup.remember(phone);
   assert.deepEqual(await lookup.current(), recorded(phone));
   assert.equal(store.calls(), 0);
+});
+
+test("a claim is cached only once it is written", async () => {
+  const store = fakeStore({ status: "absent" });
+  const lookup = ownerRecordLookup(store.read, issuer);
+  const taken = async () => {
+    throw new Error("blob already exists");
+  };
+  assert.equal(await lookup.claim(stranger, taken), false);
+  assert.equal((await lookup.current()).kind, "absent");
+  assert.equal(await lookup.claim(phone, async () => {}), true);
+  assert.deepEqual(await lookup.current(), recorded(phone));
+  assert.equal(store.calls(), 1);
 });

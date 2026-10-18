@@ -11,6 +11,7 @@ test("the sender's service beats the platform", () => {
   const sms = { sender: { id: "+15550100", platform: "iMessage", service: "SMS" } };
   assert.ok(sentOverAnotherService(sms));
   assert.ok(sentOverAnotherService({ sender: { id: "+15550100", service: "RCS" } }));
+  assert.ok(sentOverAnotherService({ sender: { id: "+15550100", service: "sms" } }));
   assert.ok(!sentOverAnotherService({ sender: { id: "+15550100", service: "iMessage" } }));
 });
 
@@ -18,4 +19,5 @@ test("does not refuse a sender when nothing names the service", () => {
   assert.ok(!sentOverAnotherService({ sender: { id: "+15550100" } }));
   assert.ok(!sentOverAnotherService(null));
   assert.ok(!sentOverAnotherService({ sender: { id: "+15550100", service: 1 } }));
+  assert.ok(!sentOverAnotherService({ sender: { id: "+15550100", service: "unknown" } }));
 });

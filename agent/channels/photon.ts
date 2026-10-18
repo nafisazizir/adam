@@ -2,7 +2,12 @@ import { photonIMessageChannel } from "eve/channels/photon";
 
 import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
-import { readHomeTargetState, rememberHomeTarget } from "#lib/home-target.js";
+import {
+  claimHomeTarget,
+  type HomeTarget,
+  readHomeTargetState,
+  rememberHomeTarget,
+} from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
 import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
@@ -31,10 +36,19 @@ async function admit(sender: InboundSender): Promise<SenderAdmission> {
   const chat = sender.isDirect ? "direct" : "group";
   if (!admission.admitted) {
     console.warn(`[photon] ignored a message from ${who} in a ${chat} chat: ${admission.reason}`);
-  } else if (admission.claimed) {
-    console.warn(`[photon] ${who} claimed ownership; no owner was recorded or configured`);
   }
   return admission;
+}
+
+async function claim(home: HomeTarget): Promise<boolean> {
+  const who = home.owner.principalId;
+  const claimed = await ownerRecord.claim(who, () => claimHomeTarget(home));
+  console.warn(
+    claimed
+      ? `[photon] ${who} claimed ownership; no owner was recorded or configured`
+      : `[photon] ignored a message from ${who}: the ownership claim was not written`,
+  );
+  return claimed;
 }
 
 const groupChatContext =
@@ -132,6 +146,14 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     });
     if (!admission.admitted) return null;
 
+    const owner = { issuer: photonAuthenticator, principalId: admission.principalId };
+    const home: HomeTarget = {
+      channel: "photon",
+      target: { threadId: message.threadId, adapterName: photonAdapterName },
+      owner,
+    };
+    if (admission.claimed && !(await claim(home))) return null;
+
     try {
       await resolveAttachmentIds(message.raw, (ctx.thread.adapter as { app?: unknown }).app);
     } catch (error) {
@@ -141,15 +163,10 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     const unreadable = unreadableInbound(message);
     if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);
 
-    const owner = { issuer: photonAuthenticator, principalId: admission.principalId };
-    if (admission.updatesHome) {
+    if (admission.updatesHome && !admission.claimed) {
       ownerRecord.remember(owner.principalId);
       try {
-        await rememberHomeTarget({
-          channel: "photon",
-          target: { threadId: message.threadId, adapterName: photonAdapterName },
-          owner,
-        });
+        await rememberHomeTarget(home);
       } catch (error) {
         console.warn("[photon] failed to remember home target", error);
       }

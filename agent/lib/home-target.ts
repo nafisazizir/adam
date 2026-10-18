@@ -50,6 +50,23 @@ export async function rememberHomeTarget(home: HomeTarget): Promise<void> {
   lastWrittenJson = json;
 }
 
+// The first owner is claimed with `allowOverwrite: false`, so when two people text a fresh install
+// at once only one write lands and the other claim fails.
+export async function claimHomeTarget(home: HomeTarget): Promise<void> {
+  const blobToken = token();
+  if (!blobToken) throw new Error("Vercel Blob is not configured");
+
+  const json = JSON.stringify(home);
+  await put(pathname, json, {
+    access: "private",
+    addRandomSuffix: false,
+    allowOverwrite: false,
+    contentType: "application/json",
+    token: blobToken,
+  });
+  lastWrittenJson = json;
+}
+
 export type HomeTargetRead =
   | { readonly status: "found"; readonly home: HomeTarget }
   | { readonly status: "absent" }
