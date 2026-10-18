@@ -1,20 +1,9 @@
-import { defineState, type SessionAuthContext } from "eve/context";
+import type { SessionAuthContext } from "eve/context";
 
 import type { HomeOwner } from "#lib/home-target.js";
 import { ownerAuth } from "#lib/owner.js";
 
 export const remindersAuthenticator = "reminders";
-
-export interface ScheduledReminder {
-  readonly id: string;
-  readonly message: string;
-  readonly fireAt: string;
-}
-
-export const scheduledReminders = defineState<ScheduledReminder[]>(
-  "adam.reminders",
-  () => [],
-);
 
 export function reminderAuth(owner: HomeOwner | null, messageId: string | null): SessionAuthContext {
   if (owner) {

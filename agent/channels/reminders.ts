@@ -5,6 +5,8 @@ import { deliveryChannelByName } from "#lib/delivery.js";
 import { env, remindersDeliverPath } from "#lib/env.js";
 import { readHomeTarget, type HomeTarget } from "#lib/home-target.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
+import { forgetReminderWithin } from "#lib/reminder-list.js";
+import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderAuth, reminderDestination } from "#lib/reminders.js";
 import { currentTimeContext } from "#lib/time.js";
 
@@ -61,6 +63,8 @@ export default defineChannel({
         console.error(`[reminders] failed to hand off ${messageId} on ${channel} (retried ${retried})`, error);
         return new Response("delivery failed", { status: 500 });
       }
+
+      if (messageId) await forgetReminderWithin(blobReminderListStore, messageId, 2000);
 
       console.log(`[reminders] handed off ${messageId} on ${channel} (retried ${retried})`);
       return new Response("ok");
