@@ -244,9 +244,21 @@ stub the route).
     (`connectOverCDP` only, no bundled browsers; listed in `build.externalDependencies` because it
     reads its own package files at runtime). Each tool call connects, does one thing and
     disconnects; the page lives on in the hosted browser. `lib/web-content.ts` holds the pure
-    pieces: https-only url checks that refuse credentials, odd ports, IP literals and private or
-    local names; whitespace tidying; text windows; and the `<page_content>` wrapper with look-alike
-    tags stripped. Swapping Kernel for Browserbase is a rewrite of `lib/browser.ts` only.
+    pieces: `browsableUrl`, which admits only https urls on `browsableSites` (x.com, twitter.com,
+    linkedin.com and their subdomains) and refuses credentials and odd ports; whitespace tidying;
+    text windows; and the `<page_content>` wrapper (`stripWrapperTags` from `lib/untrusted.ts`).
+    Swapping Kernel for Browserbase is a rewrite of `lib/browser.ts` only.
+  - **Allowlist.** A prompt injection in a post could otherwise send the operator to an attacker's
+    host with private feed content in the query, and run that host's scripts in the logged-in
+    browser; a steered root could open a look-alike login page in a genuine Kernel live view. So
+    `open_page` and `start_browser_login` require `browsableUrl`, and while connected
+    `browser-page.ts` routes every request and aborts top-level navigations off the list (a site's
+    CDNs, embeds and other subresources still load; routing also turns off the HTTP cache for
+    that connection). Playwright's route never sees a redirect, so every call also checks where
+    the page landed and, if it is off the list, sends it to `about:blank` and reports it instead of
+    reading. Logged-in reading of another site is one entry in `browsableSites`; public pages are
+    `deep`'s. The owner's own clicks in the live view are not policed. Kernel's
+    `network.allowed_hosts` (proxy v3, every CDN listed) would be the stricter, egress-level form.
   - **Operator.** `openai/gpt-6-luna` (reading and summarising, so the cheaper model) with
     `defaultTools: false`, so it has no shell, files, web fetch or search, and no connections. Its
     own tools are `open_page`, `read_page` (visible text, or the accessibility outline with link
@@ -256,20 +268,32 @@ stub the route).
     instructions say never to follow it. One browser per delegated turn: `lib/operator-browser.ts`
     keeps it in `defineState`, opened lazily by the first `open_page` (named after the operator
     session, so a replayed create finds it), at most 12 page opens per turn, and the operator's
-    `hooks/close-browser.ts` deletes it on `turn.completed`, `turn.failed` or `turn.cancelled`. A
-    Kernel inactivity timeout (5 minutes) is the backstop. Reading browsers attach the profile
-    without `save_changes`, so a bad run cannot corrupt the login.
+    `hooks/close-browser.ts` deletes it when a turn ends (`turn.completed`, `turn.failed` or
+    `turn.cancelled`). A session that fails outright emits no turn event, so Kernel's inactivity
+    timeout (5 minutes) is the backstop. A call that cannot reach the browser (Kernel ended it)
+    drops it from state, and `open_page` retries once on a fresh one. Reading browsers attach the
+    profile without `save_changes`, so a bad run cannot corrupt the login. Creates that race on a
+    name (409) re-read the browser by name.
   - **One-time login.** `start_browser_login(url)` opens a writing browser (named `adam-login`, on
     the profile with `save_changes`, 15-minute idle timeout) at the site's login page and returns its
     live-view url, which root texts the owner; calling it again moves the same browser to another
     site. The owner logs in by hand; Adam never handles passwords. `finish_browser_login` deletes
     the browser, which saves the profile. Both refuse outside an owner-chat turn (`isOwnerChat` in
     `lib/delivery.ts`, shared with `merge_pull_request`), so a background turn never texts a login
-    link on its own.
+    link on its own. That gate says the turn is a chat, not who is chatting: the login tools rely
+    on the Photon channel admitting only the owner (the owner lock in `onMessage`), because the
+    link hands over a browser already holding every saved login. The gate is used instead of
+    Eve's `approval: always()` for the reasons given under Merging: an iMessage approval prompt
+    only reads `Approve start_browser_login?`, and one parked in a background turn could deadlock
+    the thread. The owner asking in chat is the consent.
   - **Risk.** X's terms and LinkedIn's User Agreement prohibit automated access, and LinkedIn
     restricts accounts for it. Hence read-only, low-volume (a few pages per run), human pacing
-    (2–5 s settle after each navigation), stealth browsers, stop-and-report on any login wall,
-    captcha or checkpoint, and the advice to use a secondary account. It never posts, likes, replies,
+    (2–5 s settle after each navigation), stop-and-report on any login wall, captcha or
+    checkpoint, and the advice to use a secondary account. Browsers run without Kernel's stealth
+    mode, because stealth always enables Kernel's CAPTCHA solver, which would silently solve the
+    very challenges the operator must stop at; the cost is more bot-detection friction. It is one
+    constant (`stealth` in `lib/browser.ts`), the same for login and reading browsers so sites see
+    one browser. It never posts, likes, replies,
     follows or messages.
 - **Coding sessions** (`agent/lib/devin.ts`, `agent/lib/coding-sessions.ts`): root Adam hands
   engineering work to Devin through the v3 REST API, so a missing capability ("block my calendar"
@@ -457,7 +481,7 @@ adam/
 │   │       ├── agent.ts       # luna, defaultTools: false, playwright-core external
 │   │       ├── instructions.md # read-only rules, untrusted page text, stop conditions
 │   │       ├── hooks/
-│   │       │   └── close-browser.ts # delete the browser when a turn ends, however it ends
+│   │       │   └── close-browser.ts # delete the browser when a turn ends
 │   │       └── tools/
 │   │           ├── open_page.ts
 │   │           ├── read_page.ts
@@ -491,7 +515,7 @@ adam/
 │   │   ├── browser.ts         # Kernel REST: profile, reading and login browsers, delete-to-save
 │   │   ├── browser-page.ts    # playwright-core over CDP: navigate, read, scroll, screenshot
 │   │   ├── operator-browser.ts # the operator's per-session browser and page budget (defineState)
-│   │   ├── web-content.ts     # url checks, text windows, the <page_content> wrapper (pure)
+│   │   ├── web-content.ts     # site allowlist, text windows, the <page_content> wrapper (pure)
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -635,8 +659,8 @@ KERNEL_API_KEY=...                  # optional; Kernel hosted browser for the op
 - The operator needs `KERNEL_API_KEY` (set it, or install Kernel from the Vercel Marketplace).
   Without it Adam boots and only the browser tools fail. Log in once over iMessage ("connect my
   X"): Adam texts a live-view link, the owner logs in there by hand and says done. Prefer a
-  secondary account, especially on LinkedIn. Browsers are headful with stealth (about $0.48 an
-  hour on the Developer plan, so a few cents a run against its $5 monthly credit).
+  secondary account, especially on LinkedIn. Browsers are headful without stealth (about $0.48
+  an hour on the Developer plan, so a few cents a run against its $5 monthly credit).
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -685,7 +709,7 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      without a recap on the phone. At call start the voice agent needs a short briefing of recent
      context, which is the first real need for memory (item 4).
 3. **A computer (`operator` subagent).** Built: read-only browsing of logged-in sites (X and
-   LinkedIn notifications and feeds, logged-in research) on a Kernel browser profile, with the
+   LinkedIn notifications, feeds and other logged-in pages there) on a Kernel browser profile, with the
    one-time login through a live-view link; see §4.
    - **Seam.** `lib/browser.ts` is the only file that knows Kernel; `lib/browser-page.ts` drives
      pages with `playwright-core`. Browserbase (Contexts, `debuggerFullscreenUrl`) is the fallback.

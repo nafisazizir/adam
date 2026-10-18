@@ -9,6 +9,9 @@ const loginBrowserName = "adam-login";
 const loginTimeoutSeconds = 15 * 60;
 const readingTimeoutSeconds = 5 * 60;
 const viewport = { width: 1280, height: 800 };
+// Kernel's stealth mode cannot be had without its CAPTCHA solver, and a solved captcha is exactly
+// what the operator must stop and report instead. Off, the browser meets more bot friction.
+const stealth = false;
 
 const browserSchema = z.object({
   session_id: z.string(),
@@ -108,19 +111,27 @@ async function findOrCreateBrowser(
   const existing = await findBrowser(name);
   if (existing) return { session: existing, created: false };
 
-  const raw = await kernelRequest("/browsers", browserSchema, {
-    method: "POST",
-    body: {
-      name,
-      // Headful for reading too, so sites see the same browser the owner logged in from.
-      headless: false,
-      stealth: true,
-      viewport,
-      timeout_seconds: options.timeoutSeconds,
-      profile: { name: profileName, save_changes: options.saveChanges },
-      ...(options.startUrl ? { start_url: options.startUrl } : {}),
-    },
-  });
+  let raw: z.infer<typeof browserSchema>;
+  try {
+    raw = await kernelRequest("/browsers", browserSchema, {
+      method: "POST",
+      body: {
+        name,
+        // Headful and the same stealth setting for reading too, so sites see the same browser
+        // the owner logged in from.
+        headless: false,
+        stealth,
+        viewport,
+        timeout_seconds: options.timeoutSeconds,
+        profile: { name: profileName, save_changes: options.saveChanges },
+        ...(options.startUrl ? { start_url: options.startUrl } : {}),
+      },
+    });
+  } catch (error) {
+    const raced = error instanceof BrowserApiError && error.status === 409 ? await findBrowser(name) : null;
+    if (raced) return { session: raced, created: false };
+    throw error;
+  }
   return { session: toSession(raw), created: true };
 }
 

@@ -2,7 +2,7 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { readPage } from "#lib/browser-page.js";
-import { existingBrowser } from "#lib/operator-browser.js";
+import { withOpenBrowser } from "#lib/operator-browser.js";
 import { textWindow, untrustedPage } from "#lib/web-content.js";
 
 const maxChars = { text: 12_000, outline: 16_000 } as const;
@@ -19,7 +19,7 @@ export default defineTool({
   }),
   label: { start: ({ mode }) => (mode === "outline" ? "Read page outline" : "Read page") },
   async execute({ mode, from }) {
-    const page = await readPage(existingBrowser(), mode);
+    const page = await withOpenBrowser((session) => readPage(session, mode));
     const window = textWindow(page.body, from, maxChars[mode]);
     return {
       content: untrustedPage({ url: page.url, title: page.title, body: window.text }),

@@ -2,8 +2,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { scrollPage } from "#lib/browser-page.js";
-import { existingBrowser } from "#lib/operator-browser.js";
-import { stripPageContentTags } from "#lib/web-content.js";
+import { withOpenBrowser } from "#lib/operator-browser.js";
+import { untrustedPage } from "#lib/web-content.js";
 
 export default defineTool({
   description:
@@ -15,12 +15,7 @@ export default defineTool({
   }),
   label: { start: ({ direction }) => `Scroll ${direction}` },
   async execute({ direction, screens }) {
-    const page = await scrollPage(existingBrowser(), direction, screens);
-    return {
-      url: page.url,
-      title: stripPageContentTags(page.title),
-      atTop: page.atTop,
-      atBottom: page.atBottom,
-    };
+    const page = await withOpenBrowser((session) => scrollPage(session, direction, screens));
+    return { atTop: page.atTop, atBottom: page.atBottom, page: untrustedPage(page) };
   },
 });

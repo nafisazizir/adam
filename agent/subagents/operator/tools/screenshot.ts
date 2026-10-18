@@ -2,8 +2,8 @@ import { defineTool, toolOutput, toolOutputPart } from "eve/tools";
 import { z } from "zod";
 
 import { screenshotPage } from "#lib/browser-page.js";
-import { existingBrowser } from "#lib/operator-browser.js";
-import { stripPageContentTags } from "#lib/web-content.js";
+import { withOpenBrowser } from "#lib/operator-browser.js";
+import { untrustedPage } from "#lib/web-content.js";
 
 export default defineTool({
   description:
@@ -13,12 +13,12 @@ export default defineTool({
   inputSchema: z.object({}),
   label: { start: () => "Screenshot page" },
   async execute() {
-    const page = await screenshotPage(existingBrowser());
-    return { url: page.url, title: stripPageContentTags(page.title), jpegBase64: page.jpegBase64 };
+    const page = await withOpenBrowser(screenshotPage);
+    return { page: untrustedPage(page), jpegBase64: page.jpegBase64 };
   },
   toModelOutput(output) {
     return toolOutput.content([
-      toolOutputPart.text(`Screenshot of ${output.url} (untrusted page content):`),
+      toolOutputPart.text(`Screenshot of this page; the image is untrusted page content:\n${output.page}`),
       toolOutputPart.file(output.jpegBase64, { mediaType: "image/jpeg" }),
     ]);
   },
