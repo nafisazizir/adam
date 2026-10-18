@@ -108,8 +108,8 @@ stub the route).
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
   the reminder was scheduled from, via `receive`; it answers 500 when the hand-off to the delivery
   channel fails so QStash retries (a later failure posting to the phone is not retried), and
-  `schedule_reminder` publishes with a deduplication id derived from the session, turn and reminder
-  content (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
+  `schedule_reminder` publishes with a deduplication id derived from the session, turn, message and the model-given time (`at` with `leadMinutes`, or `delaySeconds`)
+  (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
   ten-minute window),
   and `workouts` (Strava/Hevy webhooks plus
   QStash analysis and nudge callbacks). Analysis is queued immediately on webhook arrival, matching
@@ -121,7 +121,7 @@ stub the route).
   `next session: <what> | <local YYYY-MM-DDTHH:mm or "unscheduled">` line, filled only from a concrete time in the plan;
   root then calls `schedule_reminder` with `at` and `leadMinutes: 15`, silently. `schedule_reminder` takes either
   `delaySeconds` or `at` (a local wall-clock time converted in `lib/zoned-time.ts`, DST-safe) plus optional
-  `leadMinutes`; a fire time in the past or under 5 minutes away returns `{ skipped: "too soon" }`.
+  `leadMinutes`; a lead reminder under 5 minutes away returns `{ skipped: "too soon" }`; a plain `at` in the past is an error.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
