@@ -392,6 +392,30 @@ test("reconnecting an existing name reuses its subject, writes nothing and forge
   assert.equal((await google.listAccounts(owner))[0]?.email, "new@gmail.example");
 });
 
+test("with a shared address cache, a reconnect on one instance is seen by the others", async () => {
+  const { connect } = fakeConnect({ personal: "token-personal" });
+  let address = "old@gmail.example";
+  const { impl } = fakeFetch((url) =>
+    url.hostname === "openidconnect.googleapis.com" ? Response.json({ email: address }) : undefined,
+  );
+  const store = fakeAccountStore(["personal"]);
+  const addressCache = memoryCache();
+  const instance = () =>
+    googleWorkspace({
+      connector,
+      accounts: googleAccountRegistry({ store, cache: memoryCache(), cacheTtlSeconds: 60 }),
+      connect,
+      addressCache,
+      timeZone: "Australia/Brisbane",
+      fetch: impl,
+    });
+  const [one, two] = [instance(), instance()];
+  assert.equal((await two.listAccounts(owner))[0]?.email, "old@gmail.example");
+  await one.signIn(owner, "personal");
+  address = "new@gmail.example";
+  assert.equal((await two.listAccounts(owner))[0]?.email, "new@gmail.example");
+});
+
 test("an account can be reconnected by its address, and a bad name adds nothing", async () => {
   const { connect, started } = fakeConnect({ work: "token-work" });
   const store = fakeAccountStore(both);

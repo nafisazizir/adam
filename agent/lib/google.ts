@@ -14,7 +14,7 @@ import { env } from "#lib/env.js";
 import { googleAccountRegistry, type GoogleAccountRegistry, normalizeAccountLabel } from "#lib/google-accounts.js";
 import { blobGoogleAccountStore } from "#lib/google-accounts-store.js";
 import type { HomeOwner } from "#lib/home-target.js";
-import { memoryCache } from "#lib/shared-cache.js";
+import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
 import { startOfLocalDay } from "#lib/zoned-time.js";
 
 const userinfoUrl = "https://openidconnect.googleapis.com/v1/userinfo";
@@ -31,6 +31,7 @@ const maxDescriptionChars = 1500;
 const eventPageSize = 100;
 const maxEventPages = 3;
 const metadataConcurrency = 5;
+const addressTtlSeconds = 24 * 60 * 60;
 
 // The slice of @vercel/connect this file uses, so tests can stand in for Vercel Connect.
 export interface GoogleConnect {
@@ -538,6 +539,7 @@ export interface GoogleWorkspaceDeps {
   readonly accounts: GoogleAccountRegistry;
   readonly timeZone: string;
   readonly connect?: GoogleConnect;
+  readonly addressCache?: SharedCache;
   readonly fetch?: typeof fetch;
   readonly sleep?: (ms: number) => Promise<void>;
 }
@@ -547,7 +549,7 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
   const connect = deps.connect ?? vercelConnect;
   const request = deps.fetch ?? ((input, init) => fetch(input, init));
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const addresses = new Map<string, string>();
+  const addresses = deps.addressCache ?? memoryCache();
 
   function eventSortKey(time: EventTime): number {
     if (!time.allDay) return time.at.getTime();
@@ -641,11 +643,18 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     return accounts;
   }
 
+  // Keyed by subject, and forgotten on connect and disconnect, so a name reconnected to another
+  // Google account never answers with the old address.
+  function addressKey(account: Account): string {
+    return `google-address:${JSON.stringify(googleSubject(account.owner, account.label))}`;
+  }
+
   async function addressOf(account: Account): Promise<string> {
-    const cached = addresses.get(account.label);
-    if (cached) return cached;
+    const key = addressKey(account);
+    const cached = await addresses.get(key);
+    if (typeof cached === "string" && cached) return cached;
     const { email } = await googleCall(account, new URL(userinfoUrl), userinfoSchema);
-    addresses.set(account.label, email);
+    await addresses.set(key, email, addressTtlSeconds);
     return email;
   }
 
@@ -833,9 +842,10 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     async signIn(owner: GoogleOwner | null, name: string): Promise<GoogleSignIn> {
       const caller = connectorFor(owner);
       const label = name.includes("@") ? (await only(owner, name)).label : normalizeAccountLabel(name);
+      const account = { label, owner: caller.owner };
       const { added } = await registry.add(label);
-      addresses.delete(label);
-      const started = await connect.startAuthorization(caller.connector, tokenParams({ label, owner: caller.owner }));
+      await addresses.delete(addressKey(account));
+      const started = await connect.startAuthorization(caller.connector, tokenParams(account));
       return {
         account: label,
         added,
@@ -865,7 +875,7 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         hadGrant = false;
       }
       await registry.remove(account.label);
-      addresses.delete(account.label);
+      await addresses.delete(addressKey(account));
       return { disconnected: true, account: account.label, hadGrant };
     },
 

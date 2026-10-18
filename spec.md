@@ -324,8 +324,9 @@ stub the route).
     owner: `googleSubject(owner, label)` is `{ type: "user", id: "<principalId>/google/<label>",
     issuer }`, and connecting a second account never replaces the first. Each token is requested
     with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
-    OpenID userinfo with its own token and is cached per instance by label. Tools name an account by
-    its label or its address.
+    OpenID userinfo with its own token and is cached for a day by subject in a `SharedCache`
+    (per instance for now), forgotten when that name is connected again or disconnected. Tools name
+    an account by its label or its address.
   - **Account list.** The labels (and when each was added) are the one thing Adam stores for Google:
     `lib/google-accounts.ts` (`googleAccountRegistry`: list, add, remove, plus `normalizeAccountLabel`)
     over a `GoogleAccountStore`, which `lib/google-accounts-store.ts` keeps as `google-accounts.json`
