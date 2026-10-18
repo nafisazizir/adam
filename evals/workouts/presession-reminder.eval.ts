@@ -20,6 +20,7 @@ export default defineEval({
       ),
     );
     t.succeeded();
+    t.calledTool("stay_silent");
     t.calledTool("schedule_reminder", {
       count: 1,
       input: {

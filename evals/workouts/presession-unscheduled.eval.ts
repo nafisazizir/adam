@@ -9,6 +9,6 @@ export default defineEval({
   async test(t) {
     await t.send(debriefMessage(debriefWithNextSession("Lower B | unscheduled")));
     t.succeeded();
-    t.calledTool("schedule_reminder", { count: 0 });
+    t.notCalledTool("schedule_reminder");
   },
 });
