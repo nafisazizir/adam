@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { codingBrief, describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
 import { createCodingSession } from "#lib/devin.js";
+import { replayStableKey } from "#lib/replay-key.js";
 
 export default defineTool({
   description:
@@ -34,7 +35,7 @@ export default defineTool({
       prompt: codingBrief(brief, hinted),
       title,
       repos: hinted,
-      idempotencyKey: ctx.callId,
+      idempotencyKey: replayStableKey(ctx, title, brief, ...hinted),
     });
 
     return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };

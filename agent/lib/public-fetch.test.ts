@@ -22,7 +22,7 @@ test("refuses private IPv6 and IPv6 forms that embed a private IPv4", () => {
   for (const address of [
     "::", "::1", "fe80::1", "fc00::1", "fd12:3456::1", "ff02::1", "2001:db8::1",
     "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:169.254.169.254", "64:ff9b::a00:1", "2002:7f00:1::",
-    "0:0:0:0:0:0:0:1", "fe80::1%eth0",
+    "0:0:0:0:0:0:0:1", "fe80::1%eth0", "::ffff:0:7f00:1", "64:ff9b:1::1", "100::1", "2001::1", "2001:1::1", "3fff::1", "4000::1", "fec0::1",
   ]) {
     assert.ok(!isPublicAddress(address), address);
   }

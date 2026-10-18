@@ -58,16 +58,14 @@ function embeddedIPv4(high: number, low: number): Octets {
 
 function isPublicIPv6(groups: Octets): boolean {
   const [g0, g1, g2, g3, g4, g5, g6, g7] = groups;
-  if (groups.slice(0, 5).every((group) => group === 0)) {
-    return g5 === 0xffff && isPublicIPv4(embeddedIPv4(g6, g7));
-  }
-  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
-    return isPublicIPv4(embeddedIPv4(g6, g7));
-  }
+  const embedded = embeddedIPv4(g6, g7);
+  if (groups.slice(0, 5).every((group) => group === 0)) return g5 === 0xffff && isPublicIPv4(embedded);
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) return isPublicIPv4(embedded);
+  if ((g0 & 0xe000) !== 0x2000) return false;
   if (g0 === 0x2002) return isPublicIPv4(embeddedIPv4(g1, g2));
-  if (g0 === 0x2001 && (g1 === 0 || g1 === 0xdb8)) return false;
-  if ((g0 & 0xffc0) === 0xfe80 || (g0 & 0xffc0) === 0xfec0) return false;
-  if ((g0 & 0xfe00) === 0xfc00 || (g0 & 0xff00) === 0xff00) return false;
+  if (g0 === 0x2001 && g1 < 0x200) return false;
+  if (g0 === 0x2001 && g1 === 0xdb8) return false;
+  if (g0 === 0x3fff && g1 < 0x1000) return false;
   return true;
 }
 

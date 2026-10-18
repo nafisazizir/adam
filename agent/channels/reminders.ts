@@ -35,6 +35,8 @@ export default defineChannel({
       }
 
       const { message, channel, target } = parsed.data;
+      const messageId = request.headers.get("upstash-message-id");
+      const retried = request.headers.get("upstash-retried");
       const delivery = deliveryChannelByName(channel);
       if (!delivery) {
         return new Response(`unknown delivery channel: ${channel}`, { status: 400 });
@@ -50,10 +52,11 @@ export default defineChannel({
           auth: reminderAuth,
         });
       } catch (error) {
-        console.error(`[reminders] failed to deliver a reminder on ${channel}`, error);
+        console.error(`[reminders] failed to hand off ${messageId} on ${channel} (retried ${retried})`, error);
         return new Response("delivery failed", { status: 500 });
       }
 
+      console.log(`[reminders] handed off ${messageId} on ${channel} (retried ${retried})`);
       return new Response("ok");
     }),
   ],

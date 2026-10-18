@@ -106,9 +106,11 @@ stub the route).
 
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
   `reminders` (custom channel; QStash callback endpoint that hands off to whichever delivery channel
-  the reminder was scheduled from, via `receive`; it awaits delivery and answers 500 on failure so
-  QStash retries, and `schedule_reminder` publishes with a deduplication id derived from the tool
-  call id so a replayed tool step does not schedule a second copy within QStash's ten-minute window),
+  the reminder was scheduled from, via `receive`; it answers 500 when the hand-off to the delivery
+  channel fails so QStash retries (a later failure posting to the phone is not retried), and
+  `schedule_reminder` publishes with a deduplication id derived from the session, turn and reminder
+  content (`lib/replay-key.ts`), so a re-run step does not schedule a second copy within QStash's
+  ten-minute window),
   and `workouts` (Strava/Hevy webhooks plus
   QStash analysis and nudge callbacks). Analysis is queued immediately on webhook arrival, matching
   riz-mcp, while QStash still provides deduplication and retries; it starts an independent session at
@@ -118,7 +120,7 @@ stub the route).
   iMessage thread; root Adam applies right-to-silence there.
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
-  deduplication IDs, retained for 90 days, for at most one analysis and one message per workout.
+  deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
   knows how to `receive` back into it. `homeDelivery()` provides the last chat the user messaged
@@ -371,7 +373,7 @@ IMESSAGE_WEBHOOK_SECRET=...         # verify inbound Photon webhook
 QSTASH_TOKEN=...                    # publish reminders
 QSTASH_CURRENT_SIGNING_KEY=...      # verify callback signature
 QSTASH_NEXT_SIGNING_KEY=...
-QSTASH_URL=...                      # QStash API origin for the region
+QSTASH_URL=...                      # optional; QStash API origin for the region
 RIZ_MCP_URL=...                     # riz-mcp server for Strava activity details and the coach
 RIZ_MCP_JWT_SECRET=...              # signs the JWT riz-mcp expects
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
