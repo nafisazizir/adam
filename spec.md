@@ -170,7 +170,7 @@ stub the route).
   authenticators and never resolve. `isOwnerChat` gates anything that needs the owner's say-so in
   chat (merge confirmations, memory writes). `isOwnerDirectChat` also requires `direct: "true"` and
   gates anything that hands out a link granting access to the owner's accounts (sign-in and consent
-  links): in a group anyone could open it first and connect their own account in the owner's name.
+  links, the browser live-view link): in a group anyone could open it first and connect their own account in the owner's name.
   A tool that mints such a link refuses outside it with "Text me directly and ask again".
 - **Acting as the owner** (`agent/lib/owner.ts`): `ownerAuth(owner, source)` builds a user-principal
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
@@ -233,6 +233,70 @@ stub the route).
   so luna acknowledges, keeps replying (new iMessages steer the turn without stopping the task),
   and relays the result. It cannot message or schedule, so right-to-silence stays with root. The
   built-in root-copy `agent` tool is disabled via `agent/tools/agent.ts`.
+- **A computer** (`agent/subagents/operator/`, `agent/lib/browser.ts`): a hosted Kernel browser
+  that keeps the owner's logins in a saved profile, read by a declared `operator` subagent. Root
+  delegates to it, as it does to `deep`, for sites that need the owner's login (X and LinkedIn
+  notifications and feeds); plain public research stays with `deep`.
+  - **Seams.** `lib/browser.ts` is the only file that knows Kernel (REST, no SDK): it creates a
+    browser on the `adam-owner` profile, returns its CDP and live-view urls, and deletes it. Kernel
+    saves a profile only when its writing browser is deleted (or times out), never on a CDP
+    disconnect. `lib/browser-page.ts` drives a page over that CDP url with `playwright-core`
+    (`connectOverCDP` only, no bundled browsers; listed in `build.externalDependencies` because it
+    reads its own package files at runtime). Each tool call connects, does one thing and
+    disconnects; the page lives on in the hosted browser. `lib/web-content.ts` holds the pure
+    pieces: `browsableUrl`, which admits only https urls on `browsableSites` (x.com, twitter.com,
+    linkedin.com and their subdomains) and refuses credentials and odd ports; whitespace tidying;
+    text windows; and the `<page_content>` wrapper (`stripWrapperTags` from `lib/untrusted.ts`).
+    Swapping Kernel for Browserbase is a rewrite of `lib/browser.ts` only.
+  - **Allowlist.** A prompt injection in a post could otherwise send the operator to an attacker's
+    host with private feed content in the query, and run that host's scripts in the logged-in
+    browser; a steered root could open a look-alike login page in a genuine Kernel live view. So
+    `open_page` and `start_browser_login` require `browsableUrl`, and while connected
+    `browser-page.ts` routes every request and aborts top-level navigations off the list (a site's
+    CDNs, embeds and other subresources still load; routing also turns off the HTTP cache for
+    that connection). Playwright's route never sees a redirect, so every call also checks where
+    the page landed and, if it is off the list, sends it to `about:blank` and reports it instead of
+    reading. Known gap: an open redirect on an allowed host (e.g. `x.com/i/redirect?url=…`) still
+    sends one request to its target before that check reports it; the operator never builds URLs
+    from page content. Logged-in reading of another site is one entry in `browsableSites`; public
+    pages are `deep`'s. The owner's own clicks in the live view, and popups or `target=_blank` tabs
+    (the operator only reads the first page), are not policed. Kernel's
+    `network.allowed_hosts` (proxy v3, every CDN listed) would be the stricter, egress-level form.
+  - **Operator.** `openai/gpt-6-luna` (reading and summarising, so the cheaper model) with
+    `defaultTools: false`, so it has no shell, files, web fetch or search, and no connections. Its
+    own tools are `open_page`, `read_page` (visible text, or the accessibility outline with link
+    targets, in 12–16k-character windows), `scroll` (by screens, with human-paced pauses) and
+    `screenshot` (a JPEG the model sees, only when text comes back empty). There is no click or
+    type tool at all. Page text is untrusted: every read arrives wrapped in `<page_content>` and its
+    instructions say never to follow it. One browser per delegated turn: `lib/operator-browser.ts`
+    keeps it in `defineState`, opened lazily by the first `open_page` (named after the operator
+    session, so a replayed create finds it), at most 12 page opens per turn, and the operator's
+    `hooks/close-browser.ts` deletes it when a turn ends (`turn.completed`, `turn.failed` or
+    `turn.cancelled`). A session that fails outright emits no turn event, so Kernel's inactivity
+    timeout (5 minutes) is the backstop. A call that cannot reach the browser (Kernel ended it)
+    drops it from state, and `open_page` retries once on a fresh one. Reading browsers attach the
+    profile without `save_changes`, so a bad run cannot corrupt the login. Creates that race on a
+    name (409) re-read the browser by name.
+  - **One-time login.** `start_browser_login(url)` opens a writing browser (named `adam-login`, on
+    the profile with `save_changes`, 15-minute idle timeout) at the site's login page and returns its
+    live-view url, which root texts the owner; calling it again moves the same browser to another
+    site. The owner logs in by hand; Adam never handles passwords. `finish_browser_login` deletes
+    the browser, which saves the profile. Both are gated on `isOwnerDirectChat` and otherwise
+    refuse with "Text me directly and ask again": the live-view link hands over a browser already
+    holding every saved login, so it must never reach a group or come from a background turn, and
+    only the owner reaches a photon turn at all (the owner lock). The gate is used instead of Eve's
+    `approval: always()` for the reasons given under Merging: an iMessage approval prompt only
+    reads `Approve start_browser_login?`, and one parked in a background turn could deadlock the
+    thread. The owner asking in their direct chat is the consent.
+  - **Risk.** X's terms and LinkedIn's User Agreement prohibit automated access, and LinkedIn
+    restricts accounts for it. Hence read-only, low-volume (a few pages per run), human pacing
+    (2–5 s settle after each navigation), stop-and-report on any login wall, captcha or
+    checkpoint, and the advice to use a secondary account. Browsers run without Kernel's stealth
+    mode, because stealth always enables Kernel's CAPTCHA solver, which would silently solve the
+    very challenges the operator must stop at; the cost is more bot-detection friction. It is one
+    constant (`stealth` in `lib/browser.ts`), the same for login and reading browsers so sites see
+    one browser. It never posts, likes, replies,
+    follows or messages.
 - **Coding sessions** (`agent/lib/devin.ts`, `agent/lib/coding-sessions.ts`): root Adam hands
   engineering work to Devin through the v3 REST API, so a missing capability ("block my calendar"
   with no calendar access) or a bug becomes a pull request against Adam's own repo without the owner
@@ -317,7 +381,7 @@ stub the route).
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `agent` (disables the built-in root-copy tool), plus the
+  (confirmed in chat, merged by Devin), `start_browser_login`, `finish_browser_login`, `agent` (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
   model writes `![](url)`; `renderOutbound` fetches the url, keeps it only if its content type is in
@@ -408,13 +472,23 @@ adam/
 │   │   │   └── skills/
 │   │   │       ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
 │   │   │       └── workout-debrief/
-│   │   └── deep/
-│   │       ├── agent.ts
-│   │       ├── instructions.md
-│   │       ├── connections/
-│   │       │   └── notion.ts  # shared Notion connection config
-│   │       ├── memory/owner.ts # same owner memory, recall only
-│   │       └── tools/owner.ts # disableTool(): no save/remove in the deep worker
+│   │   ├── deep/
+│   │   │   ├── agent.ts
+│   │   │   ├── instructions.md
+│   │   │   ├── connections/
+│   │   │   │   └── notion.ts  # shared Notion connection config
+│   │   │   ├── memory/owner.ts # same owner memory, recall only
+│   │   │   └── tools/owner.ts # disableTool(): no save/remove in the deep worker
+│   │   └── operator/
+│   │       ├── agent.ts       # luna, defaultTools: false, playwright-core external
+│   │       ├── instructions.md # read-only rules, untrusted page text, stop conditions
+│   │       ├── hooks/
+│   │       │   └── close-browser.ts # delete the browser when a turn ends
+│   │       └── tools/
+│   │           ├── open_page.ts
+│   │           ├── read_page.ts
+│   │           ├── scroll.ts
+│   │           └── screenshot.ts
 │   ├── lib/
 │   │   ├── env.ts             # single source of truth: parse/validate/sanitise env; derive callback URLs
 │   │   ├── delivery.ts        # delivery registry, homeDelivery, and the owner-chat gates
@@ -440,6 +514,10 @@ adam/
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
 │   │   ├── daily-claim.ts     # claimDay/releaseDay: one run per job per local date, over a ClaimStore
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
+│   │   ├── browser.ts         # Kernel REST: profile, reading and login browsers, delete-to-save
+│   │   ├── browser-page.ts    # playwright-core over CDP: navigate, read, scroll, screenshot
+│   │   ├── operator-browser.ts # the operator's per-session browser and page budget (defineState)
+│   │   ├── web-content.ts     # site allowlist, text windows, the <page_content> wrapper (pure)
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
@@ -454,6 +532,8 @@ adam/
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
+│   │   ├── start_browser_login.ts # owner chat only: live-view link to log in by hand
+│   │   ├── finish_browser_login.ts # owner chat only: delete the browser, saving the logins
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       └── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
@@ -489,7 +569,9 @@ voice note (text stays the default; see `agent/instructions.md`) · inbound voic
 with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
-remembered across sessions with the `owner` memory slot.
+remembered across sessions with the `owner` memory slot · read-only
+logged-in browsing through the `operator` subagent on a Kernel browser profile, with a one-time
+login the owner does by hand through a live-view link.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
 subagents · email integration · inbound burst debouncing (low-risk single-user; add a Photon
@@ -527,6 +609,7 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
+KERNEL_API_KEY=...                  # optional; Kernel hosted browser for the operator (profile name is the constant adam-owner)
 ```
 
 ### Deployment notes
@@ -575,6 +658,11 @@ DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
+- The operator needs `KERNEL_API_KEY` (set it, or install Kernel from the Vercel Marketplace).
+  Without it Adam boots and only the browser tools fail. Log in once over iMessage ("connect my
+  X"): Adam texts a live-view link, the owner logs in there by hand and says done. Prefer a
+  secondary account, especially on LinkedIn. Browsers are headful without stealth (about $0.48
+  an hour on the Developer plan, so a few cents a run against its $5 monthly credit).
 - QStash free tier ≈ 500 msgs/day — fine for personal use; confirm current limits.
 
 ---
@@ -622,15 +710,20 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      session with `turnPolicy: "queue"`, and Adam calls `stay_silent`: the call joins chat history
      without a recap on the phone. At call start the voice agent needs a short briefing of recent
      context, which is the first real need for memory (item 4).
-3. **A computer (`operator` subagent).** Read-only browsing of logged-in sites: X and LinkedIn
-   notifications, research, an overnight digest.
-   - **Seam.** A subagent with computer-use tools over a hosted browser that keeps logins
-     (Browserbase, Steel, Kernel); `lib/browser.ts` is the only file that knows the vendor. The
-     Vercel Sandbox stays for headless work. An overnight digest is a schedule that delegates to it,
-     or a `briefing` section that does.
+3. **A computer (`operator` subagent).** Built: read-only browsing of logged-in sites (X and
+   LinkedIn notifications, feeds and other logged-in pages there) on a Kernel browser profile, with the
+   one-time login through a live-view link; see §4.
+   - **Seam.** `lib/browser.ts` is the only file that knows Kernel; `lib/browser-page.ts` drives
+     pages with `playwright-core`. Browserbase (Contexts, `debuggerFullscreenUrl`) is the fallback.
    - **Risk.** X and LinkedIn prohibit automated access, and LinkedIn bans accounts for it. Keep it
-     read-only, low-volume and human-paced, or use a secondary account. Least certain value and
-     most risk of the three, so it comes last.
+     read-only, low-volume and human-paced, or use a secondary account.
+   - **Follow-up: the overnight digest.** Not built yet. It is a section in `briefingSections`
+     (one Hobby cron, not a second) whose guidance has root delegate "read my X and LinkedIn
+     notifications since yesterday" to `operator`; right-to-silence then decides whether anything is
+     worth a text, and a login wall becomes a "re-login needed" line with an offer to reconnect.
+   - **Later.** A computer-use model only if text and outline reads prove insufficient on these
+     client-rendered pages; whether the X API's home timeline is an affordable compliant path for
+     that one feed.
 4. **Cross-session memory.** Built: the `owner` memory slot (§4) with the built-in file provider,
    scoped to the owner's identity across every trigger that acts as them, shared read-only with
    `coach` and `deep`. Remaining: give the voice front end (item 2) the same facts at call start, and
