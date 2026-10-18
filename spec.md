@@ -170,7 +170,7 @@ stub the route).
   authenticators and never resolve. `isOwnerChat` gates anything that needs the owner's say-so in
   chat (merge confirmations, memory writes). `isOwnerDirectChat` also requires `direct: "true"` and
   gates anything that hands out a link granting access to the owner's accounts (sign-in and consent
-  links): in a group anyone could open it first and connect their own account in the owner's name.
+  links, the browser live-view link): in a group anyone could open it first and connect their own account in the owner's name.
   A tool that mints such a link refuses outside it with "Text me directly and ask again".
 - **Acting as the owner** (`agent/lib/owner.ts`): `ownerAuth(owner, source)` builds a user-principal
   auth context keyed to the owner's chat identity while keeping the trigger's own `authenticator`.
@@ -278,14 +278,13 @@ stub the route).
     the profile with `save_changes`, 15-minute idle timeout) at the site's login page and returns its
     live-view url, which root texts the owner; calling it again moves the same browser to another
     site. The owner logs in by hand; Adam never handles passwords. `finish_browser_login` deletes
-    the browser, which saves the profile. Both refuse outside an owner-chat turn (`isOwnerChat` in
-    `lib/delivery.ts`, shared with `merge_pull_request`), so a background turn never texts a login
-    link on its own. That gate says the turn is a chat, not who is chatting: the login tools rely
-    on the Photon channel admitting only the owner (the owner lock in `onMessage`), because the
-    link hands over a browser already holding every saved login. The gate is used instead of
-    Eve's `approval: always()` for the reasons given under Merging: an iMessage approval prompt
-    only reads `Approve start_browser_login?`, and one parked in a background turn could deadlock
-    the thread. The owner asking in chat is the consent.
+    the browser, which saves the profile. Both are gated on `isOwnerDirectChat` and otherwise
+    refuse with "Text me directly and ask again": the live-view link hands over a browser already
+    holding every saved login, so it must never reach a group or come from a background turn, and
+    only the owner reaches a photon turn at all (the owner lock). The gate is used instead of Eve's
+    `approval: always()` for the reasons given under Merging: an iMessage approval prompt only
+    reads `Approve start_browser_login?`, and one parked in a background turn could deadlock the
+    thread. The owner asking in their direct chat is the consent.
   - **Risk.** X's terms and LinkedIn's User Agreement prohibit automated access, and LinkedIn
     restricts accounts for it. Hence read-only, low-volume (a few pages per run), human pacing
     (2–5 s settle after each navigation), stop-and-report on any login wall, captcha or

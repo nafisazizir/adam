@@ -2,18 +2,18 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { finishLogin } from "#lib/browser.js";
-import { isOwnerChat } from "#lib/delivery.js";
+import { isOwnerDirectChat } from "#lib/delivery.js";
 
 export default defineTool({
   description:
     "Save the user's logins after they say they're done logging in through the link from " +
     "start_browser_login. It closes that browser, which is what keeps the logins for the " +
-    "operator; the live-view link stops working. Only call it when the user says so in chat.",
+    "operator; the live-view link stops working. Only call it when the user says so in their direct chat with you.",
   inputSchema: z.object({}),
   label: { start: () => "Save browser login" },
   async execute(_input, ctx) {
-    if (!isOwnerChat(ctx.session.auth.current)) {
-      return { saved: false, reason: "only the user can finish a login, in chat" };
+    if (!isOwnerDirectChat(ctx.session.auth.current)) {
+      return { saved: false, reason: "Text me directly and ask again." };
     }
     const saved = await finishLogin();
     return saved
