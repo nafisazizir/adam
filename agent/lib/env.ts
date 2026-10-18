@@ -16,10 +16,15 @@ export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
 export const workoutsNudgePath = "/eve/v1/workouts/nudge";
 export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
 export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
+export const whatsappPath = "/eve/v1/whatsapp";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
   return z.preprocess((value) => (value === "" ? undefined : value), schema);
+}
+
+function commaList(list: string | undefined): string[] {
+  return (list ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
 const schema = z.object({
@@ -35,10 +40,13 @@ const schema = z.object({
   IMESSAGE_PROJECT_ID: z.string().min(1),
   IMESSAGE_PROJECT_SECRET: z.string().min(1),
   IMESSAGE_WEBHOOK_SECRET: z.string().min(1),
-  OWNER_IMESSAGE_HANDLES: z
-    .string()
-    .optional()
-    .transform((list) => (list ?? "").split(",").map((handle) => handle.trim()).filter(Boolean)),
+  OWNER_IMESSAGE_HANDLES: z.string().optional().transform(commaList),
+  // Optional so a deploy without a WhatsApp number still boots; the channel is then disabled.
+  WHATSAPP_ACCESS_TOKEN: blankAsUnset(z.string().min(1).optional()),
+  WHATSAPP_APP_SECRET: blankAsUnset(z.string().min(1).optional()),
+  WHATSAPP_PHONE_NUMBER_ID: blankAsUnset(z.string().min(1).optional()),
+  WHATSAPP_VERIFY_TOKEN: blankAsUnset(z.string().min(1).optional()),
+  OWNER_WHATSAPP_NUMBERS: z.string().optional().transform(commaList),
   AI_GATEWAY_API_KEY: z.string().min(1),
   STRAVA_WEBHOOK_VERIFY_TOKEN: z.string().min(1),
   STRAVA_WEBHOOK_SUBSCRIPTION_ID: blankAsUnset(z.string().min(1).optional()),
@@ -83,6 +91,19 @@ if (!parsed.success) {
 
 const { VERCEL, VERCEL_ENV, VERCEL_TARGET_ENV, VERCEL_GIT_REPO_OWNER, VERCEL_GIT_REPO_SLUG } = parsed.data;
 
+const {
+  WHATSAPP_ACCESS_TOKEN: accessToken,
+  WHATSAPP_APP_SECRET: appSecret,
+  WHATSAPP_PHONE_NUMBER_ID: phoneNumberId,
+  WHATSAPP_VERIFY_TOKEN: verifyToken,
+} = parsed.data;
+
+// All four or nothing: a partial set leaves the channel disabled rather than half-working.
+const whatsapp =
+  accessToken && appSecret && phoneNumberId && verifyToken
+    ? { accessToken, appSecret, phoneNumberId, verifyToken }
+    : null;
+
 export const env = {
   ...parsed.data,
   deployment: { onVercel: Boolean(VERCEL), environment: VERCEL_TARGET_ENV ?? VERCEL_ENV },
@@ -95,4 +116,6 @@ export const env = {
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
   codingSessionsWatchUrl: `${parsed.data.BASE_URL}${codingSessionsWatchPath}`,
   codingSessionsNotifyUrl: `${parsed.data.BASE_URL}${codingSessionsNotifyPath}`,
+  whatsapp,
+  whatsappPartlyConfigured: !whatsapp && Boolean(accessToken || appSecret || phoneNumberId || verifyToken),
 };

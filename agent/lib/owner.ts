@@ -3,6 +3,11 @@ import { defaultNamespace, type MemoryNamespaceContext, type MemoryScopeContext 
 
 import type { HomeOwner, HomeTargetRead } from "#lib/home-target.js";
 
+// The issuer of the owner's principal on every surface. It is named after iMessage only because
+// that came first: the Notion grant, the owner memory document and `home.owner` are all keyed on
+// it, so a new value would orphan them and turn the existing home pointer unusable.
+export const ownerIssuer = "photon-imessage";
+
 // User-scoped connections key grants by issuer and principal id, so a background run acting as the
 // owner reuses the grant the owner approved in chat instead of failing with `principal_required`.
 export function ownerAuth(
@@ -56,9 +61,10 @@ function isVercelNamespace(namespace: string): boolean {
 }
 
 export interface InboundSender {
+  // An iMessage handle, or a WhatsApp number already in E.164 (`waIdToE164`).
   readonly id: string;
   readonly isDirect: boolean;
-  readonly isIMessage: boolean;
+  readonly service: "imessage" | "sms-or-rcs" | "whatsapp";
 }
 
 export type OwnerRecord =
@@ -69,6 +75,7 @@ export type OwnerRecord =
 
 export interface KnownOwner {
   readonly handles: readonly string[];
+  readonly whatsappNumbers?: readonly string[];
   readonly record: OwnerRecord;
 }
 
@@ -99,35 +106,51 @@ const listed = (handles: readonly string[], handle: string) =>
 
 // Every alias of the owner acts as one principal so `home.owner` and user-scoped grants stay put:
 // the recorded one, unless a handle list is set and leaves it out, which makes the list the
-// authority and its first handle the principal. With no owner known at all, the first person to
-// text directly claims it; a group never does, and only a direct chat moves the home thread.
+// authority and its first handle the principal.
+function ownerPrincipal(handles: readonly string[], recorded: string | undefined): string | undefined {
+  if (handles.length === 0) return recorded;
+  return recorded !== undefined && listed(handles, recorded) ? recorded : canonicalHandle(handles[0]!);
+}
+
+// With no owner known at all, the first person to text directly over iMessage claims it; a group
+// never does, and only a direct chat moves the home thread. WhatsApp never claims: it reaches an
+// owner iMessage already recorded, so its number can never mint a principal of its own.
 export function admitSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
   if (canonicalHandle(sender.id) === "") return rejected("no sender handle");
-  if (!sender.isIMessage) return rejected("sent over SMS or RCS");
+  if (sender.service === "sms-or-rcs") return rejected("sent over SMS or RCS");
 
   const { handles, record } = owner;
   if (record.kind === "invalid") return rejected(`the home pointer is unusable (${record.reason})`);
+  if (sender.service === "whatsapp") return admitWhatsAppSender(sender, owner);
   if (record.kind === "unconfigured" && handles.length === 0) {
     return rejected("no Blob store and no OWNER_IMESSAGE_HANDLES, so no owner can be known");
   }
 
   const recorded = record.kind === "recorded" ? record.principalId : undefined;
   const updatesHome = sender.isDirect;
-  if (handles.length > 0) {
-    if (!listed(handles, sender.id)) return rejected("not the owner");
-    const principalId =
-      recorded !== undefined && listed(handles, recorded) ? recorded : canonicalHandle(handles[0]!);
-    return { admitted: true, principalId, claimed: false, updatesHome };
-  }
-
-  if (recorded === undefined) {
+  if (handles.length === 0 && recorded === undefined) {
     return sender.isDirect
       ? { admitted: true, principalId: sender.id, claimed: true, updatesHome }
       : rejected("a group chat cannot claim ownership");
   }
 
-  if (!sameHandle(recorded, sender.id)) return rejected("not the owner");
-  return { admitted: true, principalId: recorded, claimed: false, updatesHome };
+  const principalId = ownerPrincipal(handles, recorded)!;
+  const known = handles.length > 0 ? listed(handles, sender.id) : sameHandle(principalId, sender.id);
+  if (!known) return rejected("not the owner");
+  return { admitted: true, principalId, claimed: false, updatesHome };
+}
+
+// The owner's numbers are the principal itself when it is a number, any number in the iMessage
+// handle list, and OWNER_WHATSAPP_NUMBERS for a WhatsApp-only one.
+function admitWhatsAppSender(sender: InboundSender, owner: KnownOwner): SenderAdmission {
+  const { handles, whatsappNumbers = [], record } = owner;
+  if (record.kind !== "recorded") {
+    return rejected("no owner is recorded yet; the owner texts Adam on iMessage first");
+  }
+
+  const principalId = ownerPrincipal(handles, record.principalId)!;
+  if (!listed([principalId, ...handles, ...whatsappNumbers], sender.id)) return rejected("not the owner");
+  return { admitted: true, principalId, claimed: false, updatesHome: sender.isDirect };
 }
 
 export function ownerRecordFrom(read: HomeTargetRead, issuer: string): OwnerRecord {

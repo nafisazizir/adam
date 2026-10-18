@@ -9,11 +9,13 @@ import {
   ownerAuth,
   ownerMemoryNamespace,
   ownerMemoryScope,
+  ownerIssuer,
   ownerRecordLookup,
   sameHandle,
 } from "#lib/owner.js";
+import { waIdToE164 } from "#lib/whatsapp.js";
 
-const owner = { issuer: "photon-imessage", principalId: "user-1" };
+const owner = { issuer: ownerIssuer, principalId: "user-1" };
 
 function scopeFor(current: SessionAuthContext | null) {
   return ownerMemoryScope({ session: { id: "session", auth: { current, initiator: current } } });
@@ -95,8 +97,9 @@ const issuer = owner.issuer;
 const phone = "+61412345678";
 const email = "owner@icloud.com";
 const stranger = "+61499999999";
-const direct = (id: string) => ({ id, isDirect: true, isIMessage: true });
-const group = (id: string) => ({ id, isDirect: false, isIMessage: true });
+const direct = (id: string) => ({ id, isDirect: true, service: "imessage" as const });
+const group = (id: string) => ({ id, isDirect: false, service: "imessage" as const });
+const whatsapp = (waId: string) => ({ id: waIdToE164(waId) ?? "", isDirect: true, service: "whatsapp" as const });
 const absent: OwnerRecord = { kind: "absent" };
 const recorded = (principalId: string): OwnerRecord => ({ kind: "recorded", principalId });
 const none = { handles: [], record: absent };
@@ -189,7 +192,7 @@ test("without a Blob store only listed handles get in", () => {
 test("rejects senders with no handle or not on iMessage", () => {
   assert.equal(admitSender(direct(""), none).admitted, false);
   assert.equal(admitSender(direct("  "), { handles: [], record: recorded(phone) }).admitted, false);
-  const sms = { id: phone, isDirect: true, isIMessage: false };
+  const sms = { id: phone, isDirect: true, service: "sms-or-rcs" as const };
   assert.equal(admitSender(sms, { handles: [phone], record: recorded(phone) }).admitted, false);
 });
 
@@ -199,6 +202,51 @@ test("matches handles across formatting but not across near-misses", () => {
   assert.ok(!sameHandle("first-last@icloud.com", "firstlast@icloud.com"));
   assert.ok(!sameHandle("+61412345679", phone));
   assert.ok(!sameHandle("Kate@icloud.com", "kate@icloud.com"));
+});
+
+test("the owner's issuer never changes, or their grants, memory and home pointer are orphaned", () => {
+  assert.equal(ownerIssuer, "photon-imessage");
+});
+
+test("the recorded owner's number gets in over WhatsApp as the same principal", () => {
+  const admission = admitSender(whatsapp("61412345678"), { handles: [], record: recorded(phone) });
+  assert.deepEqual(admission, { admitted: true, principalId: phone, claimed: false, updatesHome: true });
+  assert.equal(admitSender(whatsapp("61499999999"), { handles: [], record: recorded(phone) }).admitted, false);
+});
+
+test("a number in the iMessage handle list gets in over WhatsApp as the listed principal", () => {
+  const owner = { handles: [email, "+61 412 345 678"], record: recorded(email) };
+  const admission = admitSender(whatsapp("61412345678"), owner);
+  assert.ok(admission.admitted);
+  assert.equal(admission.principalId, email);
+});
+
+test("a WhatsApp-only number gets in only when OWNER_WHATSAPP_NUMBERS lists it", () => {
+  const indonesian = "6281234567890";
+  const owner = { handles: [phone], record: recorded(phone) };
+  assert.equal(admitSender(whatsapp(indonesian), owner).admitted, false);
+  const listed = admitSender(whatsapp(indonesian), { ...owner, whatsappNumbers: ["+62 812 3456 7890"] });
+  assert.ok(listed.admitted);
+  assert.equal(listed.principalId, phone);
+});
+
+test("a handle list that leaves the recorded owner out also locks their number out of WhatsApp", () => {
+  const owner = { handles: [email], record: recorded(phone) };
+  assert.equal(admitSender(whatsapp("61412345678"), owner).admitted, false);
+});
+
+test("WhatsApp never claims ownership, even from a listed number", () => {
+  for (const record of [absent, { kind: "unconfigured" } as OwnerRecord]) {
+    const owner = { handles: [phone], whatsappNumbers: [phone], record };
+    assert.equal(admitSender(whatsapp("61412345678"), owner).admitted, false);
+  }
+  const broken: OwnerRecord = { kind: "invalid", reason: "not JSON" };
+  assert.equal(admitSender(whatsapp("61412345678"), { handles: [phone], record: broken }).admitted, false);
+});
+
+test("a WhatsApp sender with only a username id is never the owner", () => {
+  const owner = { handles: [phone], whatsappNumbers: [phone], record: recorded(phone) };
+  assert.equal(admitSender(whatsapp("US.13491208655302741918"), owner).admitted, false);
 });
 
 function fakeStore(...reads: (HomeTargetRead | Error)[]) {

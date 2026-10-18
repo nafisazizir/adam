@@ -1,33 +1,30 @@
 import { photonIMessageChannel } from "eve/channels/photon";
 
-import { releaseAssets } from "#lib/assets.js";
 import { env } from "#lib/env.js";
 import {
   claimHomeTarget,
   type HomeTarget,
   readHomeTargetState,
+  rememberChannelPresence,
   rememberHomeTarget,
 } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
 import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
-import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import {
   admitSender,
   type InboundSender,
   ownerAuth,
+  ownerIssuer,
   ownerRecordLookup,
   type SenderAdmission,
 } from "#lib/owner.js";
+import { completedReply, deliverReply, otherSurfaceContext, signInMessage } from "#lib/reply.js";
 import { currentTimeContext } from "#lib/time.js";
 
 export const photonAdapterName = "imessage";
 export const photonAuthenticator = "photon-imessage";
 
-const BUBBLE_GAP_MS = 400;
-
-const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-const ownerRecord = ownerRecordLookup(readHomeTargetState, photonAuthenticator);
+const ownerRecord = ownerRecordLookup(readHomeTargetState, ownerIssuer);
 
 async function admit(sender: InboundSender): Promise<SenderAdmission> {
   const handles = env.OWNER_IMESSAGE_HANDLES;
@@ -56,12 +53,15 @@ const groupChatContext =
   "private details (health, work, money, anything from their accounts) out of it unless they " +
   "ask you to share them here.";
 
-function firstNonEmptyLine(message: string): string | null {
-  for (const line of message.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    if (trimmed.length > 0) return trimmed;
+const surfaceContext = env.whatsapp ? [otherSurfaceContext("WhatsApp")] : [];
+
+async function rememberHome(home: HomeTarget): Promise<void> {
+  try {
+    await rememberHomeTarget(home);
+    await rememberChannelPresence(home.channel, { target: home.target, lastInboundAt: new Date().toISOString() });
+  } catch (error) {
+    console.warn("[photon] failed to remember home target", error);
   }
-  return null;
 }
 
 export default withInboundMediaNormalization(photonIMessageChannel({
@@ -75,64 +75,32 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     // the thread before posting the link, since in a group anyone could follow it and connect their
     // own account in the owner's name. Asks the adapter because a rebuilt thread never claims a DM.
     async "authorization.required"(event, channel) {
-      const { url, instructions, userCode, displayName } = event.authorization ?? {};
-      if (!channel.thread || (!url && !instructions)) return;
+      const text = signInMessage(event);
+      if (!channel.thread || !text) return;
 
       if (!channel.bot.getAdapter(photonAdapterName).isDM(channel.thread.id)) {
         await channel.thread.post({
-          markdown: `I need you to connect ${displayName ?? event.name} first. Text me directly and ask again.`,
+          markdown: `I need you to connect ${event.authorization?.displayName ?? event.name} first. Text me directly and ask again.`,
         });
         return;
       }
 
-      const lines = [
-        `I need you to connect ${displayName ?? event.name} before I can carry on.`,
-        url,
-        userCode && `Code: ${userCode}`,
-        instructions,
-      ].filter(Boolean);
-      await channel.thread.post({ markdown: lines.join("\n\n") });
+      await channel.thread.post({ markdown: text });
     },
     // Replaces the default text-only post so image links become real iMessage
-    // attachments and a reply lands as a few bubbles. Streaming is off for this
-    // channel, so a turn is delivered once here.
+    // attachments, audio a native voice note, and a reply lands as a few bubbles.
+    // Streaming is off for this channel, so a turn is delivered once here.
     async "message.completed"(event, channel) {
-      if (event.finishReason === "tool-calls") {
-        channel.state.pendingToolCallMessage = event.message
-          ? firstNonEmptyLine(event.message)
-          : null;
-        return;
-      }
+      const reply = completedReply(event, channel.state);
+      const thread = channel.thread;
+      if (!reply || !thread) return;
 
-      channel.state.pendingToolCallMessage = null;
-      if (!event.message || !channel.thread) return;
-
-      let posted = 0;
-      for (const bubble of splitBubbles(event.message)) {
-        const { text, files, sources } = await renderOutbound(bubble);
-        const voiceNotes = files.filter((file) => file.mimeType.startsWith("audio/"));
-        const attachments = files.filter((file) => !file.mimeType.startsWith("audio/"));
-        if (text.length === 0 && attachments.length === 0 && voiceNotes.length === 0) continue;
-
-        if (text.length > 0 || attachments.length > 0) {
-          if (posted > 0) await pause(BUBBLE_GAP_MS);
-          await channel.thread.post({ markdown: text, files: attachments });
-          posted += 1;
-        }
-
-        const adapter = channel.bot.getAdapter(photonAdapterName);
-        for (const voiceNote of voiceNotes) {
-          if (posted > 0) await pause(BUBBLE_GAP_MS);
-          await adapter.sendVoice(channel.thread.id, voiceNote.data, {
-            mimeType: voiceNote.mimeType,
-            name: voiceNote.filename,
-          });
-          posted += 1;
-        }
-
-        // iMessage holds its own copy now, so nothing we generated stays hosted.
-        await releaseAssets(sources).catch(() => {});
-      }
+      const adapter = channel.bot.getAdapter(photonAdapterName);
+      await deliverReply(reply, {
+        post: ({ text, files }) => thread.post({ markdown: text, files }),
+        sendVoice: (voiceNote) =>
+          adapter.sendVoice(thread.id, voiceNote.data, { mimeType: voiceNote.mimeType, name: voiceNote.filename }),
+      });
     },
   },
   async onMessage(ctx, message) {
@@ -142,11 +110,11 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     const admission = await admit({
       id: message.author.userId,
       isDirect,
-      isIMessage: !sentOverAnotherService(message.raw),
+      service: sentOverAnotherService(message.raw) ? "sms-or-rcs" : "imessage",
     });
     if (!admission.admitted) return null;
 
-    const owner = { issuer: photonAuthenticator, principalId: admission.principalId };
+    const owner = { issuer: ownerIssuer, principalId: admission.principalId };
     const home: HomeTarget = {
       channel: "photon",
       target: { threadId: message.threadId, adapterName: photonAdapterName },
@@ -165,11 +133,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
 
     if (admission.updatesHome && !admission.claimed) {
       ownerRecord.remember(owner.principalId);
-      try {
-        await rememberHomeTarget(home);
-      } catch (error) {
-        console.warn("[photon] failed to remember home target", error);
-      }
+      await rememberHome(home);
     }
 
     return {
@@ -177,7 +141,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
         attributes: { thread_id: message.threadId, direct: isDirect ? "true" : "false" },
         authenticator: photonAuthenticator,
       }),
-      context: isDirect ? [currentTimeContext()] : [currentTimeContext(), groupChatContext],
+      context: [currentTimeContext(), ...surfaceContext, ...(isDirect ? [] : [groupChatContext])],
     };
   },
 }));

@@ -25,10 +25,12 @@ export interface ReminderDestination {
   readonly target: Record<string, unknown>;
 }
 
-// A reminder now runs as the owner with memory, so one set from a group chat must not post there.
+// A reminder runs as the owner with memory, so one set from a group chat must not post there, and
+// it lands wherever `homeDelivery` can reach the owner when it fires: a reminder set on WhatsApp
+// comes back there while its window is open, otherwise on iMessage.
 export function reminderDestination(
   requested: ReminderDestination,
-  home: (ReminderDestination & { readonly owner: HomeOwner }) | null,
+  home: ReminderDestination | null,
 ): ReminderDestination {
   return home ? { channel: home.channel, target: home.target } : requested;
 }

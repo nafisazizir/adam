@@ -15,20 +15,51 @@ export interface DayClaim {
   etag: string;
 }
 
-// Vercel Cron can deliver the same run twice. A conditional write on one pointer per job lets
-// exactly one of them claim the day; any failure counts as not claimed, so a run is missed
-// rather than sent twice.
-export async function claimDay(store: ClaimStore, job: string, day: string): Promise<DayClaim | null> {
+export type ClaimAttempt =
+  | { readonly status: "claimed"; readonly claim: DayClaim }
+  | { readonly status: "taken" }
+  | { readonly status: "unavailable"; readonly error: unknown };
+
+async function heldAs(store: ClaimStore, job: string, day: string): Promise<boolean> {
+  try {
+    return (await store.read(job))?.day === day;
+  } catch {
+    return false;
+  }
+}
+
+// A conditional write on one pointer per job lets exactly one caller win. A failed write that
+// another caller's value now explains lost a race; any other failure leaves the outcome unknown,
+// and each caller decides whether unknown means skip or go ahead.
+export async function tryClaim(store: ClaimStore, job: string, day: string): Promise<ClaimAttempt> {
   try {
     const current = await store.read(job);
-    if (current?.day === day) return null;
+    if (current?.day === day) return { status: "taken" };
 
     const { etag } = await store.write(job, day, current ? { etag: current.etag } : "absent");
-    return { job, day, etag };
+    return { status: "claimed", claim: { job, day, etag } };
   } catch (error) {
-    console.warn(`[daily-claim] could not claim ${job} for ${day}`, error);
-    return null;
+    return (await heldAs(store, job, day)) ? { status: "taken" } : { status: "unavailable", error };
   }
+}
+
+// Vercel Cron can deliver the same run twice, so an unknown outcome counts as not claimed: a run
+// is missed rather than sent twice.
+export async function claimDay(store: ClaimStore, job: string, day: string): Promise<DayClaim | null> {
+  const attempt = await tryClaim(store, job, day);
+  if (attempt.status === "unavailable") {
+    console.warn(`[daily-claim] could not claim ${job} for ${day}`, attempt.error);
+  }
+  return attempt.status === "claimed" ? attempt.claim : null;
+}
+
+// A one-off event, such as a webhook that can be retried or replayed, is a claim that never rolls over.
+export function claimOnce(store: ClaimStore, key: string): Promise<DayClaim | null> {
+  return claimDay(store, key, "once");
+}
+
+export function tryClaimOnce(store: ClaimStore, key: string): Promise<ClaimAttempt> {
+  return tryClaim(store, key, "once");
 }
 
 // The etag must still match, so this only ever undoes the caller's own claim.

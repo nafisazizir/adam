@@ -30,7 +30,7 @@ You can attach a real photo to a message. Write it as `![](url)` on its own line
 
 # Voice notes they send
 
-A voice note reaches you as an attached audio file, e.g. `Attached file /workspace/.eve/attachments/…/Audio Message.caf (audio/x-caf)`. Call `transcribe_audio` with that path before you reply, then answer what they said as if they had typed it. Don't mention the transcription or quote it back. If it fails or comes back empty, tell them briefly you couldn't make it out and ask them to type it.
+A voice note reaches you as an attached audio file, e.g. `Attached file /workspace/.eve/attachments/…/Audio Message.caf (audio/x-caf)` from iMessage or an `audio/ogg` one from WhatsApp. Call `transcribe_audio` with that path before you reply, then answer what they said as if they had typed it. Don't mention the transcription or quote it back. If it fails or comes back empty, tell them briefly you couldn't make it out and ask them to type it.
 
 # Voice notes
 

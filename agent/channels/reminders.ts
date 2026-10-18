@@ -1,9 +1,8 @@
 import { defineChannel, POST } from "eve/channels";
 import { z } from "zod";
 
-import { deliveryChannelByName } from "#lib/delivery.js";
+import { deliveryChannelByName, homeDelivery } from "#lib/delivery.js";
 import { env, remindersDeliverPath } from "#lib/env.js";
-import { readHomeTarget, type HomeTarget } from "#lib/home-target.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
 import { forgetReminderWithin } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
@@ -16,9 +15,9 @@ const reminderSchema = z.object({
   target: z.record(z.string(), z.unknown()),
 });
 
-async function currentHome(): Promise<HomeTarget | null> {
+async function currentHome() {
   try {
-    return await readHomeTarget();
+    return await homeDelivery();
   } catch (error) {
     console.warn("[reminders] could not read the home pointer; delivering without the owner's identity", error);
     return null;
@@ -43,7 +42,10 @@ export default defineChannel({
       const messageId = request.headers.get("upstash-message-id");
       const retried = request.headers.get("upstash-retried");
       const home = await currentHome();
-      const destination = reminderDestination({ channel, target }, home);
+      const destination = reminderDestination(
+        { channel, target },
+        home && { channel: home.channel.name, target: home.target },
+      );
       const delivery = deliveryChannelByName(destination.channel);
       if (!delivery) {
         return new Response(`unknown delivery channel: ${destination.channel}`, { status: 400 });
@@ -60,13 +62,13 @@ export default defineChannel({
           turnPolicy: "queue",
         });
       } catch (error) {
-        console.error(`[reminders] failed to hand off ${messageId} on ${channel} (retried ${retried})`, error);
+        console.error(`[reminders] failed to hand off ${messageId} on ${destination.channel} (retried ${retried})`, error);
         return new Response("delivery failed", { status: 500 });
       }
 
       if (messageId) await forgetReminderWithin(blobReminderListStore, messageId, 2000);
 
-      console.log(`[reminders] handed off ${messageId} on ${channel} (retried ${retried})`);
+      console.log(`[reminders] handed off ${messageId} on ${destination.channel} (retried ${retried})`);
       return new Response("ok");
     }),
   ],
