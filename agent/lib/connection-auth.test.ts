@@ -8,7 +8,7 @@ import {
 } from "eve/connections";
 import type { SessionAuthContext } from "eve/context";
 
-import { signInFromOwnerDirectChat } from "#lib/connection-auth.js";
+import { ownerLinkRefusal, signInFromOwnerDirectChat } from "#lib/connection-auth.js";
 import { ownerAuth } from "#lib/owner.js";
 
 const owner = { issuer: "photon-imessage", principalId: "+61400000000" };
@@ -84,4 +84,11 @@ test("other token errors pass through untouched", async () => {
   });
   const auth = signInFromOwnerDirectChat("Example", failing)(callerContext(photon("false")));
   await assert.rejects(auth.getToken({ principal, connection }), (error) => error === outage);
+});
+
+test("an account link goes out only in the owner's direct chat", () => {
+  assert.equal(ownerLinkRefusal("Google", photon("true")), null);
+  assert.match(ownerLinkRefusal("Google", photon("false")) ?? "", /text me directly and ask again/u);
+  assert.match(ownerLinkRefusal("Google", workout) ?? "", /did not come from them/u);
+  assert.match(ownerLinkRefusal("Google", null) ?? "", /did not come from them/u);
 });

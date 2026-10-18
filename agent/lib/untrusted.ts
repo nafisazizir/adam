@@ -8,3 +8,22 @@ export function stripWrapperTags(text: string, tag: string): string {
   }
   return current;
 }
+
+function attributeValue(value: string, tag: string): string {
+  return stripWrapperTags(value, tag).replace(/["<>\n\r]/gu, " ");
+}
+
+export function untrusted(
+  tag: string,
+  attributes: Record<string, string>,
+  lines: readonly (string | null | undefined)[],
+): string {
+  const attrs = Object.entries(attributes)
+    .map(([key, value]) => ` ${key}="${attributeValue(value, tag)}"`)
+    .join("");
+  const body = stripWrapperTags(
+    lines.filter((line): line is string => typeof line === "string").join("\n"),
+    tag,
+  );
+  return `<${tag}${attrs}>\n${body}\n</${tag}>`;
+}

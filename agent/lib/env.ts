@@ -22,6 +22,14 @@ function blankAsUnset<T extends z.ZodType>(schema: T) {
   return z.preprocess((value) => (value === "" ? undefined : value), schema);
 }
 
+// One connector serves every Google account; each account is its own Connect subject.
+export const googleConnectorSchema = blankAsUnset(
+  z
+    .string()
+    .regex(/^[^\s,=]+$/u, "must be one Vercel Connect connector id or UID, e.g. scl_abc or adam-google")
+    .optional(),
+);
+
 const schema = z.object({
   USER_TIMEZONE: z
     .string()
@@ -67,6 +75,8 @@ const schema = z.object({
   VERCEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
+  // Optional so a deploy without Google still boots; only the Google tools fail.
+  GOOGLE_CONNECTOR: googleConnectorSchema,
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),

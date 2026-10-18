@@ -36,3 +36,22 @@ export function localDateTimeToInstant(local: string, timeZone: string): Date {
   }
   return new Date(Math.min(...valid));
 }
+
+const localDate = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+// The first instant of a local date. Where daylight saving starts at midnight there is no 00:00,
+// so the day starts when the clock jumps (01:00); where 00:00 happens twice, the earlier one.
+export function startOfLocalDay(date: string, timeZone: string): Date {
+  const match = localDate.exec(date);
+  if (!match) throw new Error(`"${date}" is not a local date like 2026-10-03.`);
+  const [year, month, day] = match.slice(1).map(Number);
+  const wall = Date.UTC(year, month - 1, day);
+  if (new Date(wall).toISOString().slice(0, 10) !== date) throw new Error(`"${date}" is not a real date.`);
+
+  const candidates = [wall - offsetMs(wall - dayMs, timeZone), wall - offsetMs(wall + dayMs, timeZone)];
+  const onThatDay = candidates.filter((instant) => {
+    const clock = wallClockAsUtc(instant, timeZone);
+    return clock >= wall && clock < wall + dayMs;
+  });
+  return new Date(Math.min(...onThatDay));
+}

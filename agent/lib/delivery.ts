@@ -64,6 +64,13 @@ export function isOwnerDirectChat(auth: SessionAuthContext | null | undefined): 
   return isOwnerChat(auth) && attribute(auth, "direct") === "true";
 }
 
+// For an action behind a ctx.ask confirmation: a prompt parked in a background turn would hold the
+// owner's thread, since only that turn's caller can answer it.
+export function ownerChatRefusal(action: string, auth: SessionAuthContext | null | undefined): string | null {
+  if (isOwnerChat(auth)) return null;
+  return `${action} needs the user's go-ahead in chat, and this turn did not come from them. Ask them in chat, and do it when they say so.`;
+}
+
 export function deliveryChannelByName(name: string): DeliveryChannel | undefined {
   return deliveryChannels.find((channel) => channel.name === name);
 }

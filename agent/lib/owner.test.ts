@@ -9,6 +9,7 @@ import {
   ownerAuth,
   ownerMemoryNamespace,
   ownerMemoryScope,
+  ownerPrincipal,
   ownerRecordLookup,
   sameHandle,
 } from "#lib/owner.js";
@@ -262,4 +263,12 @@ test("a claim is cached only once it is written", async () => {
   assert.equal(await lookup.claim(phone, async () => {}), true);
   assert.deepEqual(await lookup.current(), recorded(phone));
   assert.equal(store.calls(), 1);
+});
+
+test("the owner principal comes only from a user caller with an issuer", () => {
+  const chat = ownerAuth(owner, { authenticator: "photon-imessage", attributes: {} });
+  assert.deepEqual(ownerPrincipal(chat), owner);
+  assert.equal(ownerPrincipal({ ...chat, issuer: undefined }), null);
+  assert.equal(ownerPrincipal({ ...chat, principalType: "local-dev" }), null);
+  assert.equal(ownerPrincipal(null), null);
 });

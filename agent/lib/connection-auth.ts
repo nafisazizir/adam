@@ -6,7 +6,7 @@ import {
 } from "eve/connections";
 import type { SessionAuthContext } from "eve/context";
 
-import { isOwnerDirectChat } from "#lib/delivery.js";
+import { isOwnerChat, isOwnerDirectChat } from "#lib/delivery.js";
 
 interface CallerContext {
   readonly session: { readonly auth: { readonly current: SessionAuthContext | null } };
@@ -40,4 +40,13 @@ export function signInFromOwnerDirectChat(
     },
   };
   return (ctx) => (isOwnerDirectChat(ctx.session.auth.current) ? provider : withoutSignIn);
+}
+
+// For tools that hand out such a link themselves (a consent url) rather than through a connection.
+export function ownerLinkRefusal(service: string, auth: SessionAuthContext | null): string | null {
+  if (isOwnerDirectChat(auth)) return null;
+  if (isOwnerChat(auth)) {
+    return `A ${service} link only goes out in a direct chat, since anyone here could open it first. Tell the user: text me directly and ask again.`;
+  }
+  return `A ${service} link only goes out when the user asks for it in a direct chat with you, and this turn did not come from them. Offer it in chat instead.`;
 }

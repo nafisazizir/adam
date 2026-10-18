@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { localDateTimeToInstant } from "#lib/zoned-time.js";
+import { localDateTimeToInstant, startOfLocalDay } from "#lib/zoned-time.js";
 
 const iso = (local: string, zone: string) => localDateTimeToInstant(local, zone).toISOString();
 
@@ -27,4 +27,22 @@ test("picks the earlier instant for an ambiguous autumn time", () => {
 test("rejects malformed and impossible input", () => {
   assert.throws(() => localDateTimeToInstant("tomorrow 6am", "UTC"), /not a local date-time/);
   assert.throws(() => localDateTimeToInstant("2026-02-30T06:00", "UTC"), /not a real date/);
+});
+
+const dayStart = (date: string, zone: string) => startOfLocalDay(date, zone).toISOString();
+
+test("starts a local day at midnight in fixed and DST zones", () => {
+  assert.equal(dayStart("2026-10-18", "Australia/Brisbane"), "2026-10-17T14:00:00.000Z");
+  assert.equal(dayStart("2026-10-04", "Australia/Sydney"), "2026-10-03T14:00:00.000Z");
+  assert.equal(dayStart("2026-10-05", "Australia/Sydney"), "2026-10-04T13:00:00.000Z");
+});
+
+test("starts the day when the clock jumps where daylight saving begins at midnight", () => {
+  assert.equal(dayStart("2026-09-06", "America/Santiago"), "2026-09-06T04:00:00.000Z");
+  assert.equal(dayStart("2026-09-07", "America/Santiago"), "2026-09-07T03:00:00.000Z");
+});
+
+test("rejects malformed and impossible dates", () => {
+  assert.throws(() => startOfLocalDay("tomorrow", "UTC"), /not a local date/);
+  assert.throws(() => startOfLocalDay("2026-02-30", "UTC"), /not a real date/);
 });

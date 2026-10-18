@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionAuthContext } from "eve/context";
 
-import { isOwnerChat, isOwnerDirectChat } from "#lib/delivery.js";
+import { isOwnerChat, isOwnerDirectChat, ownerChatRefusal } from "#lib/delivery.js";
 import { ownerAuth } from "#lib/owner.js";
 
 const owner = { issuer: "photon-imessage", principalId: "+61400000000" };
@@ -64,4 +64,12 @@ test("a background turn claiming to be direct is still not an owner direct chat"
     attributes: { thread_id: "iMessage;-;+61400000000", direct: "true" },
   });
   assert.equal(isOwnerDirectChat(forged), false);
+});
+
+test("an action needing confirmation is refused outside the owner chatting, in a direct thread or a group", () => {
+  assert.equal(ownerChatRefusal("Disconnecting a Google account", direct), null);
+  assert.equal(ownerChatRefusal("Disconnecting a Google account", group), null);
+  for (const auth of [...background, reminder, localDev, null]) {
+    assert.match(ownerChatRefusal("Disconnecting a Google account", auth) ?? "", /^Disconnecting a Google account needs the user's go-ahead in chat/u);
+  }
 });
