@@ -854,14 +854,21 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 
     // Only for the owner's direct chat: whoever opens the link connects their Google account as the
     // owner's. A new name is added to the list before the link exists, so the grant it creates is
-    // never one Adam cannot see; an existing name gets a fresh link for the same subject.
+    // never one Adam cannot see, and taken off again if no link comes of it; an existing name gets
+    // a fresh link for the same subject.
     async signIn(owner: GoogleOwner | null, name: string): Promise<GoogleSignIn> {
       const caller = connectorFor(owner);
       const label = name.includes("@") ? (await only(owner, name)).label : normalizeAccountLabel(name);
       const account = { label, owner: caller.owner };
       const { added } = await registry.add(label);
       await forget(account);
-      const started = await connect.startAuthorization(caller.connector, tokenParams(account));
+      let started: Awaited<ReturnType<GoogleConnect["startAuthorization"]>>;
+      try {
+        started = await connect.startAuthorization(caller.connector, tokenParams(account));
+      } catch (error) {
+        if (added) await registry.remove(label).catch(() => undefined);
+        throw error;
+      }
       return {
         account: label,
         added,

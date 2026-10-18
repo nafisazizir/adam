@@ -348,7 +348,7 @@ stub the route).
     the account ("connect my work gmail" → `work`), normalised to lowercase letters, digits and
     dashes. A new name is added to the list first, so the grant the link creates is never one Adam
     cannot see; then it calls Connect's `startAuthorization` for that name's subject with the same
-    scopes and returns the URL. The owner picks the Google account on Google's screen. The same
+    scopes and returns the URL. If Connect gives no link, a name added for it is removed again. The owner picks the Google account on Google's screen. The same
     name again reconnects that account under the same subject. Connect runs the Google OAuth flow
     (its Google service adds `access_type=offline` and `prompt=consent`), stores the grant and
     refreshes it. Adam gets no callback; a name stays `needs_connecting` in `list_google_accounts`
@@ -636,7 +636,7 @@ NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
-GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id or UID); accounts are added in chat
+GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id scl_… or UID google/<name>); accounts are added in chat
 ```
 
 ### Deployment notes
@@ -692,8 +692,10 @@ GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google co
   `https://connect.vercel.com/callback`. From that client make one connector with `vercel connect
   create google --connection-method oauth --name adam-google --data @credentials.json` (delete the
   file afterwards; the secret never goes into chat or logs), attach it to the project, set
-  `GOOGLE_CONNECTOR`, and redeploy. Then text Adam "connect my <name> gmail" in a direct chat, once
-  per account, and pick that account on Google's screen. The account list needs the Blob store.
+  `GOOGLE_CONNECTOR` to the `scl_…` id `create` prints (or the UID `google/adam-google`; Connect
+  finds no connector by the bare name `adam-google`, and `env.ts` refuses it), and redeploy. Then
+  text Adam "connect my <name> gmail" in a direct chat, once per account, and pick that account on
+  Google's screen. The account list needs the Blob store.
   Expect the unverified-app warning at consent. A Workspace admin may have to allow the client
   before a work account can connect. Connect bills per token request (Hobby includes 500 a month);
   the SDK caches each token for its hour, so reads cost about one request per account per
