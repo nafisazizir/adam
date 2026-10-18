@@ -70,8 +70,10 @@ URL is computed from `BASE_URL`, not its own env var.
 
 ## Verifying
 
-`pnpm verify` typechecks and runs `eve build`, filling placeholders for required env the local
-`.env` may lack. `pnpm verify <evalId...>` (e.g. `pnpm verify coding`) also runs those eval groups,
+`pnpm verify` typechecks, runs unit tests and runs `eve build`, filling placeholders for required
+env the local `.env` may lack. Unit tests are `node:test` files next to the module they test
+(`agent/lib/<module>.test.ts`, run by `pnpm test` with no extra dependencies); keep them under
+`lib/`, since a file under `tools/` or `channels/` would be mounted as one. `pnpm verify <evalId...>` (e.g. `pnpm verify coding`) also runs those eval groups,
 which call live models and cost tokens. A new vendor's env vars stay optional so Adam still boots
 without them and only that vendor's tools fail, as with Devin.
 
