@@ -71,9 +71,9 @@ export default withInboundMediaNormalization(photonIMessageChannel({
   }),
   webhookSecret: env.IMESSAGE_WEBHOOK_SECRET,
   events: {
-    // Only the owner gets through, so a direct thread is theirs alone; in a group anyone could
-    // follow the link and connect their own account in the owner's name. Asks the adapter because
-    // a thread rebuilt for a background delivery always claims it is not a DM.
+    // Sign-in only starts in the owner's direct chat (`signInFromOwnerDirectChat`); this re-checks
+    // the thread before posting the link, since in a group anyone could follow it and connect their
+    // own account in the owner's name. Asks the adapter because a rebuilt thread never claims a DM.
     async "authorization.required"(event, channel) {
       const { url, instructions, userCode, displayName } = event.authorization ?? {};
       if (!channel.thread || (!url && !instructions)) return;
