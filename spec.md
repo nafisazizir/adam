@@ -194,8 +194,8 @@ stub the route).
     read it. Their instructions say they cannot change memories, despite the recall header naming the
     remove tool.
   - **Writes only from owner chat.** `guardedMemory` (`lib/memory.ts`) wraps the provider and offers
-    the save and remove tools only when `isOwnerChat` holds: the turn resolves to a delivery channel
-    (`isOwnerChat`, the gate `merge_pull_request` uses) or is `local-dev` (`canWriteMemory`). Workout debriefs
+    the save and remove tools only when `canWriteMemory` holds: the turn is the owner's chat
+    (`isOwnerChat`, the gate `merge_pull_request` uses) or is `local-dev`. Workout debriefs
     and coding-session updates carry text the owner did not write, so they can read memory but have
     no tool to write it. Untrusted content inside a chat turn (a forwarded email, a web result) is
     guarded by the instructions only.
@@ -215,9 +215,10 @@ stub the route).
   (`lib/connection-auth.ts`). In the owner's direct chat the first Notion call parks the turn, the
   Photon channel's `authorization.required` handler texts the sign-in link, and the turn resumes
   after consent. Every other turn (group chat, debrief, coding update, briefing) gets the same
-  grant through a getToken-only provider: a stored grant works as usual, and a missing or revoked
-  one fails the call with `sign_in_needs_direct_chat`, so the model says Notion needs connecting
-  instead of the turn waiting. Runs started by a trigger without the owner's identity (reminders
+  grant through a getToken-only provider: a stored grant works as usual, and one that is missing or
+  that Connect reports revoked fails the call with `sign_in_needs_direct_chat`, so the model says
+  Notion needs connecting instead of the turn waiting. A token Notion itself rejects surfaces as the
+  MCP client's own authorization error, which cannot park either. Runs started by a trigger without the owner's identity (reminders
   today) fail with `principal_required`.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and the shared
   Notion connection, plus the vendored riz-mcp
