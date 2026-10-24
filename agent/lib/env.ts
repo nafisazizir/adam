@@ -18,6 +18,9 @@ export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
 export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
 export const mailPushPath = "/eve/v1/mail/push";
 export const mailProcessPath = "/eve/v1/mail/process";
+export const callsStartPath = "/eve/v1/calls/start";
+export const callsAskPath = "/eve/v1/calls/ask";
+export const callsEndedPath = "/eve/v1/calls/ended";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
@@ -94,6 +97,12 @@ const schema = z.object({
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
+  // Optional so a deploy without a voice line still boots; only the calls routes refuse.
+  CALLS_TOOL_SECRET: blankAsUnset(z.string().min(1).optional()),
+  // The production build syncs the ElevenLabs voice agent from these (scripts/sync-voice-agent.ts).
+  ELEVENLABS_API_KEY: blankAsUnset(z.string().min(1).optional()),
+  ELEVENLABS_VOICE_ID: blankAsUnset(z.string().min(1).optional()),
+  CALLS_PHONE_NUMBER: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -121,4 +130,7 @@ export const env = {
   codingSessionsNotifyUrl: `${parsed.data.BASE_URL}${codingSessionsNotifyPath}`,
   mailPushUrl: `${parsed.data.BASE_URL}${mailPushPath}`,
   mailProcessUrl: `${parsed.data.BASE_URL}${mailProcessPath}`,
+  callsStartUrl: `${parsed.data.BASE_URL}${callsStartPath}`,
+  callsAskUrl: `${parsed.data.BASE_URL}${callsAskPath}`,
+  callsEndedUrl: `${parsed.data.BASE_URL}${callsEndedPath}`,
 };

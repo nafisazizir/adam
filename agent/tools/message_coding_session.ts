@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
 import { describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
 import { sendCodingSessionMessage } from "#lib/devin.js";
 
@@ -14,7 +15,8 @@ export default defineTool({
     message: z.string().min(1).describe("The message for the coding agent."),
   }),
   label: { start: () => "Message coding session" },
-  async execute({ sessionId, message }) {
+  async execute({ sessionId, message }, ctx) {
+    if (isCallTurn(ctx.session.auth.current)) return { sent: false, reason: notFromOwnerChat };
     const session = await sendCodingSessionMessage(sessionId, message);
     return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },

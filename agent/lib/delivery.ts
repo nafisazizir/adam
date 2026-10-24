@@ -1,4 +1,4 @@
-import type { RouteHandlerArgs, TurnPolicy } from "eve/channels";
+import type { RouteHandlerArgs, Session, TurnPolicy } from "eve/channels";
 import type { SessionAuthContext } from "eve/context";
 
 import photon, { photonAdapterName, photonAuthenticator } from "#channels/photon.js";
@@ -15,7 +15,7 @@ export interface DeliveryChannel {
     target: Record<string, unknown>;
     auth: SessionAuthContext;
     turnPolicy?: TurnPolicy;
-  }): Promise<unknown>;
+  }): Promise<Session>;
 }
 
 function attribute(auth: SessionAuthContext, key: string): string | undefined {

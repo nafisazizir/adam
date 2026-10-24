@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { beforeEach, mock, test } from "node:test";
-import { claimDay, releaseDay, type ClaimStore } from "#lib/daily-claim.js";
+import { claimDay, claimOnce, releaseDay, type ClaimStore } from "#lib/daily-claim.js";
 
 class PreconditionFailed extends Error {}
 
@@ -82,4 +82,14 @@ test("releasing a claim that was superseded leaves the newer one alone", async (
   assert.ok(newer);
   assert.equal(await releaseDay(store, stale), false);
   assert.equal(await claimDay(store, "briefing", "2026-10-19"), null);
+});
+
+test("a one-off claim is won once, and released it can be won again", async () => {
+  const first = await claimOnce(store, "call-ended-conv_1");
+  assert.ok(first);
+  assert.equal(await claimOnce(store, "call-ended-conv_1"), null);
+  assert.ok(await claimOnce(store, "call-ended-conv_2"));
+
+  assert.ok(await releaseDay(store, first));
+  assert.ok(await claimOnce(store, "call-ended-conv_1"));
 });

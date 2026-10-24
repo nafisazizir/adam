@@ -31,6 +31,11 @@ export async function claimDay(store: ClaimStore, job: string, day: string): Pro
   }
 }
 
+// A one-off event, such as a webhook that can be retried or replayed, is a claim that never rolls over.
+export function claimOnce(store: ClaimStore, key: string): Promise<DayClaim | null> {
+  return claimDay(store, key, "once");
+}
+
 // The etag must still match, so this only ever undoes the caller's own claim.
 export async function releaseDay(store: ClaimStore, claim: DayClaim): Promise<boolean> {
   try {
