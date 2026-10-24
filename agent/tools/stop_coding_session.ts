@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
 import { describeCodingSession } from "#lib/coding-sessions.js";
 import { archiveCodingSession } from "#lib/devin.js";
 
@@ -12,7 +13,8 @@ export default defineTool({
     sessionId: z.string().min(1).describe("The session id."),
   }),
   label: { start: () => "Stop coding session" },
-  async execute({ sessionId }) {
+  async execute({ sessionId }, ctx) {
+    if (isCallTurn(ctx.session.auth.current)) return { stopped: false, reason: notFromOwnerChat };
     return describeCodingSession(await archiveCodingSession(sessionId));
   },
 });

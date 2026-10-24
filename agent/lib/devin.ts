@@ -103,11 +103,11 @@ function toMessage(raw: z.infer<typeof messageSchema>): CodingSessionMessage {
 }
 
 export class DevinApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
   }
 
   get isPermanent(): boolean {

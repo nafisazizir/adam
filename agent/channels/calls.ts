@@ -1,0 +1,244 @@
+import { randomUUID } from "node:crypto";
+
+import { defineChannel, POST, type Session } from "eve/channels";
+
+import { photonAuthenticator } from "#channels/photon.js";
+import {
+  afterCallAuth,
+  awaitCallReply,
+  callBriefing,
+  callEndedMessage,
+  callMissedMessage,
+  type CallReply,
+  callRequestMessage,
+  callStartedMessage,
+  declinedCallBriefing,
+  isOwnerCaller,
+  liveCallAuth,
+  passphraseMatches,
+  spokenReply,
+} from "#lib/calls.js";
+import { blobClaimStore } from "#lib/claim-store.js";
+import { claimOnce, releaseDay } from "#lib/daily-claim.js";
+import { homeDelivery } from "#lib/delivery.js";
+import { callsAskPath, callsEndedPath, callsStartPath, env } from "#lib/env.js";
+import { readHomeTargetState } from "#lib/home-target.js";
+import { type KnownOwner, ownerRecordLookup } from "#lib/owner.js";
+import { parseJson } from "#lib/qstash.js";
+import { currentTimeContext, formatUserDateTime } from "#lib/time.js";
+import {
+  callReplyResponse,
+  callStartResponse,
+  hasCallsSecret,
+  hasValidCallEndedSignature,
+  parseCallEnded,
+  parseCallRequest,
+  parseCallStart,
+} from "#lib/voice.js";
+
+// The voice tool waits 30 seconds; answering sooner leaves room for the voice agent to speak.
+const replyDeadlineMs = 25_000;
+
+const notConfigured = () => Response.json({ ok: false, error: "calls_not_configured" }, { status: 503 });
+const unauthorized = () => Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+const invalidPayload = () => Response.json({ ok: false, error: "invalid_payload" }, { status: 400 });
+
+const ownerRecord = ownerRecordLookup(readHomeTargetState, photonAuthenticator);
+
+// The same owner the chat channels admit, so a number that can no longer text can't call either.
+async function knownOwner(): Promise<KnownOwner> {
+  return { handles: env.OWNER_IMESSAGE_HANDLES, record: await ownerRecord.current() };
+}
+
+function describe(callerNumber: string | null): string {
+  return callerNumber ?? "an unknown caller";
+}
+
+function callKey(kind: "ended" | "verified", conversationId: string): string {
+  return `call-${kind}-${conversationId.replace(/[^\w-]/gu, "_")}`;
+}
+
+// A call that never gave the passphrase may be a forged caller ID, so its transcript stays out of
+// the owner's thread. Failing to tell counts as unverified.
+async function wasVerified(conversationId: string): Promise<boolean> {
+  if (!env.CALLS_PASSPHRASE) return true;
+  try {
+    return (await blobClaimStore.read(callKey("verified", conversationId))) !== null;
+  } catch (error) {
+    console.warn(`[calls] could not check whether ${conversationId} gave the passphrase`, error);
+    return false;
+  }
+}
+
+async function homeDeliveryOrNull() {
+  try {
+    return await homeDelivery();
+  } catch (error) {
+    console.warn("[calls] could not read the home target", error);
+    return null;
+  }
+}
+
+function withTime(message: string): string {
+  return [currentTimeContext(), "", message].join("\n");
+}
+
+export default defineChannel({
+  routes: [
+    POST(callsStartPath, async (request, { to, waitUntil }) => {
+      const secret = env.CALLS_TOOL_SECRET;
+      if (!secret) return notConfigured();
+      if (!hasCallsSecret(request, secret)) return unauthorized();
+
+      const start = parseCallStart(parseJson(await request.text()));
+      if (!start) return invalidPayload();
+
+      const localTime = formatUserDateTime(new Date());
+      if (!isOwnerCaller(start.callerNumber, await knownOwner())) {
+        console.warn(`[calls] declined a call from ${describe(start.callerNumber)}; not the owner`);
+        return Response.json(callStartResponse(declinedCallBriefing(localTime)));
+      }
+
+      const home = await homeDeliveryOrNull();
+      if (home) {
+        const call = { conversationId: start.conversationId ?? "unknown" };
+        waitUntil(
+          home.channel
+            .deliver({
+              to,
+              message: withTime(callStartedMessage(call)),
+              target: home.target,
+              auth: afterCallAuth(home.owner, call),
+              turnPolicy: "queue",
+            })
+            .catch((error) => console.error("[calls] failed to note a started call", error)),
+        );
+      }
+      return Response.json(callStartResponse(callBriefing(localTime, env.CALLS_PASSPHRASE !== undefined)));
+    }),
+
+    POST(callsAskPath, async (request, { to, waitUntil }) => {
+      const deadline = Date.now() + replyDeadlineMs;
+      const secret = env.CALLS_TOOL_SECRET;
+      if (!secret) return notConfigured();
+      if (!hasCallsSecret(request, secret)) return unauthorized();
+
+      const ask = parseCallRequest(parseJson(await request.text()));
+      if (!ask) return invalidPayload();
+
+      if (!isOwnerCaller(ask.callerNumber, await knownOwner())) {
+        console.warn(`[calls] refused a request from ${describe(ask.callerNumber)}; not the owner`);
+        return Response.json({ ok: false, error: "not_owner" }, { status: 403 });
+      }
+      const passphrase = env.CALLS_PASSPHRASE;
+      if (passphrase) {
+        if (!passphraseMatches(ask.passphrase, passphrase)) {
+          console.warn(`[calls] refused a request on ${ask.conversationId}; wrong or missing passphrase`);
+          return Response.json(callReplyResponse("That passphrase doesn't match, so I can't help with that yet."));
+        }
+        waitUntil(
+          claimOnce(blobClaimStore, callKey("verified", ask.conversationId)).catch((error) =>
+            console.warn(`[calls] could not record that ${ask.conversationId} gave the passphrase`, error),
+          ),
+        );
+      }
+      const home = await homeDeliveryOrNull();
+      if (!home) {
+        console.warn("[calls] no home delivery target is stored");
+        return Response.json(callReplyResponse("I can't reach my messages right now. Text me instead."));
+      }
+
+      const { channel, target, owner } = home;
+      const call = { conversationId: ask.conversationId };
+      const nonce = randomUUID();
+      let session: Session;
+      try {
+        session = await channel.deliver({
+          to,
+          message: withTime(callRequestMessage(ask.request, nonce)),
+          target,
+          auth: liveCallAuth(owner, call, deadline),
+          turnPolicy: "queue",
+        });
+      } catch (error) {
+        console.error(`[calls] failed to deliver a request for ${ask.conversationId}`, error);
+        return Response.json(callReplyResponse(spokenReply({ kind: "failed" })));
+      }
+
+      let reply: CallReply | null = null;
+      try {
+        reply = await awaitCallReply(session, nonce, deadline);
+      } catch (error) {
+        console.error(`[calls] lost the session stream for ${ask.conversationId}`, error);
+      }
+
+      if (reply === null) {
+        console.warn(`[calls] no reply within the deadline for ${ask.conversationId}`);
+        waitUntil(
+          channel
+            .deliver({
+              to,
+              message: withTime(callMissedMessage(nonce)),
+              target,
+              auth: afterCallAuth(owner, call),
+              turnPolicy: "queue",
+            })
+            .catch((error) => console.error("[calls] failed to deliver a missed reply note", error)),
+        );
+      }
+      return Response.json(callReplyResponse(spokenReply(reply)));
+    }),
+
+    POST(callsEndedPath, async (request, { to }) => {
+      const secret = env.ELEVENLABS_WEBHOOK_SECRET;
+      if (!secret) return notConfigured();
+
+      const body = await request.text();
+      if (!hasValidCallEndedSignature(request, body, secret)) return unauthorized();
+
+      const parsed = parseCallEnded(parseJson(body));
+      if (!parsed.ok) {
+        return parsed.reason === "ignored" ? Response.json({ ok: true, ignored: "event_type" }) : invalidPayload();
+      }
+
+      const { ended } = parsed;
+      if (!isOwnerCaller(ended.callerNumber, await knownOwner())) {
+        console.warn(`[calls] skipping a call summary from ${describe(ended.callerNumber)}`);
+        return Response.json({ ok: true, ignored: "not_owner" });
+      }
+      if (!(await wasVerified(ended.conversationId))) {
+        console.warn(`[calls] skipping the summary of ${ended.conversationId}; it never gave the passphrase`);
+        return Response.json({ ok: true, ignored: "unverified" });
+      }
+      const home = await homeDeliveryOrNull();
+      if (!home) {
+        console.warn("[calls] skipping a call summary; no home delivery target is stored");
+        return Response.json({ ok: true, ignored: "no_home_target" });
+      }
+
+      // Retries and replays of a signed payload carry the same conversation id.
+      const claim = await claimOnce(blobClaimStore, callKey("ended", ended.conversationId));
+      if (!claim) {
+        console.log(`[calls] skipping the summary of ${ended.conversationId}: already claimed, or the claim failed`);
+        return Response.json({ ok: true, ignored: "not_claimed" });
+      }
+
+      try {
+        await home.channel.deliver({
+          to,
+          message: withTime(callEndedMessage(ended)),
+          target: home.target,
+          auth: afterCallAuth(home.owner, { conversationId: ended.conversationId }),
+          turnPolicy: "queue",
+        });
+      } catch (error) {
+        console.error(`[calls] failed to deliver the summary of ${ended.conversationId}`, error);
+        await releaseDay(blobClaimStore, claim);
+        return Response.json({ ok: false, error: "delivery_failed" }, { status: 500 });
+      }
+
+      console.log(`[calls] delivered the summary of ${ended.conversationId}`);
+      return Response.json({ ok: true });
+    }),
+  ],
+});
