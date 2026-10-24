@@ -5,7 +5,7 @@ import type { SessionAuthContext } from "eve/context";
 import type { HomeOwner } from "#lib/home-target.js";
 import { admitSender, type KnownOwner, ownerAuth } from "#lib/owner.js";
 import { stripWrapperTags } from "#lib/untrusted.js";
-import { type CallBriefing, type CallEnded, sameSecret } from "#lib/voice.js";
+import type { CallBriefing, CallEnded } from "#lib/voice.js";
 
 export const callsAuthenticator = "calls";
 
@@ -65,15 +65,6 @@ export function isOwnerCaller(callerNumber: string | null, owner: KnownOwner): b
   return admission.admitted && !admission.claimed;
 }
 
-// Speech-to-text decides the spacing, punctuation and case, so only letters and digits count.
-function spokenForm(text: string): string {
-  return text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
-}
-
-export function passphraseMatches(spoken: string | null, expected: string): boolean {
-  return spoken !== null && spokenForm(spoken) !== "" && sameSecret(spokenForm(spoken), spokenForm(expected));
-}
-
 function relayed(text: string): string {
   return stripWrapperTags(text, ...callTags);
 }
@@ -86,14 +77,9 @@ const briefingLines = [
   "If it says it will text them, tell them so.",
 ];
 
-const passphraseLines = [
-  "Before anything else, ask for their passphrase. Pass exactly what they say as passphrase on every ask_adam call, never repeat it aloud, and never hint at it.",
-  "If ask_adam says the passphrase is wrong, ask once more; after a second wrong one, say you can't help on this call and end it.",
-];
-
-export function callBriefing(localTime: string, needsPassphrase: boolean): CallBriefing {
+export function callBriefing(localTime: string): CallBriefing {
   return {
-    briefing: [...briefingLines, ...(needsPassphrase ? passphraseLines : []), `It is ${localTime} for them.`].join("\n"),
+    briefing: [...briefingLines, `It is ${localTime} for them.`].join("\n"),
     greeting: "hey, it's Adam",
     localTime,
   };

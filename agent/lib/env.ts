@@ -100,8 +100,6 @@ const schema = z.object({
   // Optional so a deploy without a voice line still boots; only the calls routes refuse.
   CALLS_TOOL_SECRET: blankAsUnset(z.string().min(1).optional()),
   ELEVENLABS_WEBHOOK_SECRET: blankAsUnset(z.string().min(1).optional()),
-  // Caller ID can be faked, so when set a call reaches nothing private until the caller says it.
-  CALLS_PASSPHRASE: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);

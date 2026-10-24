@@ -10,7 +10,6 @@ export interface CallRequest {
   readonly conversationId: string;
   readonly callerNumber: string | null;
   readonly request: string;
-  readonly passphrase: string | null;
 }
 
 export interface CallLine {
@@ -94,7 +93,6 @@ const askSchema = z.object({
   request: z.string().trim().min(1).max(4000),
   conversation_id: z.string().trim().min(1),
   caller_id: optionalText,
-  passphrase: optionalText,
 });
 
 const endedSchema = z.object({
@@ -133,8 +131,8 @@ export function parseCallStart(body: unknown): CallStart | null {
 export function parseCallRequest(body: unknown): CallRequest | null {
   const parsed = askSchema.safeParse(body);
   if (!parsed.success) return null;
-  const { request, conversation_id, caller_id, passphrase } = parsed.data;
-  return { conversationId: conversation_id, callerNumber: callerNumberOf(caller_id), request, passphrase };
+  const { request, conversation_id, caller_id } = parsed.data;
+  return { conversationId: conversation_id, callerNumber: callerNumberOf(caller_id), request };
 }
 
 function variable(variables: Record<string, unknown> | null | undefined, name: string): string | null {

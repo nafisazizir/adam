@@ -486,7 +486,7 @@ stub the route).
 - **Calls** (`agent/channels/calls.ts`, `agent/lib/calls.ts`, `agent/lib/voice.ts`): the owner
   phones Adam's own number (a Twilio local number imported into ElevenLabs), which reaches one
   ElevenLabs Agents voice agent. The voice agent is a thin front end that holds the conversation
-  and has one webhook tool, `ask_adam(request, passphrase)`; Adam stays the only agent, so a call
+  and has one webhook tool, `ask_adam(request)`; Adam stays the only agent, so a call
   reaches the same context and tools as chat, except the few that only the owner's own chat may
   trigger (see "What a forged caller can and can't do" below). `lib/voice.ts` is the only file that
   knows ElevenLabs: signature and secret checks, payload parsing into neutral `CallStart`,
@@ -494,9 +494,8 @@ stub the route).
   and the response shapes. Retell, or a voice line on Photon, stays a one-file swap; WhatsApp
   calling would be a transport added there, not a change to the routes.
   - **Start** (`/eve/v1/calls/start`, the conversation initiation webhook) returns dynamic
-    variables only: `call_briefing` (persona, the owner's local time, the rule to use `ask_adam` for
-    anything beyond small talk, and, with `CALLS_PASSPHRASE` set, to ask for the passphrase first),
-    `greeting` and `local_time`. No private data goes to the vendor; the context lives in the
+    variables only: `call_briefing` (persona, the owner's local time, and the rule to use `ask_adam`
+    for anything beyond small talk), `greeting` and `local_time`. No private data goes to the vendor; the context lives in the
     owner's thread, one `ask_adam` away. The agent's system prompt in the dashboard is just
     `{{call_briefing}}`, so the persona is versioned here. A caller who is not the owner gets a
     briefing that declines and ends the call. An admitted call also queues a `<call_started>` into
@@ -535,34 +534,23 @@ stub the route).
     recorded owner exactly as in chat, and a call never claims an unknown owner. `start` declines
     anyone else, and `ask` and `ended` check again, so a dashboard preview or web widget with no
     caller id is refused.
-  - **Passphrase.** A phone line's caller ID is cheap to fake from VoIP, and Australia has no
-    STIR/SHAKEN, so the number is only a first gate. With `CALLS_PASSPHRASE` set, the voice agent
-    asks for it first and sends what the caller said as `ask_adam`'s `passphrase` on every request;
-    `ask` compares it in constant time after reducing both sides to lowercase letters and digits
-    (`passphraseMatches`), since speech-to-text picks the spacing and punctuation. A wrong or missing
-    one gets a spoken refusal and reaches nothing. Each request carries it, so nothing depends on
-    the voice agent remembering a verdict. The first match records the conversation id in the Blob
-    `ClaimStore` (`call-verified-<id>`), and `ended` delivers a summary only for a conversation that
-    matched, so a forged caller's transcript never enters the owner's thread; a Blob failure counts
-    as unverified. The passphrase passes through ElevenLabs' transcript, so it guards against a
-    spoofed number, not against the vendor. Words beat digits, which speech-to-text may spell
-    either way.
-  - **What a forged caller can and can't do.**
+  - **What a forged caller can and can't do.** A phone line's caller ID is cheap to fake from VoIP,
+    and Australia has no STIR/SHAKEN, so the owner's number is the only gate; the owner chose that
+    trade-off over a spoken passcode.
     - **Refused on every call turn** (`isCallTurn`): `start_coding_session`,
       `message_coding_session` and `stop_coding_session` (Devin works in the owner's GitHub org)
       and `cancel_reminder`; `merge_pull_request`, `disconnect_google_account` and memory writes,
       through the owner-chat gate (`isOwnerChat` is false for a `calls` auth); and
-      `connect_google_account`, through the direct-chat gate. These stay refused with the
-      passphrase too, since what was said reaches Adam paraphrased by the voice agent. Adam texts a
+      `connect_google_account`, through the direct-chat gate. These stay refused even from the
+      owner's real phone, since what was said reaches Adam paraphrased by the voice agent. Adam texts a
       one-line confirmation instead and acts on the owner's reply in chat. A call can never start a
       sign-in: like every turn outside the owner's direct chat it gets the token-only providers
       (`lib/connection-auth.ts`). Nothing in a call turn may wait on the owner.
-    - **Allowed once the passphrase matched.** A call turn acts as the owner's principal, so it can
+    - **Allowed, so open to anyone who fakes the number.** A call turn acts as the owner's principal, so it can
       read the thread's history, owner memory, Gmail and Calendar, Notion through an existing
       grant and the owner's training data through riz-mcp, write Notion pages through that grant,
-      and schedule reminders, which only ever land in the owner's own thread. Without
-      `CALLS_PASSPHRASE` all of that is open to anyone who fakes the owner's number, so the
-      deployment notes treat it as required.
+      and schedule reminders, which only ever land in the owner's own thread. A spoken passcode
+      checked server-side in `ask` would close this if it is ever needed.
     - **Always.** The `<call_started>` text tells the owner a call is happening as soon as the
       thread is free; it queues like every call delivery, so it waits behind a running or parked
       turn.
@@ -720,7 +708,7 @@ adam/
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
 │   │   ├── voice.ts           # ElevenLabs only: webhook auth, payloads → CallStart/CallRequest/CallEnded
-│   │   ├── calls.ts           # vendor-free: call auth, owner caller check, passphrase, messages, reply stream tap
+│   │   ├── calls.ts           # vendor-free: call auth, owner caller check, messages, reply stream tap
 │   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
 │   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
 │   │   ├── google-accounts-store.ts # the GoogleAccountStore in private Vercel Blob
@@ -793,7 +781,7 @@ remembered across sessions with the `owner` memory slot · read-only Gmail and G
 across any number of Google accounts the owner connects by chatting (search, read, list events;
 disconnect after a confirmation), with email and invites treated as untrusted data · new inbox mail as a trigger through Gmail push, texted only when a real
 person needs the owner · calls to Adam's own phone number through one ElevenLabs voice agent,
-answered from the owner's own thread behind a spoken passphrase, with texts mid-call and the call
+answered from the owner's own thread, with texts mid-call and the call
 joining the chat history afterwards.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
@@ -834,7 +822,6 @@ DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → 
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
 ELEVENLABS_WEBHOOK_SECRET=...       # optional; ElevenLabs post-call webhook HMAC secret
-CALLS_PASSPHRASE=...                # optional but needed in practice; spoken before a call reaches anything
 GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id scl_… or UID google/<name>); accounts are added in chat
 GOOGLE_PUBSUB_TOPIC=...             # optional; projects/<project>/topics/<topic> Gmail watches publish to; unset, no watch
 GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service account email; unset, every push is refused
@@ -890,14 +877,13 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   imported into ElevenLabs → Phone Numbers with its SID and token, and one ElevenLabs agent
   assigned to it: system prompt `{{call_briefing}}`, first message `{{greeting}}`, the `end_call`
   system tool, a webhook tool `ask_adam` (`POST ${BASE_URL}/eve/v1/calls/ask`, secret header
-  `x-calls-secret`, body `request` and `passphrase` from the LLM plus `conversation_id` and
+  `x-calls-secret`, body `request` from the LLM plus `conversation_id` and
   `caller_id` bound to `system__conversation_id` and `system__caller_id`, response timeout 30 s),
   the conversation initiation webhook at `${BASE_URL}/eve/v1/calls/start` with the same header,
   authentication enabled on the agent (signed URLs only, so no web or SDK client can open a
   conversation), and the post-call transcription webhook (audio off) at
   `${BASE_URL}/eve/v1/calls/ended`. Without `CALLS_TOOL_SECRET` and `ELEVENLABS_WEBHOOK_SECRET` the
-  calls routes answer 503 and nothing else changes. Set `CALLS_PASSPHRASE` before the number goes
-  live; without it a faked caller ID reaches the owner's mail and calendar.
+  calls routes answer 503 and nothing else changes.
 - Google (the PR #33 description is the step-by-step runbook): a Google Cloud project with the
   Gmail and Calendar APIs enabled; Google Auth Platform set to External, with the four scopes under
   Data Access, published In production under Audience (in Testing, refresh tokens die after 7

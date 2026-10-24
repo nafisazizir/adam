@@ -15,7 +15,6 @@ import {
   declinedCallBriefing,
   isOwnerCaller,
   liveCallAuth,
-  passphraseMatches,
   spokenReply,
 } from "#lib/calls.js";
 import { blobClaimStore } from "#lib/claim-store.js";
@@ -54,20 +53,8 @@ function describe(callerNumber: string | null): string {
   return callerNumber ?? "an unknown caller";
 }
 
-function callKey(kind: "ended" | "verified", conversationId: string): string {
-  return `call-${kind}-${conversationId.replace(/[^\w-]/gu, "_")}`;
-}
-
-// A call that never gave the passphrase may be a forged caller ID, so its transcript stays out of
-// the owner's thread. Failing to tell counts as unverified.
-async function wasVerified(conversationId: string): Promise<boolean> {
-  if (!env.CALLS_PASSPHRASE) return true;
-  try {
-    return (await blobClaimStore.read(callKey("verified", conversationId))) !== null;
-  } catch (error) {
-    console.warn(`[calls] could not check whether ${conversationId} gave the passphrase`, error);
-    return false;
-  }
+function claimKey(conversationId: string): string {
+  return `call-ended-${conversationId.replace(/[^\w-]/gu, "_")}`;
 }
 
 async function homeDeliveryOrNull() {
@@ -114,7 +101,7 @@ export default defineChannel({
             .catch((error) => console.error("[calls] failed to note a started call", error)),
         );
       }
-      return Response.json(callStartResponse(callBriefing(localTime, env.CALLS_PASSPHRASE !== undefined)));
+      return Response.json(callStartResponse(callBriefing(localTime)));
     }),
 
     POST(callsAskPath, async (request, { to, waitUntil }) => {
@@ -129,18 +116,6 @@ export default defineChannel({
       if (!isOwnerCaller(ask.callerNumber, await knownOwner())) {
         console.warn(`[calls] refused a request from ${describe(ask.callerNumber)}; not the owner`);
         return Response.json({ ok: false, error: "not_owner" }, { status: 403 });
-      }
-      const passphrase = env.CALLS_PASSPHRASE;
-      if (passphrase) {
-        if (!passphraseMatches(ask.passphrase, passphrase)) {
-          console.warn(`[calls] refused a request on ${ask.conversationId}; wrong or missing passphrase`);
-          return Response.json(callReplyResponse("That passphrase doesn't match, so I can't help with that yet."));
-        }
-        waitUntil(
-          claimOnce(blobClaimStore, callKey("verified", ask.conversationId)).catch((error) =>
-            console.warn(`[calls] could not record that ${ask.conversationId} gave the passphrase`, error),
-          ),
-        );
       }
       const home = await homeDeliveryOrNull();
       if (!home) {
@@ -206,10 +181,6 @@ export default defineChannel({
         console.warn(`[calls] skipping a call summary from ${describe(ended.callerNumber)}`);
         return Response.json({ ok: true, ignored: "not_owner" });
       }
-      if (!(await wasVerified(ended.conversationId))) {
-        console.warn(`[calls] skipping the summary of ${ended.conversationId}; it never gave the passphrase`);
-        return Response.json({ ok: true, ignored: "unverified" });
-      }
       const home = await homeDeliveryOrNull();
       if (!home) {
         console.warn("[calls] skipping a call summary; no home delivery target is stored");
@@ -217,7 +188,7 @@ export default defineChannel({
       }
 
       // Retries and replays of a signed payload carry the same conversation id.
-      const claim = await claimOnce(blobClaimStore, callKey("ended", ended.conversationId));
+      const claim = await claimOnce(blobClaimStore, claimKey(ended.conversationId));
       if (!claim) {
         console.log(`[calls] skipping the summary of ${ended.conversationId}: already claimed, or the claim failed`);
         return Response.json({ ok: true, ignored: "not_claimed" });

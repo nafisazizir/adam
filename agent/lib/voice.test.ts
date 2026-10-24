@@ -87,11 +87,9 @@ test("parses an ask_adam call", () => {
       request: " remind me at 5 ",
       conversation_id: "conv_1",
       caller_id: "+61412345678",
-      passphrase: " blue horse ",
     }),
-    { conversationId: "conv_1", callerNumber: "+61412345678", request: "remind me at 5", passphrase: "blue horse" },
+    { conversationId: "conv_1", callerNumber: "+61412345678", request: "remind me at 5" },
   );
-  assert.equal(parseCallRequest({ request: "hi", conversation_id: "conv_1" })?.passphrase, null);
   assert.equal(parseCallRequest({ request: "", conversation_id: "conv_1" }), null);
   assert.equal(parseCallRequest({ request: "hi" }), null);
 });

@@ -14,7 +14,6 @@ import {
   isLiveCallTurn,
   liveCallAuth,
   isOwnerCaller,
-  passphraseMatches,
   spokenReply,
 } from "#lib/calls.js";
 
@@ -65,13 +64,6 @@ test("a recorded number the handle list moved away from can no longer call", () 
   const moved = { handles: ["+61400000000"], record: recorded("+61412345678") };
   assert.ok(isOwnerCaller("+61400000000", moved));
   assert.ok(!isOwnerCaller("+61412345678", moved));
-});
-
-test("a spoken passphrase matches whatever spacing, punctuation and case speech-to-text gave it", () => {
-  assert.ok(passphraseMatches("Blue horse, Tuesday.", "blue-horse tuesday"));
-  assert.ok(!passphraseMatches("blue horse", "blue horse tuesday"));
-  assert.ok(!passphraseMatches(null, "blue horse tuesday"));
-  assert.ok(!passphraseMatches("...", "..."));
 });
 
 test("a request turn is live until its reply deadline, and other call turns never are", () => {
