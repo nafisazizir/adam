@@ -7,7 +7,6 @@ const agentName = "Adam";
 const askToolName = "ask_adam";
 const toolSecretName = "adam-calls-tool-secret";
 const postCallWebhookName = "Adam post-call";
-const phoneLabel = "Adam";
 // A fast model, since it only holds the conversation; Adam does the thinking behind ask_adam.
 const voiceLlm = "gemini-3.5-flash";
 // The ask route answers within 25 seconds; this leaves the voice agent room to speak.
@@ -21,7 +20,6 @@ export interface VoiceAgentSettings {
   readonly endedUrl: string;
   readonly voiceId?: string;
   readonly phoneNumber?: string;
-  readonly twilio?: { readonly accountSid: string; readonly authToken: string };
 }
 
 export interface PostCallWebhook {
@@ -203,10 +201,12 @@ interface PhoneNumber {
   readonly assigned_agent?: { readonly agent_id: string } | null;
 }
 
-type PhoneOutcome = "assigned" | "already_assigned" | "imported" | "not_imported" | "not_configured";
+type PhoneOutcome = "assigned" | "already_assigned" | "not_imported" | "not_configured";
 
+// The owner imports the number into ElevenLabs once, so Adam never holds Twilio credentials; the
+// sync only keeps it pointed at the agent, which matters when the agent is ever recreated.
 async function syncPhoneNumber(request: Request, settings: VoiceAgentSettings, agentId: string): Promise<PhoneOutcome> {
-  const { phoneNumber, twilio } = settings;
+  const { phoneNumber } = settings;
   if (!phoneNumber) return "not_configured";
 
   const numbers = (await request<PhoneNumber[]>("GET", "/v1/convai/phone-numbers")) ?? [];
@@ -216,17 +216,7 @@ async function syncPhoneNumber(request: Request, settings: VoiceAgentSettings, a
     await request("PATCH", `/v1/convai/phone-numbers/${existing.phone_number_id}`, { agent_id: agentId });
     return "assigned";
   }
-  if (!twilio) return "not_imported";
-  await request("POST", "/v1/convai/phone-numbers", {
-    provider: "twilio",
-    phone_number: phoneNumber,
-    label: phoneLabel,
-    sid: twilio.accountSid,
-    token: twilio.authToken,
-    agent_id: agentId,
-    enable_sms: false,
-  });
-  return "imported";
+  return "not_imported";
 }
 
 export interface VoiceAgentSyncReport {

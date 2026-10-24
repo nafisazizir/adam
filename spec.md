@@ -500,8 +500,9 @@ stub the route).
     webhook, the agent itself (`voiceAgentConfig`: prompt `{{call_briefing}}`, first message
     `{{greeting}}`, the voice LLM, `end_call`, signed URLs only, the initiation webhook with fetching
     initiation data on, the post-call webhook with transcripts only, and `ELEVENLABS_VOICE_ID` when
-    set) and the assignment of `CALLS_PHONE_NUMBER` to the agent, importing it from Twilio the first
-    time when `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are set. The ids it created live in
+    set) and the assignment of `CALLS_PHONE_NUMBER` to the agent. The owner imports the number into
+    ElevenLabs once with Twilio's SID and token, so Adam never holds Twilio credentials; a number
+    not imported yet is only logged. The ids it created live in
     private Blob (`voice-agent.json`, `lib/voice-agent-store.ts`), so a rename in the dashboard
     never makes a second agent and anything deleted there is created again. Each run updates in
     place and saves every new id before the next step, so a run that fails halfway is finished by
@@ -850,8 +851,6 @@ CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the cal
 ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it
 ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
 CALLS_PHONE_NUMBER=...              # optional; Adam's number in E.164, assigned to the voice agent
-TWILIO_ACCOUNT_SID=...              # optional; only to import CALLS_PHONE_NUMBER the first time
-TWILIO_AUTH_TOKEN=...               # optional; as above
 GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id scl_… or UID google/<name>); accounts are added in chat
 GOOGLE_PUBSUB_TOPIC=...             # optional; projects/<project>/topics/<topic> Gmail watches publish to; unset, no watch
 GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service account email; unset, every push is refused
@@ -903,11 +902,11 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
-- Calls need an Australian Twilio local number (an ID and address bundle is approved first) and,
-  in the Production environment, `CALLS_TOOL_SECRET`, `ELEVENLABS_API_KEY`, `CALLS_PHONE_NUMBER`,
-  and `TWILIO_ACCOUNT_SID` with `TWILIO_AUTH_TOKEN` for the first import. The next production
-  deploy creates the ElevenLabs agent, tool, secret and webhooks and assigns the number (look for
-  `[voice-agent] synced` in the build log); nothing is configured in the ElevenLabs dashboard.
+- Calls need an Australian Twilio local number (an ID and address bundle is approved first),
+  imported once in ElevenLabs → Phone Numbers, and in the Production environment
+  `CALLS_TOOL_SECRET`, `ELEVENLABS_API_KEY` and `CALLS_PHONE_NUMBER`. The next production deploy
+  creates the ElevenLabs agent, tool, secret and webhooks and assigns the number (look for
+  `[voice-agent] synced` in the build log); importing the number is the only dashboard step.
   Without `CALLS_TOOL_SECRET` the start and ask routes answer 503, and until a sync has run the
   ended route does too; nothing else changes.
 - Google (the PR #33 description is the step-by-step runbook): a Google Cloud project with the

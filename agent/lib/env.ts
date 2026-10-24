@@ -103,9 +103,6 @@ const schema = z.object({
   ELEVENLABS_API_KEY: blankAsUnset(z.string().min(1).optional()),
   ELEVENLABS_VOICE_ID: blankAsUnset(z.string().min(1).optional()),
   CALLS_PHONE_NUMBER: blankAsUnset(z.string().min(1).optional()),
-  // Only to import CALLS_PHONE_NUMBER into ElevenLabs the first time.
-  TWILIO_ACCOUNT_SID: blankAsUnset(z.string().min(1).optional()),
-  TWILIO_AUTH_TOKEN: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);

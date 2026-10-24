@@ -27,10 +27,6 @@ try {
       endedUrl: env.callsEndedUrl,
       voiceId: env.ELEVENLABS_VOICE_ID,
       phoneNumber: env.CALLS_PHONE_NUMBER,
-      twilio:
-        env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN
-          ? { accountSid: env.TWILIO_ACCOUNT_SID, authToken: env.TWILIO_AUTH_TOKEN }
-          : undefined,
     },
     blobVoiceAgentStore,
   );
@@ -38,7 +34,7 @@ try {
   console.log(`[voice-agent] synced agent ${report.agentId} for ${env.BASE_URL}: ${created}; phone ${report.phone}`);
   if (report.phone === "not_imported") {
     console.warn(
-      "[voice-agent] CALLS_PHONE_NUMBER is not in ElevenLabs yet; set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to import it",
+      "[voice-agent] CALLS_PHONE_NUMBER is not in ElevenLabs yet; import it under Phone Numbers, and the next sync assigns it",
     );
   }
 } catch (error) {

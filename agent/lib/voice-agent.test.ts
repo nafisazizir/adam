@@ -203,37 +203,21 @@ test("a new BASE_URL makes a new post-call webhook, points the agent at it, then
   assert.deepEqual(memory.state().postCallWebhook, { id: "hook_1", url: settings.endedUrl, secret: "whsec_hook_1" });
 });
 
-test("the phone number is assigned to the agent, or imported from Twilio when it is not in ElevenLabs", async () => {
+test("the phone number is assigned to the agent, and one not yet imported into ElevenLabs is only reported", async () => {
   const assigned = fakeElevenLabs();
   assigned.addPhoneNumber("+61 2 9000 0000", null);
-  const first = await syncVoiceAgent(
-    { ...settings, phoneNumber: "+61290000000" },
-    memoryStore().store,
-    assigned.fetchImpl,
-  );
+  const memory = memoryStore();
+  const first = await syncVoiceAgent({ ...settings, phoneNumber: "+61290000000" }, memory.store, assigned.fetchImpl);
   assert.equal(first.phone, "assigned");
   assert.equal(assigned.phoneNumbers()[0]?.assigned_agent?.agent_id, first.agentId);
 
-  const missing = fakeElevenLabs();
-  const withoutTwilio = await syncVoiceAgent({ ...settings, phoneNumber: "+61290000000" }, memoryStore().store, missing.fetchImpl);
-  assert.equal(withoutTwilio.phone, "not_imported");
+  const again = await syncVoiceAgent({ ...settings, phoneNumber: "+61290000000" }, memory.store, assigned.fetchImpl);
+  assert.equal(again.phone, "already_assigned");
 
-  const imported = fakeElevenLabs();
-  const report = await syncVoiceAgent(
-    { ...settings, phoneNumber: "+61290000000", twilio: { accountSid: "AC1", authToken: "tok" } },
-    memoryStore().store,
-    imported.fetchImpl,
-  );
-  assert.equal(report.phone, "imported");
-  assert.deepEqual(imported.calls.find((call) => call.path === "/v1/convai/phone-numbers" && call.method === "POST")?.body, {
-    provider: "twilio",
-    phone_number: "+61290000000",
-    label: "Adam",
-    sid: "AC1",
-    token: "tok",
-    agent_id: report.agentId,
-    enable_sms: false,
-  });
+  const missing = fakeElevenLabs();
+  const report = await syncVoiceAgent({ ...settings, phoneNumber: "+61290000000" }, memoryStore().store, missing.fetchImpl);
+  assert.equal(report.phone, "not_imported");
+  assert.ok(!missing.calls.some((call) => call.path.startsWith("/v1/convai/phone-numbers") && call.method !== "GET"));
 });
 
 test("a failing call stops the sync with the status and keeps the ids saved so far", async () => {
