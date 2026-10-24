@@ -34,6 +34,7 @@ import {
   parseCallRequest,
   parseCallStart,
 } from "#lib/voice.js";
+import { postCallWebhookSecret } from "#lib/voice-agent-store.js";
 
 // The voice tool waits 30 seconds; answering sooner leaves room for the voice agent to speak.
 const replyDeadlineMs = 25_000;
@@ -55,6 +56,16 @@ function describe(callerNumber: string | null): string {
 
 function claimKey(conversationId: string): string {
   return `call-ended-${conversationId.replace(/[^\w-]/gu, "_")}`;
+}
+
+// The production build's voice agent sync creates the post-call webhook and keeps its secret.
+async function postCallSecretOrNull(): Promise<string | null> {
+  try {
+    return await postCallWebhookSecret();
+  } catch (error) {
+    console.warn("[calls] could not read the post-call webhook secret", error);
+    return null;
+  }
 }
 
 async function homeDeliveryOrNull() {
@@ -165,7 +176,7 @@ export default defineChannel({
     }),
 
     POST(callsEndedPath, async (request, { to }) => {
-      const secret = env.ELEVENLABS_WEBHOOK_SECRET;
+      const secret = await postCallSecretOrNull();
       if (!secret) return notConfigured();
 
       const body = await request.text();

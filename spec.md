@@ -488,11 +488,32 @@ stub the route).
   ElevenLabs Agents voice agent. The voice agent is a thin front end that holds the conversation
   and has one webhook tool, `ask_adam(request)`; Adam stays the only agent, so a call
   reaches the same context and tools as chat, except the few that only the owner's own chat may
-  trigger (see "What a forged caller can and can't do" below). `lib/voice.ts` is the only file that
-  knows ElevenLabs: signature and secret checks, payload parsing into neutral `CallStart`,
-  `CallRequest` and `CallEnded` (each carrying the caller's E.164 number, or null when withheld),
-  and the response shapes. Retell, or a voice line on Photon, stays a one-file swap; WhatsApp
-  calling would be a transport added there, not a change to the routes.
+  trigger (see "What a forged caller can and can't do" below). Only two files know ElevenLabs:
+  `lib/voice.ts` at call time (signature and secret checks, payload parsing into neutral
+  `CallStart`, `CallRequest` and `CallEnded`, each carrying the caller's E.164 number or null when
+  withheld, and the response shapes), and `lib/voice-agent.ts` at deploy time (the agent's whole
+  configuration and the sync below). Retell, or a voice line on Photon, stays a swap of those two;
+  WhatsApp calling would be a transport added there, not a change to the routes.
+  - **The agent is code.** `syncVoiceAgent` (`lib/voice-agent.ts`) pushes everything the voice
+    agent is from this repo through the ElevenLabs API: a workspace secret holding
+    `CALLS_TOOL_SECRET`, the `ask_adam` webhook tool (`askAdamTool`), the workspace post-call
+    webhook, the agent itself (`voiceAgentConfig`: prompt `{{call_briefing}}`, first message
+    `{{greeting}}`, the voice LLM, `end_call`, signed URLs only, the initiation webhook with fetching
+    initiation data on, the post-call webhook with transcripts only, and `ELEVENLABS_VOICE_ID` when
+    set) and the assignment of `CALLS_PHONE_NUMBER` to the agent, importing it from Twilio the first
+    time when `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` are set. The ids it created live in
+    private Blob (`voice-agent.json`, `lib/voice-agent-store.ts`), so a rename in the dashboard
+    never makes a second agent and anything deleted there is created again. Each run updates in
+    place and saves every new id before the next step, so a run that fails halfway is finished by
+    the next. A workspace webhook's url can't change and its HMAC secret is shown only at creation,
+    so a new `BASE_URL` makes a new post-call webhook, points the agent at it and then deletes the
+    old one; the secret is kept in the same Blob record, where the `ended` route reads it, so there
+    is no signing secret to copy by hand. `pnpm build` runs `scripts/sync-voice-agent.ts` after
+    `eve build`; it acts only on a production build (a preview would repoint the one agent at a
+    preview URL), skips without `ELEVENLABS_API_KEY` or `CALLS_TOOL_SECRET`, and logs a failure
+    without failing the deploy, so ElevenLabs can't block one. `pnpm sync:voice-agent` runs it on
+    demand against whatever environment it is given, and fails loudly. Changes made in the
+    dashboard to anything the sync owns are overwritten on the next deploy.
   - **Start** (`/eve/v1/calls/start`, the conversation initiation webhook) returns dynamic
     variables only: `call_briefing` (persona, the owner's local time, and the rule to use `ask_adam`
     for anything beyond small talk), `greeting` and `local_time`. No private data goes to the vendor; the context lives in the
@@ -520,7 +541,8 @@ stub the route).
     a busy or parked thread) is not live, so a late reply says nothing was spoken and Adam texts.
     Adam calls `reply_to_call` only once the turn's other tools have returned.
   - **Ended** (`/eve/v1/calls/ended`, the post-call webhook) verifies the `ElevenLabs-Signature`
-    HMAC (`t=<unix>,v0=<hex HMAC-SHA256 of "t.body">`, 30-minute tolerance) and delivers a
+    HMAC (`t=<unix>,v0=<hex HMAC-SHA256 of "t.body">`, 30-minute tolerance) with the secret the sync
+    stored (`postCallWebhookSecret`) and delivers a
     `<call_ended>` with the summary and the end of the transcript into the home thread with
     `turnPolicy: "queue"` and `call: "after"`. The caller comes from the `system__caller_id`
     variable, as in start and ask, falling back to `metadata.phone_call`. Adam calls
@@ -708,6 +730,8 @@ adam/
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
 │   │   ├── voice.ts           # ElevenLabs only: webhook auth, payloads → CallStart/CallRequest/CallEnded
+│   │   ├── voice-agent.ts     # ElevenLabs only: the voice agent's config and syncVoiceAgent
+│   │   ├── voice-agent-store.ts # the synced ElevenLabs ids and post-call secret in private Blob
 │   │   ├── calls.ts           # vendor-free: call auth, owner caller check, messages, reply stream tap
 │   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
 │   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
@@ -747,7 +771,9 @@ adam/
 │       └── mail-watch.ts      # 6am local: renew each account's Gmail watch on the Pub/Sub topic
 ├── scripts/
 │   ├── sync-riz-mcp-skill.ts
-│   └── riz-mcp-skill.lock.json
+│   ├── riz-mcp-skill.lock.json
+│   ├── sync-voice-agent.ts    # after eve build on production: push the ElevenLabs voice agent's config
+│   └── ts-resolve.ts          # lets node load authored `.js` imports from `.ts` (scripts and tests)
 └── .env
 ```
 
@@ -821,7 +847,11 @@ DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service 
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
-ELEVENLABS_WEBHOOK_SECRET=...       # optional; ElevenLabs post-call webhook HMAC secret
+ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it
+ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
+CALLS_PHONE_NUMBER=...              # optional; Adam's number in E.164, assigned to the voice agent
+TWILIO_ACCOUNT_SID=...              # optional; only to import CALLS_PHONE_NUMBER the first time
+TWILIO_AUTH_TOKEN=...               # optional; as above
 GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id scl_… or UID google/<name>); accounts are added in chat
 GOOGLE_PUBSUB_TOPIC=...             # optional; projects/<project>/topics/<topic> Gmail watches publish to; unset, no watch
 GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service account email; unset, every push is refused
@@ -873,17 +903,13 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
   `/eve/v1/dev/schedules/briefing`.
-- Calls need an Australian Twilio local number (an ID and address bundle is approved first)
-  imported into ElevenLabs → Phone Numbers with its SID and token, and one ElevenLabs agent
-  assigned to it: system prompt `{{call_briefing}}`, first message `{{greeting}}`, the `end_call`
-  system tool, a webhook tool `ask_adam` (`POST ${BASE_URL}/eve/v1/calls/ask`, secret header
-  `x-calls-secret`, body `request` from the LLM plus `conversation_id` and
-  `caller_id` bound to `system__conversation_id` and `system__caller_id`, response timeout 30 s),
-  the conversation initiation webhook at `${BASE_URL}/eve/v1/calls/start` with the same header,
-  authentication enabled on the agent (signed URLs only, so no web or SDK client can open a
-  conversation), and the post-call transcription webhook (audio off) at
-  `${BASE_URL}/eve/v1/calls/ended`. Without `CALLS_TOOL_SECRET` and `ELEVENLABS_WEBHOOK_SECRET` the
-  calls routes answer 503 and nothing else changes.
+- Calls need an Australian Twilio local number (an ID and address bundle is approved first) and,
+  in the Production environment, `CALLS_TOOL_SECRET`, `ELEVENLABS_API_KEY`, `CALLS_PHONE_NUMBER`,
+  and `TWILIO_ACCOUNT_SID` with `TWILIO_AUTH_TOKEN` for the first import. The next production
+  deploy creates the ElevenLabs agent, tool, secret and webhooks and assigns the number (look for
+  `[voice-agent] synced` in the build log); nothing is configured in the ElevenLabs dashboard.
+  Without `CALLS_TOOL_SECRET` the start and ask routes answer 503, and until a sync has run the
+  ended route does too; nothing else changes.
 - Google (the PR #33 description is the step-by-step runbook): a Google Cloud project with the
   Gmail and Calendar APIs enabled; Google Auth Platform set to External, with the four scopes under
   Data Access, published In production under Audience (in Testing, refresh tokens die after 7
@@ -1002,7 +1028,7 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      delivers the request into the home iMessage session through a `calls` channel, the way
      `coding-sessions` delivers updates. Adam stays the only agent, so a call works through chat's
      context and tools, apart from the chat-only actions §4 lists: "text me photos of that place"
-     lands in iMessage mid-call. `lib/voice.ts` is the only file that knows the voice vendor. Adam's
+     lands in iMessage mid-call. `lib/voice.ts` and `lib/voice-agent.ts` are the only files that know the voice vendor. Adam's
      answer returns to the call through the session's event stream (see Status).
    - **After the call.** A `<call_ended>` trigger carrying the transcript summary enters the home
      session with `turnPolicy: "queue"`, and Adam calls `stay_silent`: the call joins chat history
