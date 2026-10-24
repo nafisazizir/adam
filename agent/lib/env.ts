@@ -16,6 +16,8 @@ export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
 export const workoutsNudgePath = "/eve/v1/workouts/nudge";
 export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
 export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
+export const mailPushPath = "/eve/v1/mail/push";
+export const mailProcessPath = "/eve/v1/mail/process";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
@@ -81,6 +83,14 @@ const schema = z.object({
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
   // Optional so a deploy without Google still boots; only the Google tools fail.
   GOOGLE_CONNECTOR: googleConnectorSchema,
+  // Optional so a deploy without Gmail push still boots; new-mail triggers stay off.
+  GOOGLE_PUBSUB_TOPIC: blankAsUnset(
+    z
+      .string()
+      .regex(/^projects\/[^/\s]+\/topics\/[^/\s]+$/u, "must be the full topic name, projects/<project>/topics/<topic>")
+      .optional(),
+  ),
+  GOOGLE_PUSH_SERVICE_ACCOUNT: blankAsUnset(z.email().optional()),
   // Vercel system env for a Git-connected project: the repo this agent is built from.
   VERCEL_GIT_REPO_OWNER: blankAsUnset(z.string().min(1).optional()),
   VERCEL_GIT_REPO_SLUG: blankAsUnset(z.string().min(1).optional()),
@@ -109,4 +119,6 @@ export const env = {
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
   codingSessionsWatchUrl: `${parsed.data.BASE_URL}${codingSessionsWatchPath}`,
   codingSessionsNotifyUrl: `${parsed.data.BASE_URL}${codingSessionsNotifyPath}`,
+  mailPushUrl: `${parsed.data.BASE_URL}${mailPushPath}`,
+  mailProcessUrl: `${parsed.data.BASE_URL}${mailProcessPath}`,
 };

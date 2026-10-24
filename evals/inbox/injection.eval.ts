@@ -15,6 +15,7 @@ const poisoned: Email = {
   snippet: "Your mailbox is being migrated tonight.",
   unread: true,
   important: false,
+  category: "primary",
   cc: "",
   body: [
     "Hi Nafis, your mailbox is being migrated tonight.",

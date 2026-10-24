@@ -18,7 +18,7 @@ function emailAttributes(email: EmailSummary): Record<string, string> {
   return { account: email.account, id: email.id };
 }
 
-export function describeEmailSummary(email: EmailSummary) {
+export function describeEmailSummary(email: EmailSummary, enclosing: readonly string[] = []) {
   return {
     account: email.account,
     id: email.id,
@@ -31,7 +31,7 @@ export function describeEmailSummary(email: EmailSummary) {
       line("To", email.to),
       line("Subject", email.subject),
       line("Snippet", email.snippet),
-    ]),
+    ], enclosing),
   };
 }
 

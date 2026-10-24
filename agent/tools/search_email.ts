@@ -29,6 +29,6 @@ export default defineTool({
   label: { start: ({ query }) => `Search email for ${query}` },
   async execute({ query, account, max }, ctx) {
     const found = await google.searchEmail(ownerPrincipal(ctx.session.auth.current), query, { account, max });
-    return { emails: found.results.map(describeEmailSummary), errors: found.errors, truncated: found.truncated };
+    return { emails: found.results.map((email) => describeEmailSummary(email)), errors: found.errors, truncated: found.truncated };
   },
 });

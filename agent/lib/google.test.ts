@@ -20,7 +20,7 @@ import {
   type GoogleAccountRecord,
   type GoogleAccountStore,
 } from "#lib/google-accounts.js";
-import { memoryCache } from "#lib/shared-cache.js";
+import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
 
 const b64 = (text: string) => Buffer.from(text).toString("base64url");
 
@@ -34,6 +34,8 @@ interface TokenCall {
   readonly forceRefresh: boolean;
 }
 
+const hourMs = 60 * 60 * 1000;
+
 function labelOf(params: { subject: ConnectTokenParams["subject"] }): string {
   const { subject } = params;
   return subject.type === "user" ? (subject.id.split("/google/")[1] ?? "") : "";
@@ -42,7 +44,7 @@ function labelOf(params: { subject: ConnectTokenParams["subject"] }): string {
 // An account mapped to a token has a grant; one mapped to an error fails with it; one left out
 // has never been connected. Like the SDK, it keeps the last token per account in process until a
 // forced refresh, a cache-entry delete or a revoke; a forced refresh hands out `<grant>-fresh`.
-function fakeConnect(grants: Record<string, string | Error>, options: { revokeError?: Error } = {}) {
+function fakeConnect(grants: Record<string, string | Error>, options: { revokeError?: Error; lifetimeMs?: number } = {}) {
   const tokenCalls: TokenCall[] = [];
   const started: { connector: string; params: ConnectTokenParams }[] = [];
   const revoked: string[] = [];
@@ -52,13 +54,13 @@ function fakeConnect(grants: Record<string, string | Error>, options: { revokeEr
       tokenCalls.push({ connector: connectorId, params, forceRefresh: tokenOptions?.forceRefresh ?? false });
       const label = labelOf(params);
       const held = cached.get(label);
-      if (held && !tokenOptions?.forceRefresh) return held;
+      if (held && !tokenOptions?.forceRefresh) return { token: held, expiresAt: Date.now() + (options.lifetimeMs ?? hourMs) };
       const grant = grants[label];
       if (grant instanceof Error) throw grant;
       if (grant === undefined) throw new UserAuthorizationRequiredError("User authorization is required");
       const token = tokenOptions?.forceRefresh ? `${grant}-fresh` : grant;
       cached.set(label, token);
-      return token;
+      return { token, expiresAt: Date.now() + (options.lifetimeMs ?? hourMs) };
     },
     deleteTokenCacheEntry(_connectorId, params) {
       cached.delete(labelOf(params));
@@ -131,11 +133,13 @@ function workspace(
   connect: GoogleConnect,
   fetchImpl: typeof fetch,
   store: GoogleAccountStore = fakeAccountStore(labels),
+  tokenCache: SharedCache = memoryCache(),
 ) {
   return googleWorkspace({
     connector,
     accounts: googleAccountRegistry({ store, cache: memoryCache(), cacheTtlSeconds: 60 }),
     connect,
+    tokenCache,
     timeZone: "Australia/Brisbane",
     fetch: fetchImpl,
     sleep: async () => {},
@@ -293,6 +297,39 @@ test("a 401 after a fresh token means the account needs connecting", async () =>
     [false, true],
   );
   assert.equal(found.errors[0]?.needsConnecting, true);
+});
+
+test("a token is shared through the cache across instances until shortly before it expires", async () => {
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" });
+  const cache = memoryCache();
+  const { impl } = fakeFetch(oneMessage);
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  assert.equal(tokenCalls.length, 1);
+});
+
+test("a token about to expire is not cached", async () => {
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" }, { lifetimeMs: 4 * 60 * 1000 });
+  const cache = memoryCache();
+  const { impl } = fakeFetch((url) => (url.pathname.endsWith("/messages") ? Response.json({ messages: [] }) : undefined));
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  assert.equal(tokenCalls.length, 2);
+});
+
+test("a rejected cached token is replaced by a fresh one for every instance", async () => {
+  const { connect, tokenCalls } = fakeConnect({ personal: "token" });
+  const cache = memoryCache();
+  const { impl } = fakeFetch((url, init) => {
+    if (!url.pathname.endsWith("/messages")) return undefined;
+    return bearer(init) === "token" ? new Response("revoked", { status: 401 }) : Response.json({ messages: [] });
+  });
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  await workspace(personal, connect, impl, undefined, cache).searchEmail(owner, "x", { max: 1 });
+  assert.deepEqual(
+    tokenCalls.map((call) => call.forceRefresh),
+    [false, true],
+  );
 });
 
 test("an account is named by its label or by its address", async () => {
@@ -737,4 +774,73 @@ test("mailbox history lists each added inbox message once", async () => {
   assert.deepEqual(history, { addedMessageIds: ["a", "b"], historyId: "120", nextPageToken: null });
   assert.equal(calls[0]?.url.searchParams.get("historyTypes"), "messageAdded");
   assert.equal(calls[0]?.url.searchParams.get("labelId"), "INBOX");
+});
+
+test("a summary carries its inbox tab, Primary when Gmail gives none", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl } = fakeFetch((url) => {
+    if (url.pathname.endsWith("/messages/promo")) {
+      return Response.json({ id: "promo", threadId: "t", labelIds: ["INBOX", "CATEGORY_PROMOTIONS"] });
+    }
+    if (url.pathname.endsWith("/messages/plain")) return Response.json({ id: "plain", threadId: "t", labelIds: ["INBOX"] });
+    return undefined;
+  });
+  const found = await workspace(personal, connect, impl).emailSummaries(owner, "personal", ["promo", "plain"]);
+  assert.deepEqual(
+    found.map((email) => email.category),
+    ["promotions", "primary"],
+  );
+});
+
+test("the mailbox profile gives the address the token reads and its current history id", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl } = fakeFetch((url) =>
+    url.pathname.endsWith("/profile") ? Response.json({ emailAddress: "me@gmail.example", historyId: "555" }) : undefined,
+  );
+  assert.deepEqual(await workspace(personal, connect, impl).mailboxProfile(owner, "personal"), {
+    emailAddress: "me@gmail.example",
+    historyId: "555",
+  });
+});
+
+test("an address names its account, and an unconnected account does not hide the match", async () => {
+  const { connect } = fakeConnect({ work: "token-work" });
+  const { impl } = fakeFetch(addresses({ "token-work": "me@work.example" }));
+  const google = workspace(both, connect, impl);
+  assert.equal(await google.accountWithAddress(owner, "ME@work.example"), "work");
+  assert.equal(await google.accountWithAddress(owner, "nobody@example.com"), null);
+});
+
+test("a transient failure looking up an address is thrown, not reported as unknown", async () => {
+  const { connect } = fakeConnect({ personal: "token-personal" });
+  const { impl } = fakeFetch((url) =>
+    url.hostname === "openidconnect.googleapis.com" ? new Response("unavailable", { status: 503 }) : undefined,
+  );
+  await assert.rejects(workspace(personal, connect, impl).accountWithAddress(owner, "me@gmail.example"), /503/u);
+});
+
+test("stopping a mailbox watch posts to Gmail and accepts its empty answer", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) => (url.pathname.endsWith("/stop") ? new Response(null, { status: 204 }) : undefined));
+  await workspace(personal, connect, impl).stopMailboxWatch(owner, "personal");
+  assert.equal(calls[0]?.init?.method, "POST");
+  assert.match(calls[0]?.url.pathname ?? "", /\/users\/me\/stop$/u);
+});
+
+test("connecting a name again or disconnecting it drops its shared token, so another Google account never inherits it", async () => {
+  const grants: Record<string, string> = { work: "token-old" };
+  const { connect, tokenCalls } = fakeConnect(grants);
+  const tokenCache = memoryCache();
+  const store = fakeAccountStore(["work"]);
+  const { impl, calls } = fakeFetch((url) => (url.pathname.endsWith("/messages") ? Response.json({ messages: [] }) : undefined));
+  const google = workspace(["work"], connect, impl, store, tokenCache);
+  await google.searchEmail(owner, "x", { max: 1 });
+  await google.signIn(owner, "work");
+  grants.work = "token-new";
+  await google.searchEmail(owner, "x", { max: 1 });
+  assert.equal(tokenCalls.length, 2);
+  assert.equal(bearer(calls.at(-1)?.init), "token-new");
+
+  await google.disconnect(owner, "work");
+  assert.equal(await tokenCache.get(`google-token:${connector}:${JSON.stringify(googleSubject(owner, "work"))}`), null);
 });
