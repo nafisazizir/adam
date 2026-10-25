@@ -936,8 +936,9 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   Without `CALLS_TOOL_SECRET` the start and ask routes answer 503, and until a sync has run the
   ended route does too; nothing else changes.
 - Google (the PR #33 description is the step-by-step runbook): a Google Cloud project with the
-  Gmail and Calendar APIs enabled; Google Auth Platform set to External, with the four scopes under
-  Data Access, published In production under Audience (in Testing, refresh tokens die after 7
+  Gmail and Calendar APIs enabled; Google Auth Platform set to External, with the six scopes under
+  Data Access (`openid`, `email`, `gmail.readonly`, `gmail.compose`, `calendar.readonly`,
+  `calendar.events`), published In production under Audience (in Testing, refresh tokens die after 7
   days); and a Web application OAuth client whose redirect URI is Vercel Connect's
   `https://connect.vercel.com/callback`. From that client make one connector with `vercel connect
   create google --connection-method oauth --name adam-google --data @credentials.json` (delete the
