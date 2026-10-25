@@ -310,8 +310,8 @@ stub the route).
   by the exact requesting principal; a prompt parked in a background turn (debrief, coding update,
   reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
   Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
-- **Google Workspace** (`agent/lib/google.ts`): read-only Gmail and Calendar across the owner's
-  several Google accounts, on root Adam (no `inbox` subagent yet). Vercel Connect owns Google sign-in,
+- **Google Workspace** (`agent/lib/google.ts`): Gmail and Calendar across the owner's several Google
+  accounts: reads, email drafts (never sending) and confirmed event writes, on root Adam (no `inbox` subagent yet). Vercel Connect owns Google sign-in,
   the refresh token and refresh; small typed tools call the Gmail and Calendar REST APIs with `fetch`
   (no SDK, no `gws`), and the access token stays in the tool process, never in the model's sandbox or
   history. `lib/google.ts` is the only file that knows Google (token requests, Gmail and Calendar
@@ -324,7 +324,8 @@ stub the route).
     Connect keys a grant by connector and subject, so each account is its own subject under the
     owner: `googleSubject(owner, label)` is `{ type: "user", id: "<principalId>/google/<label>",
     issuer }`, and connecting a second account never replaces the first. Each token is requested
-    with `openid`, `email`, `gmail.readonly` and `calendar.readonly`; an account's address comes from
+    with `openid`, `email`, `gmail.readonly`, `gmail.compose`, `calendar.readonly` and
+    `calendar.events`; an account's address comes from
     OpenID userinfo with its own token and is cached for a day by subject in `secretCache` (sealed,
     in Runtime Cache). Connecting a name again or disconnecting it forgets that address, the
     subject's shared access token and Connect's in-process token (`deleteTokenCacheEntry`). The old
@@ -391,6 +392,25 @@ stub the route).
     insufficient scopes) is reported as needing connecting. `read_email` prefers `text/plain`,
     falls back to HTML as text, trims quoted replies, caps the body at 8k characters and lists
     attachments without fetching them.
+  - **Writes.** Consent and every token use one scope set, so an account connected before the
+    write scopes fails a write with Google's insufficient-scopes 403, reported as needing
+    connecting, and reconnecting that name once fixes it. Gmail has no draft-only scope:
+    `gmail.compose` also allows sending, so "never sends" holds because Adam has no send tool.
+    - `draft_email` (owner chatting only, `ownerChatRefusal`, no `ctx.ask`: a draft sends
+      nothing, the owner reviews and sends it from Gmail) builds RFC 5322 with `composeEmail`
+      (`lib/mime.ts`: RFC 2047 encoded words, line breaks stripped from header values so mail text
+      cannot add a header) and posts it to `drafts`. A reply (`replyTo`, an email id) reads the
+      original's `Message-ID`, `References`, `Subject` and `Reply-To`/`From`, keeps its thread and
+      subject and defaults `to` to its sender. It returns a link to that account's drafts.
+    - `create_event` and `update_event` are workflow tools like `disconnect_google_account`: the
+      owner chatting only, then a `ctx.ask` confirmation naming the time and anyone invited or
+      notified. Creates go on the account's primary calendar, with an optional Meet link. Updates
+      take the `calendarId` and id from `list_events` (events now carry `calendarId`), patch what
+      changed, and merge added and removed attendees into the current list, keeping responses.
+      `sendUpdates` is `all` when the event has attendees, so Google emails them; otherwise `none`.
+      An all-day end is the inclusive last day in the domain and exclusive on the wire.
+    - A create is not retried after a 5xx, since the first attempt may have landed and a retry
+      would duplicate a draft or an invite; a 429, a 401 and reads still are.
   - **Tokens.** Connect bills per token request and its SDK caches only per instance, so each
     account's access token is kept in Vercel Runtime Cache for its lifetime less five minutes; a
     token with under a minute left after that margin is not cached. Runtime Cache is shared by every
@@ -594,7 +614,8 @@ stub the route).
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
   (confirmed in chat, merged by Devin), `connect_google_account`, `disconnect_google_account` (confirmed
   in chat), `list_google_accounts`,
-  `search_email`, `read_email`, `list_events`, `reply_to_call` (speak on the live call), `agent`
+  `search_email`, `read_email`, `list_events`, `draft_email`, `create_event` and `update_event`
+  (confirmed in chat), `reply_to_call` (speak on the live call), `agent`
   (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -744,6 +765,8 @@ adam/
 │   │   ├── mailbox-state-store.ts # per-account checkpoint, delivered ids and delivery lease in private Vercel Blob
 │   │   ├── shared-cache.ts    # Vercel Runtime Cache, best effort; secretCache seals values and HMACs keys
 │   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
+│   │   ├── mime.ts            # composeEmail: RFC 5322 plain-text message for drafts
+│   │   ├── event-input.ts     # a date or an offset time from the model as an EventTime
 │   │   ├── untrusted.ts       # wrap untrusted text in tags, strip look-alike tags
 │   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
 │   ├── tools/
@@ -766,6 +789,9 @@ adam/
 │   │   ├── search_email.ts    # Gmail query across accounts, per-account errors
 │   │   ├── read_email.ts      # one message, text body, attachments listed
 │   │   ├── list_events.ts     # time range across accounts and calendars
+│   │   ├── draft_email.ts     # save a draft or in-thread reply; never sends
+│   │   ├── create_event.ts    # confirmed in chat; primary calendar, invites, Meet
+│   │   ├── update_event.ts    # confirmed in chat; patch, merge attendees
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       ├── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
@@ -812,7 +838,7 @@ answered from the owner's own thread, with texts mid-call and the call
 joining the chat history afterwards.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
-subagents · sending mail and writing events · mail in the briefing · inbound burst debouncing (low-risk single-user; add a Photon
+subagents · sending mail (drafts only, by design) · deleting events and answering invites · mail in the briefing · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
 ### Environment variables
@@ -992,8 +1018,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    grants. **New-mail triggers are built**
    (§4, `channels/mail.ts`): Gmail push through Pub/Sub, coalesced through QStash, filtered, and
    delivered as one `<new_email>` to the home thread where root exercises right-to-silence. Next:
-   mail in the briefing, writes (`send_email`, `create_event`) behind `ctx.ask`, and an `inbox`
-   subagent if triage crowds root's context.
+   mail in the briefing, and an `inbox` subagent if triage crowds root's context. **Writes are
+   built** (§4 "Writes"): drafts, never sends, and event create/update behind `ctx.ask`.
    - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts named by
      label or address and take an `account` argument or search all of them. Built on the Google REST
      APIs directly with `fetch`, the shape ChatGPT, Grok, Claude and Poke use for Gmail: OAuth through
@@ -1005,8 +1031,8 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      accounts by chatting and no new setup is needed per account. Connect's Google service sends `access_type=offline` and `prompt=consent`, stores
      the refresh token and refreshes. In "Testing" status Google's refresh tokens expire after 7 days,
      so publish the consent screen (an unverified-app warning is fine for one user).
-   - **Safety.** Read-only scopes first. Sending mail and writing events are confirmed in chat with
-     `ctx.ask`, as `merge_pull_request` is. Mail is untrusted input: bodies reach the model as
+   - **Safety.** Adam drafts mail and never sends it; the owner sends from Gmail. Writing events is
+     confirmed in chat with `ctx.ask`, as `merge_pull_request` is. Mail is untrusted input: bodies reach the model as
      content, never instructions, so nothing read from an email acts without that confirmation.
 2. **Voice calls.** Call Adam like texting it, with the same context, and have it act mid-call.
    - **Status: built** (§4 "Calls") on ElevenLabs Agents over a Twilio local number, pending the

@@ -10,6 +10,11 @@ function eventTime(time: EventTime): string {
   return time.allDay ? formatCalendarDate(time.date) : formatUserDateTime(time.at);
 }
 
+export function describeSpan(start: EventTime, end: EventTime): string {
+  if (start.allDay && end.allDay && start.date === end.date) return `${eventTime(start)}, all day`;
+  return `${eventTime(start)} to ${eventTime(end)}`;
+}
+
 function line(label: string, value: string): string | null {
   return value ? `${label}: ${value}` : null;
 }
@@ -62,6 +67,7 @@ export function describeEmail(email: Email) {
 export function describeEvent(event: CalendarEvent) {
   return {
     account: event.account,
+    calendarId: event.calendarId,
     id: event.id,
     allDay: event.start.allDay,
     start: eventTime(event.start),
