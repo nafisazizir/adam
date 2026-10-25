@@ -844,3 +844,220 @@ test("connecting a name again or disconnecting it drops its shared token, so ano
   await google.disconnect(owner, "work");
   assert.equal(await tokenCache.get(`google-token:${connector}:${JSON.stringify(googleSubject(owner, "work"))}`), null);
 });
+
+function sentJson(init: RequestInit | undefined) {
+  return JSON.parse(String(init?.body));
+}
+
+function rawMessage(init: RequestInit | undefined): string {
+  return Buffer.from(sentJson(init).message.raw, "base64url").toString();
+}
+
+test("a new draft is saved to Gmail's drafts, never sent, and links to that account's drafts", async () => {
+  const { connect } = fakeConnect({ work: "token-work" });
+  const { impl, calls } = fakeFetch(addresses({ "token-work": "me@work.example" }), (url) =>
+    url.pathname.endsWith("/drafts") ? Response.json({ id: "d1", message: { id: "m1", threadId: "t1" } }) : undefined,
+  );
+  const draft = await workspace(["work"], connect, impl).createDraft(owner, "work", {
+    to: ["ada@example.com"],
+    cc: [],
+    bcc: [],
+    subject: "Hello",
+    body: "Hi Ada",
+  });
+  assert.deepEqual(draft, {
+    account: "work",
+    id: "d1",
+    threadId: "t1",
+    to: ["ada@example.com"],
+    cc: [],
+    bcc: [],
+    subject: "Hello",
+    link: "https://mail.google.com/mail/u/me%40work.example/#drafts",
+  });
+  const posted = calls.find((call) => call.url.pathname.endsWith("/drafts"));
+  assert.equal(posted?.init?.method, "POST");
+  assert.equal(sentJson(posted?.init).message.threadId, undefined);
+  assert.match(rawMessage(posted?.init), /^To: ada@example\.com\r\nSubject: Hello\r\n/u);
+  assert.ok(!calls.some((call) => call.url.pathname.includes("/send")));
+});
+
+test("a reply draft answers the sender in the same thread with threading headers", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch(
+    addresses({ token: "me@example.com" }),
+    (url) =>
+      url.pathname.endsWith("/messages/m9")
+        ? Response.json({
+            id: "m9",
+            threadId: "t9",
+            payload: {
+              headers: [
+                { name: "From", value: "Bea <bea@example.com>" },
+                { name: "Subject", value: "Coffee?" },
+                { name: "Message-ID", value: "<m9@mail>" },
+                { name: "References", value: "<m8@mail>" },
+              ],
+            },
+          })
+        : undefined,
+    (url) =>
+      url.pathname.endsWith("/drafts") ? Response.json({ id: "d2", message: { id: "m10", threadId: "t9" } }) : undefined,
+  );
+  const draft = await workspace(personal, connect, impl).createDraft(owner, "personal", {
+    to: [],
+    cc: [],
+    bcc: [],
+    subject: "ignored",
+    body: "Keen",
+    replyTo: "m9",
+  });
+  assert.deepEqual([draft.to, draft.subject, draft.threadId], [["Bea <bea@example.com>"], "Re: Coffee?", "t9"]);
+  const read = calls.find((call) => call.url.pathname.endsWith("/messages/m9"));
+  assert.deepEqual(read?.url.searchParams.getAll("metadataHeaders"), ["From", "Reply-To", "Subject", "Message-ID", "References"]);
+  const posted = calls.find((call) => call.url.pathname.endsWith("/drafts"));
+  assert.equal(sentJson(posted?.init).message.threadId, "t9");
+  const raw = rawMessage(posted?.init);
+  assert.match(raw, /^To: "Bea" <bea@example\.com>\r\n/u);
+  assert.match(raw, /\r\nIn-Reply-To: <m9@mail>\r\nReferences: <m8@mail> <m9@mail>\r\n/u);
+});
+
+test("a draft that hits a server error is not saved twice", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) =>
+    url.pathname.endsWith("/drafts") ? new Response("boom", { status: 503 }) : undefined,
+  );
+  await assert.rejects(
+    workspace(personal, connect, impl).createDraft(owner, "personal", { to: [], cc: [], bcc: [], subject: "x", body: "y" }),
+    /503/u,
+  );
+  assert.equal(calls.filter((call) => call.url.pathname.endsWith("/drafts")).length, 1);
+});
+
+const createdEvent = {
+  id: "ev1",
+  summary: "Chat with Ada",
+  start: { dateTime: "2026-10-28T10:00:00+10:00" },
+  end: { dateTime: "2026-10-28T10:30:00+10:00" },
+  attendees: [{ email: "ada@example.com" }],
+  hangoutLink: "https://meet.google.com/abc",
+};
+
+test("a new event goes on the account's main calendar, inviting attendees with a Meet link", async () => {
+  const { connect } = fakeConnect({ work: "token" });
+  const { impl, calls } = fakeFetch((url) =>
+    url.pathname.endsWith("/calendars/primary/events") ? Response.json(createdEvent) : undefined,
+  );
+  const event = await workspace(["work"], connect, impl).createEvent(owner, "work", {
+    title: "Chat with Ada",
+    start: { allDay: false, at: new Date("2026-10-28T10:00:00+10:00") },
+    end: { allDay: false, at: new Date("2026-10-28T10:30:00+10:00") },
+    location: "",
+    description: "",
+    attendees: ["ada@example.com"],
+    meet: true,
+  });
+  assert.deepEqual([event.calendarId, event.calendar, event.meetLink], ["primary", "work", "https://meet.google.com/abc"]);
+  const posted = calls[0];
+  assert.equal(posted?.init?.method, "POST");
+  assert.equal(posted?.url.searchParams.get("sendUpdates"), "all");
+  assert.equal(posted?.url.searchParams.get("conferenceDataVersion"), "1");
+  const body = sentJson(posted?.init);
+  assert.deepEqual(body.start, { dateTime: "2026-10-28T00:00:00.000Z", timeZone: "Australia/Brisbane" });
+  assert.deepEqual(body.attendees, [{ email: "ada@example.com" }]);
+  assert.equal(body.conferenceData.createRequest.conferenceSolutionKey.type, "hangoutsMeet");
+  assert.equal(body.location, undefined);
+});
+
+test("an all-day event sends Google an exclusive end, and one with no attendees notifies nobody", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch(() =>
+    Response.json({ id: "ev2", summary: "Trip", start: { date: "2026-11-01" }, end: { date: "2026-11-04" } }),
+  );
+  const event = await workspace(personal, connect, impl).createEvent(owner, "personal", {
+    title: "Trip",
+    start: { allDay: true, date: "2026-11-01" },
+    end: { allDay: true, date: "2026-11-03" },
+    location: "",
+    description: "",
+    attendees: [],
+    meet: false,
+  });
+  assert.deepEqual(sentJson(calls[0]?.init).end, { date: "2026-11-04" });
+  assert.equal(calls[0]?.url.searchParams.get("sendUpdates"), "none");
+  assert.deepEqual(event.end, { allDay: true, date: "2026-11-03" });
+});
+
+test("an event that ends before it starts, or mixes a date with a time, is refused before calling Google", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch();
+  const google = workspace(personal, connect, impl);
+  const base = { title: "x", location: "", description: "", attendees: [], meet: false };
+  await assert.rejects(
+    google.createEvent(owner, "personal", {
+      ...base,
+      start: { allDay: false, at: new Date("2026-10-28T10:00:00Z") },
+      end: { allDay: false, at: new Date("2026-10-28T09:00:00Z") },
+    }),
+    /end after it starts/u,
+  );
+  await assert.rejects(
+    google.createEvent(owner, "personal", {
+      ...base,
+      start: { allDay: true, date: "2026-10-28" },
+      end: { allDay: false, at: new Date("2026-10-28T09:00:00Z") },
+    }),
+    /both be dates/u,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("updating an event patches what changed, keeps its other attendees and their responses, and notifies them", async () => {
+  const { connect } = fakeConnect({ work: "token" });
+  const current = {
+    id: "ev1",
+    summary: "Chat",
+    start: { dateTime: "2026-10-28T10:00:00+10:00" },
+    end: { dateTime: "2026-10-28T10:30:00+10:00" },
+    attendees: [
+      { email: "me@work.example", self: true, responseStatus: "accepted" },
+      { email: "ada@example.com", responseStatus: "accepted" },
+      { email: "bob@example.com", responseStatus: "needsAction" },
+    ],
+  };
+  const { impl, calls } = fakeFetch((url, init) =>
+    url.pathname.endsWith("/calendars/team%40work.example/events/ev1")
+      ? Response.json(init?.method === "PATCH" ? { ...current, summary: "Coffee" } : current)
+      : undefined,
+  );
+  const event = await workspace(["work"], connect, impl).updateEvent(
+    owner,
+    "work",
+    { calendarId: "team@work.example", id: "ev1" },
+    { title: "Coffee", addAttendees: ["cat@example.com", "ADA@example.com"], removeAttendees: ["bob@example.com"] },
+  );
+  assert.equal(event.title, "Coffee");
+  const patch = calls.find((call) => call.init?.method === "PATCH");
+  assert.equal(patch?.url.searchParams.get("sendUpdates"), "all");
+  const body = sentJson(patch?.init);
+  assert.equal(body.summary, "Coffee");
+  assert.deepEqual(body.start, { dateTime: "2026-10-28T00:00:00.000Z", timeZone: "Australia/Brisbane" });
+  assert.deepEqual(body.attendees, [
+    { email: "me@work.example", responseStatus: "accepted" },
+    { email: "ada@example.com", responseStatus: "accepted" },
+    { email: "cat@example.com" },
+  ]);
+  assert.equal("location" in body, false);
+});
+
+test("events carry the id of the calendar they are on", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl } = fakeFetch((url) =>
+    url.pathname.endsWith("/events")
+      ? Response.json({ items: [{ id: "e", start: { date: "2026-10-18" }, end: { date: "2026-10-19" } }] })
+      : undefined,
+  );
+  const range = { from: new Date("2026-10-18T00:00:00+10:00"), to: new Date("2026-10-19T00:00:00+10:00") };
+  const found = await workspace(personal, connect, impl).listEvents(owner, range, { primaryOnly: true, max: 5 });
+  assert.equal(found.results[0]?.calendarId, "primary");
+});

@@ -9,12 +9,14 @@ import {
   type ConnectTokenParams,
   type ConnectTokenSubject,
 } from "@vercel/connect";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import { env } from "#lib/env.js";
 import { googleAccountRegistry, type GoogleAccountRegistry, normalizeAccountLabel } from "#lib/google-accounts.js";
 import { blobGoogleAccountStore } from "#lib/google-accounts-store.js";
 import type { HomeOwner } from "#lib/home-target.js";
+import { composeEmail } from "#lib/mime.js";
 import { memoryCache, secretCache, type SharedCache } from "#lib/shared-cache.js";
 import { startOfLocalDay } from "#lib/zoned-time.js";
 
@@ -22,9 +24,22 @@ const userinfoUrl = "https://openidconnect.googleapis.com/v1/userinfo";
 const gmailBase = "https://gmail.googleapis.com/gmail/v1/users/me";
 const calendarBase = "https://www.googleapis.com/calendar/v3";
 
-const gmailScope = "https://www.googleapis.com/auth/gmail.readonly";
-const calendarScope = "https://www.googleapis.com/auth/calendar.readonly";
-export const googleScopes = ["openid", "email", gmailScope, calendarScope] as const;
+const gmailReadScope = "https://www.googleapis.com/auth/gmail.readonly";
+// Gmail has no draft-only scope: compose also allows sending, which Adam deliberately has no tool for.
+const gmailDraftScope = "https://www.googleapis.com/auth/gmail.compose";
+const calendarReadScope = "https://www.googleapis.com/auth/calendar.readonly";
+const calendarEventsScope = "https://www.googleapis.com/auth/calendar.events";
+export const googleScopes = [
+  "openid",
+  "email",
+  gmailReadScope,
+  gmailDraftScope,
+  calendarReadScope,
+  calendarEventsScope,
+] as const;
+
+const summaryHeaders = ["From", "To", "Subject", "Date"];
+const replyHeaders = ["From", "Reply-To", "Subject", "Message-ID", "References"];
 
 const retryDelayMs = 500;
 const maxBodyChars = 8000;
@@ -150,6 +165,7 @@ export type EventTime = { readonly allDay: true; readonly date: string } | { rea
 export interface CalendarEvent {
   readonly account: string;
   readonly calendar: string;
+  readonly calendarId: string;
   readonly id: string;
   readonly title: string;
   readonly start: EventTime;
@@ -161,6 +177,52 @@ export interface CalendarEvent {
   readonly myResponse: string | null;
   readonly link: string | null;
   readonly meetLink: string | null;
+}
+
+export interface DraftRequest {
+  readonly to: readonly string[];
+  readonly cc: readonly string[];
+  readonly bcc: readonly string[];
+  // A reply takes its subject from the email it answers, so Gmail keeps it in that thread.
+  readonly subject?: string;
+  readonly body: string;
+  readonly replyTo?: string;
+}
+
+export interface EmailDraft {
+  readonly account: string;
+  readonly id: string;
+  readonly threadId: string;
+  readonly to: readonly string[];
+  readonly cc: readonly string[];
+  readonly bcc: readonly string[];
+  readonly subject: string;
+  readonly link: string;
+}
+
+export interface EventRef {
+  readonly calendarId: string;
+  readonly id: string;
+}
+
+export interface NewEvent {
+  readonly title: string;
+  readonly start: EventTime;
+  readonly end: EventTime;
+  readonly location: string;
+  readonly description: string;
+  readonly attendees: readonly string[];
+  readonly meet: boolean;
+}
+
+export interface EventChanges {
+  readonly title?: string;
+  readonly start?: EventTime;
+  readonly end?: EventTime;
+  readonly location?: string;
+  readonly description?: string;
+  readonly addAttendees?: readonly string[];
+  readonly removeAttendees?: readonly string[];
 }
 
 export interface AccountError {
@@ -268,6 +330,8 @@ const eventSchema = z.object({
   organizer: personSchema.optional(),
   attendees: z.array(personSchema).default([]),
 });
+
+const draftSchema = z.object({ id: z.string(), message: z.object({ id: z.string(), threadId: z.string() }) });
 
 const eventListSchema = z.object({
   items: z.array(eventSchema).default([]),
@@ -493,16 +557,16 @@ function toEventTime(time: z.infer<typeof eventTimeSchema>): EventTime {
   return { allDay: true, date: time.date ?? "" };
 }
 
-function previousDay(date: string): string {
+function shiftDay(date: string, days: number): string {
   const parsed = Date.parse(`${date}T00:00:00Z`);
-  return Number.isNaN(parsed) ? date : new Date(parsed - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return Number.isNaN(parsed) ? date : new Date(parsed + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 // Google's all-day end date is exclusive; the domain's is the last day the event covers.
 function toEventEnd(start: EventTime, end: z.infer<typeof eventTimeSchema>): EventTime {
   const time = toEventTime(end);
   if (!time.allDay || !start.allDay) return time;
-  const last = previousDay(time.date);
+  const last = shiftDay(time.date, -1);
   return { allDay: true, date: last < start.date ? start.date : last };
 }
 
@@ -512,10 +576,15 @@ function person(raw: z.infer<typeof personSchema> | undefined): string {
   return raw.displayName ?? raw.email ?? "";
 }
 
-function toEvent(account: string, calendar: string, raw: z.infer<typeof eventSchema>): CalendarEvent {
+function toEvent(
+  account: string,
+  calendar: { id: string; name: string },
+  raw: z.infer<typeof eventSchema>,
+): CalendarEvent {
   return {
     account,
-    calendar,
+    calendar: calendar.name,
+    calendarId: calendar.id,
     id: raw.id,
     title: raw.summary,
     start: toEventTime(raw.start),
@@ -528,6 +597,38 @@ function toEvent(account: string, calendar: string, raw: z.infer<typeof eventSch
     link: raw.htmlLink ?? null,
     meetLink: raw.hangoutLink ?? null,
   };
+}
+
+function toGoogleTime(time: EventTime, timeZone: string) {
+  return time.allDay ? { date: time.date } : { dateTime: time.at.toISOString(), timeZone };
+}
+
+function toGoogleEnd(end: EventTime, timeZone: string) {
+  return end.allDay ? { date: shiftDay(end.date, 1) } : toGoogleTime(end, timeZone);
+}
+
+export function checkEventSpan(start: EventTime, end: EventTime): void {
+  if (start.allDay !== end.allDay) {
+    throw new Error("An event's start and end must both be dates (all day) or both be times.");
+  }
+  const inOrder =
+    start.allDay && end.allDay ? end.date >= start.date : !start.allDay && !end.allDay && end.at > start.at;
+  if (!inOrder) throw new Error("An event has to end after it starts.");
+}
+
+function mergeAttendees(
+  current: readonly z.infer<typeof personSchema>[],
+  add: readonly string[],
+  remove: readonly string[],
+) {
+  const kept = current.filter(
+    (attendee) => attendee.email && !remove.some((email) => sameAddress(email, attendee.email ?? "")),
+  );
+  const added = add.filter((email) => !kept.some((attendee) => sameAddress(email, attendee.email ?? "")));
+  return [
+    ...kept.map(({ email, displayName, responseStatus }) => ({ email, displayName, responseStatus })),
+    ...added.map((email) => ({ email })),
+  ];
 }
 
 function errorMessage(error: unknown): string {
@@ -568,6 +669,12 @@ function labelOf(name: string): string | null {
   } catch {
     return null;
   }
+}
+
+interface GoogleCallOptions {
+  readonly method?: "GET" | "POST" | "PATCH";
+  readonly body?: unknown;
+  readonly idempotent?: boolean;
 }
 
 export interface GoogleWorkspaceDeps {
@@ -645,16 +752,17 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     account: Account,
     url: URL,
     schema: T,
-    body?: unknown,
+    call: GoogleCallOptions = {},
   ): Promise<z.infer<T>> {
+    const { body, method = body === undefined ? "GET" : "POST", idempotent = true } = call;
     let token = await accessToken(account, false);
     for (let attempt = 0; ; attempt += 1) {
       const response = await request(
         url,
         body === undefined
-          ? { headers: { Authorization: `Bearer ${token}` } }
+          ? { method, headers: { Authorization: `Bearer ${token}` } }
           : {
-              method: "POST",
+              method,
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
               body: JSON.stringify(body),
             },
@@ -675,7 +783,9 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
 
       const detail = (await response.text().catch(() => "")).slice(0, 300);
       const rateLimited = response.status === 403 && /rateLimitExceeded/iu.test(detail);
-      if (attempt === 0 && (response.status === 429 || response.status >= 500 || rateLimited)) {
+      // A server error can hide a write that landed, so only a call safe to repeat is retried after one.
+      const serverError = response.status >= 500 && idempotent;
+      if (attempt === 0 && (response.status === 429 || serverError || rateLimited)) {
         await sleep(retryDelayMs);
         continue;
       }
@@ -780,13 +890,46 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
     };
   }
 
-  async function getMessage(account: Account, id: string, format: "metadata" | "full") {
+  async function getMessage(
+    account: Account,
+    id: string,
+    format: "metadata" | "full",
+    metadataHeaders: readonly string[] = summaryHeaders,
+  ) {
     const url = new URL(`${gmailBase}/messages/${encodeURIComponent(id)}`);
     url.searchParams.set("format", format);
     if (format === "metadata") {
-      for (const name of ["From", "To", "Subject", "Date"]) url.searchParams.append("metadataHeaders", name);
+      for (const name of metadataHeaders) url.searchParams.append("metadataHeaders", name);
     }
     return googleCall(account, url, messageSchema);
+  }
+
+  async function replyContext(account: Account, id: string) {
+    const raw = await getMessage(account, id, "metadata", replyHeaders);
+    const subject = header(raw.payload, "Subject");
+    const messageId = header(raw.payload, "Message-ID");
+    return {
+      threadId: raw.threadId,
+      subject: /^re:/iu.test(subject) ? subject : `Re: ${subject}`,
+      sender: header(raw.payload, "Reply-To") || header(raw.payload, "From"),
+      inReplyTo: messageId,
+      references: [header(raw.payload, "References"), messageId].filter(Boolean).join(" "),
+    };
+  }
+
+  async function draftsLink(account: Account): Promise<string> {
+    const address = await addressOf(account).catch(() => "0");
+    return `https://mail.google.com/mail/u/${encodeURIComponent(address)}/#drafts`;
+  }
+
+  function eventUrl(ref: EventRef): URL {
+    return new URL(
+      `${calendarBase}/calendars/${encodeURIComponent(ref.calendarId)}/events/${encodeURIComponent(ref.id)}`,
+    );
+  }
+
+  function calendarOf(account: Account, calendarId: string) {
+    return { id: calendarId, name: calendarId === "primary" ? account.label : calendarId };
   }
 
   // A message deleted between listing and fetching is left out rather than failing the rest.
@@ -835,7 +978,7 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       events.push(
         ...list.items
           .filter((event) => event.status !== "cancelled")
-          .map((event) => toEvent(account.label, calendar.name, event)),
+          .map((event) => toEvent(account.label, calendar, event)),
       );
       pageToken = list.nextPageToken;
       if (!pageToken) break;
@@ -1034,16 +1177,107 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       };
     },
 
+    // A draft never sends: the owner reviews it and sends it from Gmail.
+    async createDraft(owner: GoogleOwner | null, name: string, draft: DraftRequest): Promise<EmailDraft> {
+      const account = await only(owner, name);
+      const reply = draft.replyTo ? await replyContext(account, draft.replyTo) : null;
+      const to = draft.to.length || !reply?.sender ? draft.to : [reply.sender];
+      const subject = reply?.subject ?? draft.subject ?? "";
+      const raw = composeEmail({
+        to,
+        cc: draft.cc,
+        bcc: draft.bcc,
+        subject,
+        body: draft.body,
+        inReplyTo: reply?.inReplyTo,
+        references: reply?.references,
+      });
+      const created = await googleCall(account, new URL(`${gmailBase}/drafts`), draftSchema, {
+        body: { message: { raw: Buffer.from(raw).toString("base64url"), threadId: reply?.threadId } },
+        idempotent: false,
+      });
+      return {
+        account: account.label,
+        id: created.id,
+        threadId: created.message.threadId,
+        to,
+        cc: draft.cc,
+        bcc: draft.bcc,
+        subject,
+        link: await draftsLink(account),
+      };
+    },
+
+    async getEvent(owner: GoogleOwner | null, name: string, ref: EventRef): Promise<CalendarEvent> {
+      const account = await only(owner, name);
+      const raw = await googleCall(account, eventUrl(ref), eventSchema);
+      return toEvent(account.label, calendarOf(account, ref.calendarId), raw);
+    },
+
+    // Attendees get Google's invitation email; an event with none notifies nobody.
+    async createEvent(owner: GoogleOwner | null, name: string, event: NewEvent): Promise<CalendarEvent> {
+      checkEventSpan(event.start, event.end);
+      const account = await only(owner, name);
+      const url = new URL(`${calendarBase}/calendars/primary/events`);
+      url.searchParams.set("sendUpdates", event.attendees.length ? "all" : "none");
+      if (event.meet) url.searchParams.set("conferenceDataVersion", "1");
+      const created = await googleCall(account, url, eventSchema, {
+        body: {
+          summary: event.title,
+          location: event.location || undefined,
+          description: event.description || undefined,
+          start: toGoogleTime(event.start, timeZone),
+          end: toGoogleEnd(event.end, timeZone),
+          attendees: event.attendees.map((email) => ({ email })),
+          conferenceData: event.meet
+            ? { createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: "hangoutsMeet" } } }
+            : undefined,
+        },
+        idempotent: false,
+      });
+      return toEvent(account.label, calendarOf(account, "primary"), created);
+    },
+
+    async updateEvent(
+      owner: GoogleOwner | null,
+      name: string,
+      ref: EventRef,
+      changes: EventChanges,
+    ): Promise<CalendarEvent> {
+      const account = await only(owner, name);
+      const current = await googleCall(account, eventUrl(ref), eventSchema);
+      const currentStart = toEventTime(current.start);
+      const start = changes.start ?? currentStart;
+      const end = changes.end ?? toEventEnd(currentStart, current.end);
+      checkEventSpan(start, end);
+      const changesAttendees = Boolean(changes.addAttendees?.length || changes.removeAttendees?.length);
+      const attendees = changesAttendees
+        ? mergeAttendees(current.attendees, changes.addAttendees ?? [], changes.removeAttendees ?? [])
+        : undefined;
+      const url = eventUrl(ref);
+      url.searchParams.set("sendUpdates", (attendees ?? current.attendees).length ? "all" : "none");
+      const updated = await googleCall(account, url, eventSchema, {
+        method: "PATCH",
+        body: {
+          summary: changes.title,
+          location: changes.location,
+          description: changes.description,
+          start: toGoogleTime(start, timeZone),
+          end: toGoogleEnd(end, timeZone),
+          attendees,
+        },
+      });
+      return toEvent(account.label, calendarOf(account, ref.calendarId), updated);
+    },
+
     // Gmail stops pushing to the topic after seven days unless the watch is renewed.
     async stopMailboxWatch(owner: GoogleOwner | null, name: string): Promise<void> {
-      await googleCall(await only(owner, name), new URL(`${gmailBase}/stop`), z.unknown(), {});
+      await googleCall(await only(owner, name), new URL(`${gmailBase}/stop`), z.unknown(), { body: {} });
     },
 
     async watchMailbox(owner: GoogleOwner | null, name: string, topicName: string): Promise<MailboxWatch> {
       const watch = await googleCall(await only(owner, name), new URL(`${gmailBase}/watch`), watchSchema, {
-        topicName,
-        labelIds: ["INBOX"],
-        labelFilterBehavior: "include",
+        body: { topicName, labelIds: ["INBOX"], labelFilterBehavior: "include" },
       });
       return { historyId: watch.historyId, expiresAt: new Date(Number(watch.expiration)) };
     },
