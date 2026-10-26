@@ -105,7 +105,7 @@ const endedSchema = z.object({
       .nullish(),
     metadata: z
       .object({
-        start_time_unix_secs: z.unknown(),
+        start_time_unix_secs: z.unknown().optional(),
         call_duration_secs: z.number().nullish(),
         phone_call: z.object({ external_number: optionalText }).nullish(),
       })
