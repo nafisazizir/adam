@@ -74,7 +74,8 @@ through QStash's own messages API, so **v1 needs no Redis at all.**
 #### The reminder loop
 
 ```
-schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, notBefore: fireAt, body })
+schedule_reminder ──> timers.set({ url: env.remindersDeliverUrl, fireAtMs, body, key })  (lib/timer.ts)
+                  ──> QStash.publishJSON({ url, delay, body })  (hops first when beyond 7 days)
                                           │  (QStash holds it durably until fireAt)
                                           ▼
         POST https://<app>/eve/v1/reminders/deliver
@@ -82,10 +83,21 @@ schedule_reminder ──> QStash.publishJSON({ url: env.remindersDeliverUrl, not
                                           ──> receive(photon, { message: context, target:{threadId}, auth })
                                           ──> session starts, message lands on the phone
 list_reminders ──> shared reminder list (private Blob JSON; every session reads the same one)
-cancel_reminder ─> QStash messages API, then drops the list entry
+cancel_reminder ─> timers.cancel (QStash messages API), then drops the list entry
                   (cancelling one that already fired or was cancelled returns
                    { cancelled: false, reason } instead of failing)
 ```
+
+**Beyond QStash's longest delay.** The free plan delays a message at most 7 days
+(`maxDelaySeconds` in `lib/qstash.ts`). `lib/timer.ts` is the timer primitive every future instant goes
+through: a timer within 7 days (less an hour of margin) is one delayed message straight to its
+destination, and its id is that message's id. A later one hops: it publishes to the `timers` channel
+(`POST /eve/v1/timers/hop`) and records `{ id, fireAt, messageId }` in one private Blob document
+(`long-timers.json`); each hop lands with at most one horizon left, re-publishes the next leg and
+updates the record, and the last leg goes to the destination with the original body. The record's
+message id is the live leg, so a duplicate hop or a cancelled timer finds a different id (or none)
+and stops; cancelling removes the record and cancels the live leg. No schedule and no polling tick:
+a three-week reminder costs three or four messages.
 
 The URL QStash hits is **our own deployment's public route** (the `reminders` or `workouts` custom
 channel). It must be public HTTPS — QStash can't reach `localhost` (use a tunnel for local e2e, or
@@ -98,7 +110,7 @@ stub the route).
 ```
                        ┌─────────────── Triggers ───────────────┐
    Photon webhook   ──▶│ inbound iMessage (reactive)            │
-   QStash callback  ──▶│ reminder / workout / coding callbacks  │──▶ Eve session ──▶ (maybe) reply
+   QStash callback  ──▶│ reminder / routine / workout / coding  │──▶ Eve session ──▶ (maybe) reply
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
    Gmail push       ──▶│ new mail (mail channel, Pub/Sub)       │
@@ -106,7 +118,8 @@ stub the route).
    Phone call       ──▶│ voice calls (calls channel)            │
                        └────────────────────────────────────────┘
                                          │
-                 every trigger's payload becomes the session's first message
+      every trigger's payload arrives as a message: most land in the owner's one iMessage
+      session (queued behind any turn in flight), workout analyses in a session of their own
 ```
 
 - **Channels** (`agent/channels/`): `photon` (reactive UI + delivery), plus
@@ -135,6 +148,45 @@ stub the route).
   Separate sessions cannot be steered or cancelled by an iMessage arriving during analysis, and the
   workout address doubles as its idempotency key. Ingress and nudge use separate QStash
   deduplication IDs (QStash remembers them for only ten minutes) for at most one analysis and one message per workout.
+- **Routines** (`agent/lib/routines.ts`, `agent/channels/routines.ts`, five tools): standing
+  instructions the owner sets up in chat that run on a recurring schedule, like Grok's routines but in
+  Adam's one conversation: a run is a `<routines>` message delivered into the home thread, so Adam picks
+  up where the chat left off instead of starting fresh.
+  - **Three layers.** `lib/timer.ts` (§3) fires at an instant; `lib/recurrence.ts` is a pure
+    `nextOccurrence(rule, anchor, after, timeZone)` over every N hours, days, weeks (on chosen weekdays)
+    or months (on a day, clamped to a short month's end), DST-safe, with `describeRecurrence` for the
+    words; `lib/routines.ts` holds the routines in one private Blob document (`routines.json`, through
+    `updateDocument` in `lib/json-document.ts` over `blobDocumentStore` in `lib/blob-document.ts`). Cron
+    was rejected: it cannot say "every other Sunday", and a QStash schedule per routine would spend the
+    free plan's ten.
+  - **Chained timers.** A routine stores its `nextRunAt`; each run computes the next and sets a timer for
+    it. The timer key is the instant (`routines-<iso>`), and the body names only the instant, so
+    routines due together share one delivery and one turn. Nothing is ever cancelled: pausing, editing
+    or deleting just changes the document, and a stale timer finds nothing due.
+  - **Claiming.** `claimDueRoutines` advances every routine due within a minute in one conditional
+    write; that write is the claim, so a duplicate or concurrent delivery finds nothing left. A run more
+    than an hour late (a lost timer, an outage) is skipped and re-armed, the way Grok drops missed runs.
+    A routine past its `endsOn` is removed with its last run. If the hand-off fails,
+    `releaseRoutines` undoes only what the claim changed and the route answers 500, so QStash retries.
+  - **The turn.** `runDueRoutines` (`lib/routine-runner.ts`) delivers through `homeDelivery()` as the
+    owner (`routineAuth`, authenticator `routines`, `turnPolicy: "queue"`), under a daily cap of 48 runs
+    (`takeDailyRun`) so routines cannot eat the QStash budget reminders need. Each `<routine>` carries
+    its instruction, schedule and the notes of its last five runs: Adam records one line per run with
+    `note_routine_run`, which survives compaction of the thread, so a routine can compare against its
+    last run. Right-to-silence applies; nothing new is silence unless the instruction says otherwise.
+  - **Gates.** `create_routine`, `update_routine` (also pause and resume) and `delete_routine` need the
+    owner chatting (`ownerChatRefusal`), so a routine, briefing, mail or call turn cannot set one up;
+    `list_routines` reads; `note_routine_run` takes a routine turn or the owner's chat. A routine turn is
+    a background turn: it proposes, and acts when the owner replies. At most 30 routines; an hourly rule
+    is the most frequent.
+  - **Health checkpoint.** The first use: a routine ("every other Sunday at 6pm, do my health
+    checkpoint") hands the coach its `wellness-checkpoint` skill, which reviews the window against the
+    goals in owner memory and the current plan block (found through the coach's
+    `training_data_sources` tool), returns at most three proposals, and changes nothing. When the
+    owner agrees in chat, root asks the coach to apply exactly those to the plan and saves a changed
+    goal to memory.
+  - **Safety net.** The `routines` schedule (3am local, daily) runs the same `runDueRoutines`, so a
+    routine whose timer was lost is skipped once and re-armed instead of dying.
 - **Delivery channels** (`agent/lib/delivery.ts`): the seam that keeps the reminder loop
   channel-agnostic. Each entry projects a session's auth context to a `{ channel, target }` pair and
   knows how to `receive` back into it. `homeDelivery()` provides the last direct chat the owner
@@ -232,7 +284,8 @@ stub the route).
   owner's identity and fails with `principal_required`.
 - **Workout coach** (`agent/subagents/coach/`): uses `openai/gpt-6.1-sol`, riz-mcp and the shared
   Notion connection, plus the vendored riz-mcp
-  skill and `workout-debrief` skill. The model choice suits focused coaching; keeping raw workout
+  skill, the `workout-debrief` and `wellness-checkpoint` skills, and `training_data_sources` (the
+  Notion plan and workouts data source ids, so a chat or routine request need not carry them). The model choice suits focused coaching; keeping raw workout
   data in the coach's context avoids dumping it into the user's chat.
 - **Deep worker** (`agent/subagents/deep/`): uses `openai/gpt-6.1-sol`, Eve's default web/sandbox
   tools and the shared Notion connection. Root delegates heavy multi-step work to it as an Eve task,
@@ -765,7 +818,10 @@ stub the route).
     - **Always.** The `<call_started>` text tells the owner a call is happening as soon as the
       thread is free; it queues like every call delivery, so it waits behind a running or parked
       turn.
-- **Shared primitives**: `publishCallback`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
+- **Shared primitives**: `publishCallback`, `cancelCallback`, `maxDelaySeconds`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
+  `createTimers` in `lib/timer.ts` and the wired `timers` in `lib/timers.ts` (fire a payload at any instant, cancel by id);
+  `nextOccurrence` and `describeRecurrence` in `lib/recurrence.ts`; `updateDocument` (conditional-write retry over a
+  `DocumentStore`) in `lib/json-document.ts` and `blobDocumentStore` in `lib/blob-document.ts`;
   `homeDelivery`, `isOwnerChat`, `isOwnerDirectChat` and `ownerChatRefusal` in `lib/delivery.ts`;
   `googleAccountRegistry` in `lib/google-accounts.ts`; `signInFromOwnerDirectChat`
   (interactive sign-in only in the owner's direct chat) and `ownerLinkRefusal` (the same rule for a
@@ -779,7 +835,8 @@ stub the route).
   and `ringOwnerRefusal` in `lib/ring-owner.ts`; `knownOwner` (the owner the call routes and
   `call_owner` admit) in `lib/known-owner.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchGoogleAccounts` and `stopWatchingGoogleAccount` in `lib/google-watch.ts` (over `watchMailboxes` in `lib/mail-watch.ts` and `watchCalendars` in `lib/calendar-watch.ts`); `coalescedRun` and `takeDailyRun` in `lib/coalesce.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
-- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
+- **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `create_routine`,
+  `list_routines`, `update_routine`, `delete_routine`, `note_routine_run`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
   (confirmed in chat, merged by Devin), `connect_google_account`, `disconnect_google_account` (confirmed
@@ -881,6 +938,9 @@ stub the route).
     needs connecting is logged and skipped; any other failure fails the cron run. A feed that is
     off (no topic, or no https `BASE_URL`) is skipped. Renewing twice is harmless, so it claims no day. A second cron is fine on Hobby,
     which allows 100 per project, each at most once a day.
+  - **`routines`** (3am local, once a day). The routines safety net (§4 "Routines"): it runs
+    `runDueRoutines`, which skips and re-arms anything overdue. Running twice is harmless, since the
+    conditional claim lets only one run deliver, so it claims no day.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
   is the actual product surface; right-to-silence is applied to workout debriefs when they re-enter
   the user's iMessage thread.
@@ -901,6 +961,8 @@ adam/
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
+│   │   ├── timers.ts          # POST /timers/hop: the next leg of a timer beyond QStash's 7 days
+│   │   ├── routines.ts        # POST /routines/run: every routine due now, as one <routines> turn
 │   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
 │   │   ├── calls.ts           # voice agent webhooks: call start briefing, ask_adam, post-call summary
 │   │   ├── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
@@ -917,10 +979,13 @@ adam/
 │   │   │   │   ├── notion.ts  # shared Notion connection config
 │   │   │   │   └── riz-mcp.ts
 │   │   │   ├── memory/owner.ts # same owner memory, recall only
-│   │   │   ├── tools/owner.ts # disableTool(): no save/remove in the coach
+│   │   │   ├── tools/
+│   │   │   │   ├── owner.ts   # disableTool(): no save/remove in the coach
+│   │   │   │   └── training_data_sources.ts # the Notion plan and workouts data source ids
 │   │   │   └── skills/
 │   │   │       ├── riz-mcp/   # vendored from nafisazizir/riz-mcp
-│   │   │       └── workout-debrief/
+│   │   │       ├── workout-debrief/
+│   │   │       └── wellness-checkpoint/ # periodic review against goals; proposes, changes nothing
 │   │   └── deep/
 │   │       ├── agent.ts
 │   │       ├── instructions.md
@@ -956,6 +1021,14 @@ adam/
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
 │   │   ├── reminder-list.ts   # shared upcoming-reminders list over a ReminderListStore (conditional-write retry)
 │   │   ├── reminder-list-store.ts # the ReminderListStore in private Vercel Blob
+│   │   ├── timer.ts           # createTimers: fire at any instant, hopping past QStash's 7-day delay; cancel
+│   │   ├── timers.ts          # the timers over QStash and private Vercel Blob
+│   │   ├── recurrence.ts      # nextOccurrence over every N hours/days/weeks/months; DST-safe
+│   │   ├── routines.ts        # routines document: add/change/remove, claim and release runs, <routines>
+│   │   ├── routine-store.ts   # the routines document in private Vercel Blob; armRoutineRun
+│   │   ├── routine-runner.ts  # runDueRoutines: claim, re-arm, deliver to the home thread
+│   │   ├── json-document.ts   # DocumentStore and updateDocument: conditional-write retry
+│   │   ├── blob-document.ts   # a DocumentStore in private Vercel Blob
 │   │   ├── voice.ts           # ElevenLabs only: webhook auth, payloads → CallStart/CallRequest/CallEnded
 │   │   ├── voice-agent.ts     # ElevenLabs only: the voice agent's config and syncVoiceAgent
 │   │   ├── voice-agent-store.ts # the synced ElevenLabs ids and post-call secret in private Blob
@@ -984,11 +1057,16 @@ adam/
 │   │   ├── mime.ts            # composeEmail: RFC 5322 plain-text message for drafts
 │   │   ├── event-input.ts     # a date or an offset time from the model as an EventTime
 │   │   ├── untrusted.ts       # wrap untrusted text in tags, strip look-alike tags
-│   │   └── qstash.ts          # callback publishing, reminder APIs, signature verify
+│   │   └── qstash.ts          # the only file that knows QStash: publish, cancel, max delay, signature verify
 │   ├── tools/
 │   │   ├── schedule_reminder.ts
 │   │   ├── cancel_reminder.ts
 │   │   ├── list_reminders.ts
+│   │   ├── create_routine.ts  # owner chat only: a standing instruction on a schedule
+│   │   ├── list_routines.ts
+│   │   ├── update_routine.ts  # owner chat only: change, pause or resume
+│   │   ├── delete_routine.ts  # owner chat only
+│   │   ├── note_routine_run.ts # one line per run, kept for the next run
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
 │   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
 │   │   ├── start_coding_session.ts # brief Devin; it opens a PR per repo it changes
@@ -1014,7 +1092,8 @@ adam/
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       ├── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
-│       └── google-watch.ts    # 6am local: renew each account's Gmail watch and Calendar channel
+│       ├── google-watch.ts    # 6am local: renew each account's Gmail watch and Calendar channel
+│       └── routines.ts        # 3am local: skip and re-arm any routine whose timer was lost
 ├── scripts/
 │   ├── sync-riz-mcp-skill.ts
 │   ├── riz-mcp-skill.lock.json
@@ -1041,7 +1120,9 @@ adam/
 
 ## 7. v1 scope & non-goals
 
-**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash · a daily
+**In:** iMessage round-trip · `schedule_reminder` + `reminders` delivery via QStash, any distance
+ahead · routines: standing instructions on a recurring schedule, set up and changed in chat, run in
+the same conversation, starting with a fortnightly health checkpoint through the coach · a daily
 morning `briefing` cron into the home thread that stays silent unless something matters · Strava/Hevy workout debriefs via the `coach` subagent · heavy-work delegation
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
@@ -1147,6 +1228,9 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
 - A watched coding session costs one QStash message a minute while Devin is busy, backing off to
   one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
   24 idle hours, about 250 messages; two such sessions would use most of the free tier.
+- Routines and timers need the private Blob store and no other setup. A routine run costs one QStash
+  message (routines due together share it), a timer beyond seven days one more per week, and the
+  `routines` safety-net cron runs at 3am local.
 - The `briefing` cron fires once a day at 7am in `USER_TIMEZONE` (`0 21 * * *` for the default
   Brisbane). Hobby runs it somewhere within that hour. It is skipped until the home target exists, and
   a change of `USER_TIMEZONE` moves it only after a redeploy. To try it with `eve dev`, POST to
@@ -1337,7 +1421,15 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    `calendar` (item 1): `events.watch` channels straight to an HTTPS route, renewed by the same
    `google-watch` run before their 7 days end; each run reads changes from the stored sync token,
    so a missed push is caught up by the next one too.
-10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
+10. **Routines.** Built (§4 "Routines"): runtime-managed recurring instructions, like Grok's
+    routines, delivered into the one home conversation. Research in `.roadmap/research/routines.md`.
+    - **Seam.** `lib/timer.ts` is the only file that knows QStash's delay limit; moving to Cloudflare
+      Durable Object alarms or a paid QStash plan is a change there. Recurrence and routines know
+      instants only.
+    - **Next.** Event triggers (a routine that runs when mail from a listed sender arrives, or on a
+      calendar change), matched in code from the existing `mail` and `calendar` channels, never by the
+      model; a keyed webhook trigger.
+11. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
     auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
     a WhatsApp number to the same logical user. `admitSender` becomes a lookup of the sender in
     that layer instead of a single owner.

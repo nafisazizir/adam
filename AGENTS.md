@@ -54,14 +54,16 @@ The whole app is the trigger → session → maybe-reply loop. The non-obvious s
 - **Scheduling a reminder is a tool** (`schedule_reminder`), called by the model mid-turn; it
   publishes to QStash via `lib/qstash.ts`. **Delivering a reminder is a channel** (`channels/reminders.ts`):
   at fire-time no agent is running, so QStash makes an inbound HTTP POST to a route, and only a
-  channel can receive inbound HTTP _and start a fresh session_ (via `receive(photon, …)`). Delivery
+  channel can receive inbound HTTP _and hand a message to a session_ (via `to(photon, target).send(…)`, which
+  resumes the owner's one iMessage session). Delivery
   re-enters the agent on purpose, so it can exercise right-to-silence, recall context, and compose —
   not blindly send a string.
 - **`receive(channel, { message, target, auth })`** is the primitive for starting a session without
   an inbound user message (used by the `reminders` channel and by cron schedules). Only channels and
   schedules have it.
 - **Schedules (`agent/schedules/`) are cron and periodic only** (the daily `briefing`) — never the
-  reminder timer. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
+  reminder or routine timer. Every future instant goes through `lib/timer.ts`, which hops past QStash's
+  7-day delay; routines (`lib/routines.ts`) chain timers from `lib/recurrence.ts`, not cron. Vercel Hobby cron is ~once/day, so minute-level timing intentionally goes through
   QStash, not cron. Cron runs in UTC: build it from a local time with `dailyCron` (`lib/cron.ts`). A
   schedule reaches the owner like a channel does (`homeDelivery()` + `ownerAuth`, `turnPolicy:
   "queue"`) and guards against a double fire with `claimDay` (`lib/daily-claim.ts`), calling `releaseDay` and

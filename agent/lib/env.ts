@@ -10,6 +10,8 @@ function isValidTimeZone(value: string): boolean {
 }
 
 export const remindersDeliverPath = "/eve/v1/reminders/deliver";
+export const timersHopPath = "/eve/v1/timers/hop";
+export const routinesRunPath = "/eve/v1/routines/run";
 export const workoutsStravaPath = "/eve/v1/workouts/strava";
 export const workoutsHevyPath = "/eve/v1/workouts/hevy";
 export const workoutsAnalyzePath = "/eve/v1/workouts/analyze";
@@ -126,6 +128,8 @@ export const env = {
       ? `${VERCEL_GIT_REPO_OWNER}/${VERCEL_GIT_REPO_SLUG}`
       : undefined,
   remindersDeliverUrl: `${parsed.data.BASE_URL}${remindersDeliverPath}`,
+  timersHopUrl: `${parsed.data.BASE_URL}${timersHopPath}`,
+  routinesRunUrl: `${parsed.data.BASE_URL}${routinesRunPath}`,
   workoutsAnalyzeUrl: `${parsed.data.BASE_URL}${workoutsAnalyzePath}`,
   workoutsNudgeUrl: `${parsed.data.BASE_URL}${workoutsNudgePath}`,
   codingSessionsWatchUrl: `${parsed.data.BASE_URL}${codingSessionsWatchPath}`,

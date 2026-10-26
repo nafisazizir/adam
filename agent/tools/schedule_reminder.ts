@@ -3,14 +3,16 @@ import { z } from "zod";
 
 import { ownerPhoneNumber } from "#lib/calls.js";
 import { deliveryChannelForAuth, homeDelivery, isOwnerChat } from "#lib/delivery.js";
+import { env } from "#lib/env.js";
 import { knownOwner } from "#lib/known-owner.js";
-import { publishReminder } from "#lib/qstash.js";
 import { replayStableKey } from "#lib/replay-key.js";
 import { recordReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderTiming } from "#lib/reminder-timing.js";
+import { reminderPayload } from "#lib/reminders.js";
 import { configuredOutboundLine, noOwnerNumber } from "#lib/ring-owner.js";
 import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
+import { timers } from "#lib/timers.js";
 
 export default defineTool({
   description:
@@ -79,7 +81,7 @@ export default defineTool({
       );
     }
     if (timing.kind === "skipped") return { skipped: "too soon" };
-    const { delaySeconds, fireAtMs } = timing;
+    const { fireAtMs } = timing;
 
     const { current, initiator } = ctx.session.auth;
     const resolved =
@@ -93,13 +95,11 @@ export default defineTool({
       );
     }
 
-    const id = await publishReminder({
-      message,
-      channel: resolved.channel.name,
-      target: resolved.target,
-      delaySeconds,
-      idempotencyKey: replayStableKey(ctx, message, at ?? relativeDelay!, leadMinutes),
-      ring,
+    const id = await timers.set({
+      url: env.remindersDeliverUrl,
+      body: reminderPayload({ message, channel: resolved.channel.name, target: resolved.target, ring }),
+      fireAtMs,
+      key: `reminder-${replayStableKey(ctx, message, at ?? relativeDelay!, leadMinutes)}`,
     });
     const fireAt = new Date(fireAtMs);
     await recordReminder(blobReminderListStore, { id, message, fireAt: fireAt.toISOString() });
