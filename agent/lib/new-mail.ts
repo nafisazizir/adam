@@ -1,6 +1,7 @@
 import type { SessionAuthContext } from "eve/context";
 import { z } from "zod";
 
+import { coalescedRun, takeDailyRun, type CoalescedRun } from "#lib/coalesce.js";
 import {
   GoogleApiError,
   GoogleNeedsConnectingError,
@@ -18,7 +19,6 @@ export const mailAuthenticator = "mail";
 const minuteMs = 60 * 1000;
 const hourMs = 60 * minuteMs;
 const coalesceWindowMs = 3 * minuteMs;
-const runAfterWindowSeconds = 5;
 export const dailyMailRunCap = 120;
 const maxHistoryPages = 5;
 const maxCandidates = 30;
@@ -30,7 +30,6 @@ const takeoverWindowMs = 6 * hourMs;
 export const checkpointEveryMs = 6 * hourMs;
 const cursorTtlSeconds = 8 * 24 * 60 * 60;
 const deliveredMarkerTtlSeconds = 7 * 60 * 60;
-const runCountTtlSeconds = 2 * 24 * 60 * 60;
 const renewAheadSeconds = 24 * 60 * 60;
 export const unknownMailboxTtlSeconds = 6 * 60 * 60;
 
@@ -38,34 +37,15 @@ export const mailRunSchema = z.object({ emailAddress: z.string().min(1) });
 
 export type MailRun = z.infer<typeof mailRunSchema>;
 
-// Gmail pushes on every inbox change, read marks included. Every push in one window shares a QStash
-// deduplication id and a run just after the window closes, so a burst becomes one run, and runs for
-// the same mailbox are a window apart.
-export function coalescedMailRun(emailAddress: string, now: Date = new Date()) {
+// Gmail pushes on every inbox change, read marks included.
+export function coalescedMailRun(emailAddress: string, now: Date = new Date()): CoalescedRun<MailRun> {
   const mailbox = emailAddress.trim().toLowerCase();
-  const window = Math.floor(now.getTime() / coalesceWindowMs);
-  const windowEnd = (window + 1) * coalesceWindowMs;
-  return {
-    body: { emailAddress: mailbox } satisfies MailRun,
-    deduplicationId: `mail-${mailbox.replace(/[^\w-]/gu, "_")}-${window}`,
-    delaySeconds: Math.ceil((windowEnd - now.getTime()) / 1000) + runAfterWindowSeconds,
-  };
+  return coalescedRun({ prefix: "mail", source: mailbox, body: { emailAddress: mailbox }, windowMs: coalesceWindowMs, now });
 }
 
-// Mail must never spend the QStash budget reminders and coding watches rely on. Best effort: the
-// count is not atomic, which can only let a few extra runs through.
-export async function takeDailyMailRun(cache: SharedCache, mailbox: string, day: string): Promise<boolean> {
-  const key = `mail-runs:${mailbox.trim().toLowerCase()}:${day}`;
-  const used = Number(await cache.get(key)) || 0;
-  if (used >= dailyMailRunCap) {
-    if (used === dailyMailRunCap) {
-      console.warn(`[mail] a mailbox reached ${dailyMailRunCap} runs on ${day}; its new mail waits until tomorrow`);
-      await cache.set(key, used + 1, runCountTtlSeconds);
-    }
-    return false;
-  }
-  await cache.set(key, used + 1, runCountTtlSeconds);
-  return true;
+export function takeDailyMailRun(cache: SharedCache, mailbox: string, day: string): Promise<boolean> {
+  const key = `mail-runs:${mailbox.trim().toLowerCase()}`;
+  return takeDailyRun(cache, { key, day, cap: dailyMailRunCap, label: "mail" });
 }
 
 // The model makes the real call; this only drops what is never worth a text, before it costs a turn.
