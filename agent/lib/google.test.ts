@@ -1061,3 +1061,109 @@ test("events carry the id of the calendar they are on", async () => {
   const found = await workspace(personal, connect, impl).listEvents(owner, range, { primaryOnly: true, max: 5 });
   assert.equal(found.results[0]?.calendarId, "primary");
 });
+
+test("calendar changes pass the sync token and describe who organises each event and who declined", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) =>
+    url.pathname.endsWith("/calendars/primary/events")
+      ? Response.json({
+          nextSyncToken: "s2",
+          items: [
+            {
+              id: "mine",
+              status: "confirmed",
+              summary: "Dinner",
+              start: { dateTime: "2026-10-28T18:00:00+10:00" },
+              end: { dateTime: "2026-10-28T20:00:00+10:00" },
+              organizer: { email: "me@gmail.example", self: true },
+              attendees: [
+                { email: "me@gmail.example", self: true, responseStatus: "accepted" },
+                { email: "mia@gmail.example", displayName: "Mia", responseStatus: "declined" },
+                { email: "bo@gmail.example", responseStatus: "accepted" },
+              ],
+              updated: "2026-10-26T01:00:00.000Z",
+            },
+            {
+              id: "series_20261029",
+              status: "cancelled",
+              recurringEventId: "series",
+              originalStartTime: { dateTime: "2026-10-29T09:00:00+10:00" },
+            },
+            {
+              id: "bday",
+              eventType: "birthday",
+              start: { date: "2026-11-02" },
+              end: { date: "2026-11-03" },
+              recurrence: ["RRULE:FREQ=YEARLY"],
+            },
+          ],
+        })
+      : undefined,
+  );
+  const changes = await workspace(personal, connect, impl).calendarChanges(owner, "personal", "primary", { syncToken: "s1" });
+  assert.equal(calls[0]?.url.searchParams.get("syncToken"), "s1");
+  assert.equal(calls[0]?.url.searchParams.get("timeMin"), null);
+  assert.doesNotMatch(calls[0]?.url.searchParams.get("fields") ?? "", /description/u);
+  assert.equal(changes.nextSyncToken, "s2");
+  assert.equal(changes.nextPageToken, null);
+
+  const [mine, cancelled, birthday] = changes.revisions;
+  assert.equal(mine?.organizedByOwner, true);
+  assert.deepEqual(mine?.declinedBy, ["Mia <mia@gmail.example>"]);
+  assert.equal(mine?.event?.title, "Dinner");
+  assert.equal(cancelled?.cancelled, true);
+  assert.equal(cancelled?.event, null);
+  assert.equal(cancelled?.instanceOf, "series");
+  assert.deepEqual(cancelled?.originalStart, { allDay: false, at: new Date("2026-10-29T09:00:00+10:00") });
+  assert.equal(birthday?.ordinary, false);
+  assert.equal(birthday?.recurring, true);
+});
+
+test("a full calendar sync asks for no sync token, and an expired one fails with Google's 410", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) =>
+    url.searchParams.get("syncToken") === "old"
+      ? new Response("Sync token is no longer valid", { status: 410 })
+      : Response.json({ items: [], nextPageToken: "p2" }),
+  );
+  const google = workspace(personal, connect, impl);
+  const first = await google.calendarChanges(owner, "personal", "primary", { syncToken: null });
+  assert.equal(calls[0]?.url.searchParams.has("syncToken"), false);
+  assert.deepEqual(first, { revisions: [], nextPageToken: "p2", nextSyncToken: null });
+  await assert.rejects(
+    google.calendarChanges(owner, "personal", "primary", { syncToken: "old" }),
+    (error: unknown) => error instanceof Error && "status" in error && error.status === 410,
+  );
+});
+
+test("a calendar watch opens a web hook channel for ordinary events, and stopping it names the channel", async () => {
+  const { connect } = fakeConnect({ personal: "token" });
+  const { impl, calls } = fakeFetch((url) => {
+    if (url.pathname.endsWith("/events/watch")) {
+      return Response.json({ kind: "api#channel", id: "c1", resourceId: "r1", expiration: "1793000000000" });
+    }
+    if (url.pathname.endsWith("/channels/stop")) return new Response(null, { status: 204 });
+    return undefined;
+  });
+  const google = workspace(personal, connect, impl);
+  const watch = await google.watchCalendar(owner, "personal", {
+    calendarId: "primary",
+    channelId: "c1",
+    address: "https://adam.test/eve/v1/calendar/push",
+    token: "account=personal&calendar=primary&sig=x",
+    ttlSeconds: 604800,
+  });
+  assert.deepEqual(watch, { channelId: "c1", resourceId: "r1", expiresAt: new Date(1793000000000) });
+  assert.equal(calls[0]?.url.searchParams.get("eventTypes"), "default");
+  assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    id: "c1",
+    type: "web_hook",
+    address: "https://adam.test/eve/v1/calendar/push",
+    token: "account=personal&calendar=primary&sig=x",
+    params: { ttl: "604800" },
+  });
+
+  await google.stopCalendarWatch(owner, "personal", { channelId: "c1", resourceId: "r1" });
+  assert.match(calls[1]?.url.pathname ?? "", /\/calendar\/v3\/channels\/stop$/u);
+  assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), { id: "c1", resourceId: "r1" });
+});

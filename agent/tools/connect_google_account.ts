@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { ownerLinkRefusal } from "#lib/connection-auth.js";
 import { google } from "#lib/google.js";
-import { stopWatchingMailbox } from "#lib/mail-watch.js";
+import { stopWatchingGoogleAccount } from "#lib/google-watch.js";
 import { ownerPrincipal } from "#lib/owner.js";
 
 export default defineTool({
@@ -27,10 +27,10 @@ export default defineTool({
     const refusal = ownerLinkRefusal("Google sign-in", ctx.session.auth.current);
     if (refusal) return { url: null, reason: refusal };
     const owner = ownerPrincipal(ctx.session.auth.current);
-    // A reconnect may pick another Google account, so the old mailbox's watch is stopped while its
-    // token still works; the next listing watches whichever mailbox the name reads then.
+    // A reconnect may pick another Google account, so the old account's watches are stopped while
+    // its token still works; the next listing watches whichever account the name reads then.
     const existing = owner ? await google.findAccount(owner, account).catch(() => null) : null;
-    if (owner && existing) await stopWatchingMailbox(owner, existing.account);
+    if (owner && existing) await stopWatchingGoogleAccount(owner, existing.account);
     const signIn = await google.signIn(owner, account);
     return {
       account: signIn.account,

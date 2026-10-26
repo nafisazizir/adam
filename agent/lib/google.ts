@@ -249,6 +249,42 @@ export interface MailboxHistory {
   readonly nextPageToken: string | null;
 }
 
+// One event as a calendar's sync reports it. `event` is null for a deletion Google reports by id only.
+export interface EventRevision {
+  readonly id: string;
+  readonly updated: string;
+  readonly cancelled: boolean;
+  // A plain event, not a birthday, focus time, out of office, working location or one Gmail made.
+  readonly ordinary: boolean;
+  readonly organizedByOwner: boolean;
+  readonly recurring: boolean;
+  readonly instanceOf: string | null;
+  readonly originalStart: EventTime | null;
+  readonly declinedBy: readonly string[];
+  readonly event: CalendarEvent | null;
+}
+
+export interface CalendarChangesPage {
+  readonly revisions: EventRevision[];
+  readonly nextPageToken: string | null;
+  // Only on the last page.
+  readonly nextSyncToken: string | null;
+}
+
+export interface CalendarWatch {
+  readonly channelId: string;
+  readonly resourceId: string;
+  readonly expiresAt: Date;
+}
+
+export interface CalendarWatchRequest {
+  readonly calendarId: string;
+  readonly channelId: string;
+  readonly address: string;
+  readonly token: string;
+  readonly ttlSeconds: number;
+}
+
 interface Page<T> {
   readonly items: T[];
   readonly more: boolean;
@@ -351,6 +387,34 @@ const historySchema = z.object({
     .default([]),
   historyId: z.string(),
   nextPageToken: z.string().optional(),
+});
+
+const revisionSchema = eventSchema.extend({
+  start: eventTimeSchema.optional(),
+  end: eventTimeSchema.optional(),
+  updated: z.string().default(""),
+  eventType: z.string().default("default"),
+  recurrence: z.array(z.string()).optional(),
+  recurringEventId: z.string().optional(),
+  originalStartTime: eventTimeSchema.optional(),
+});
+
+const changesSchema = z.object({
+  items: z.array(revisionSchema).default([]),
+  nextPageToken: z.string().optional(),
+  nextSyncToken: z.string().optional(),
+});
+
+// Descriptions are left out: a change trigger never needs one, and they are where invite spam lives.
+const changeFields =
+  "nextPageToken,nextSyncToken,items(id,status,summary,location,htmlLink,hangoutLink,start,end,organizer," +
+  "attendees(email,displayName,responseStatus,self),recurrence,recurringEventId,originalStartTime,updated,eventType)";
+const changesPageSize = 2500;
+
+const channelSchema = z.object({
+  id: z.string(),
+  resourceId: z.string(),
+  expiration: z.union([z.string(), z.number()]).optional(),
 });
 
 const entities: Record<string, string> = {
@@ -596,6 +660,33 @@ function toEvent(
     myResponse: raw.attendees.find((attendee) => attendee.self)?.responseStatus ?? null,
     link: raw.htmlLink ?? null,
     meetLink: raw.hangoutLink ?? null,
+  };
+}
+
+function hasTime(time: z.infer<typeof eventTimeSchema> | undefined): time is z.infer<typeof eventTimeSchema> {
+  return Boolean(time?.date || time?.dateTime);
+}
+
+function toRevision(
+  account: string,
+  calendar: { id: string; name: string },
+  raw: z.infer<typeof revisionSchema>,
+): EventRevision {
+  const { start, end } = raw;
+  return {
+    id: raw.id,
+    updated: raw.updated,
+    cancelled: raw.status === "cancelled",
+    ordinary: raw.eventType === "default",
+    organizedByOwner: raw.organizer?.self === true,
+    recurring: Boolean(raw.recurrence?.length),
+    instanceOf: raw.recurringEventId ?? null,
+    originalStart: hasTime(raw.originalStartTime) ? toEventTime(raw.originalStartTime) : null,
+    declinedBy: raw.attendees
+      .filter((attendee) => !attendee.self && attendee.responseStatus === "declined")
+      .map(person)
+      .filter(Boolean),
+    event: hasTime(start) && hasTime(end) ? toEvent(account, calendar, { ...raw, start, end }) : null,
   };
 }
 
@@ -1268,6 +1359,59 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         },
       });
       return toEvent(account.label, calendarOf(account, ref.calendarId), updated);
+    },
+
+    // Without a sync token this lists every event the calendar has, which is what gives the first
+    // token. A token Google no longer honours fails with a GoogleApiError of status 410.
+    async calendarChanges(
+      owner: GoogleOwner | null,
+      name: string,
+      calendarId: string,
+      cursor: { readonly syncToken: string | null; readonly pageToken?: string },
+    ): Promise<CalendarChangesPage> {
+      const account = await only(owner, name);
+      const url = new URL(`${calendarBase}/calendars/${encodeURIComponent(calendarId)}/events`);
+      url.searchParams.set("maxResults", String(changesPageSize));
+      url.searchParams.set("fields", changeFields);
+      url.searchParams.set("timeZone", timeZone);
+      if (cursor.syncToken) url.searchParams.set("syncToken", cursor.syncToken);
+      if (cursor.pageToken) url.searchParams.set("pageToken", cursor.pageToken);
+      const page = await googleCall(account, url, changesSchema);
+      const calendar = calendarOf(account, calendarId);
+      return {
+        revisions: page.items.map((raw) => toRevision(account.label, calendar, raw)),
+        nextPageToken: page.nextPageToken ?? null,
+        nextSyncToken: page.nextSyncToken ?? null,
+      };
+    },
+
+    // Google posts to `address` on every change to an ordinary event, echoing `token`, until the
+    // channel expires or is stopped; it never renews one.
+    async watchCalendar(owner: GoogleOwner | null, name: string, watch: CalendarWatchRequest): Promise<CalendarWatch> {
+      const url = new URL(`${calendarBase}/calendars/${encodeURIComponent(watch.calendarId)}/events/watch`);
+      url.searchParams.set("eventTypes", "default");
+      const channel = await googleCall(await only(owner, name), url, channelSchema, {
+        body: {
+          id: watch.channelId,
+          type: "web_hook",
+          address: watch.address,
+          token: watch.token,
+          params: { ttl: String(watch.ttlSeconds) },
+        },
+      });
+      const expiresAt = channel.expiration === undefined ? Date.now() + watch.ttlSeconds * 1000 : Number(channel.expiration);
+      return { channelId: channel.id, resourceId: channel.resourceId, expiresAt: new Date(expiresAt) };
+    },
+
+    // Only the user who opened a channel, through the same OAuth client, can stop it.
+    async stopCalendarWatch(
+      owner: GoogleOwner | null,
+      name: string,
+      channel: { readonly channelId: string; readonly resourceId: string },
+    ): Promise<void> {
+      await googleCall(await only(owner, name), new URL(`${calendarBase}/channels/stop`), z.unknown(), {
+        body: { id: channel.channelId, resourceId: channel.resourceId },
+      });
     },
 
     // Gmail stops pushing to the topic after seven days unless the watch is renewed.
