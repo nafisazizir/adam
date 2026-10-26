@@ -12,8 +12,15 @@ const clockTime = z
 const interval = (max: number, unit: string) =>
   z.number().int().min(1).max(max).default(1).describe(`Every how many ${unit}; 1 for every ${unit.replace(/s$/u, "")}.`);
 
+// Each run spends two Blob writes of Hobby's 2,000 a month and a QStash message, so nothing runs
+// more often than four times a day.
+export const minimumHours = 6;
+
 export const recurrenceSchema = z.discriminatedUnion("every", [
-  z.object({ every: z.literal("hours"), interval: interval(168, "hours") }),
+  z.object({
+    every: z.literal("hours"),
+    interval: z.number().int().min(minimumHours).max(168).describe(`Every how many hours; at least ${minimumHours}.`),
+  }),
   z.object({ every: z.literal("days"), interval: interval(365, "days"), time: clockTime }),
   z.object({
     every: z.literal("weeks"),

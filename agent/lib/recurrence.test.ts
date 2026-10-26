@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { describeRecurrence, nextOccurrence, type Recurrence } from "#lib/recurrence.js";
+import { describeRecurrence, nextOccurrence, type Recurrence, recurrenceSchema } from "#lib/recurrence.js";
 
 const brisbane = "Australia/Brisbane";
 const sydney = "Australia/Sydney";
@@ -11,10 +11,10 @@ function next(rule: Recurrence, anchor: string, after: string, timeZone = brisba
 }
 
 test("an hourly rule first runs one interval after its anchor and stays on its grid", () => {
-  const rule: Recurrence = { every: "hours", interval: 2 };
-  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T00:05:00Z"), "2026-10-26T02:05:00.000Z");
-  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T02:05:00Z"), "2026-10-26T04:05:00.000Z");
-  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T05:00:00Z"), "2026-10-26T06:05:00.000Z");
+  const rule: Recurrence = { every: "hours", interval: 6 };
+  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T00:05:00Z"), "2026-10-26T06:05:00.000Z");
+  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T06:05:00Z"), "2026-10-26T12:05:00.000Z");
+  assert.equal(next(rule, "2026-10-26T00:05:00Z", "2026-10-26T13:00:00Z"), "2026-10-26T18:05:00.000Z");
 });
 
 test("a daily rule runs later today when the time is still ahead, else tomorrow", () => {
@@ -68,8 +68,13 @@ test("a rule never runs before its anchor", () => {
   assert.equal(next(rule, "2026-11-02T14:00:00Z", "2026-10-26T00:00:00Z"), "2026-11-02T22:00:00.000Z");
 });
 
+test("an hourly rule runs at most every six hours", () => {
+  assert.equal(recurrenceSchema.safeParse({ every: "hours", interval: 5 }).success, false);
+  assert.equal(recurrenceSchema.safeParse({ every: "hours", interval: 6 }).success, true);
+});
+
 test("describes each rule the way the user would say it", () => {
-  assert.equal(describeRecurrence({ every: "hours", interval: 1 }), "every hour");
+  assert.equal(describeRecurrence({ every: "hours", interval: 6 }), "every 6 hours");
   assert.equal(describeRecurrence({ every: "days", interval: 3, time: "08:00" }), "every 3 days at 08:00");
   assert.equal(
     describeRecurrence({ every: "weeks", interval: 2, weekdays: ["sun", "mon"], time: "18:00" }),

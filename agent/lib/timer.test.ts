@@ -19,11 +19,17 @@ function harness() {
   let clock = Date.parse("2026-10-26T00:00:00Z");
   const published: Published[] = [];
   const cancelled: string[] = [];
+  const deduplicated = new Map<string, { id: string; at: number }>();
+  // Like QStash: a repeated deduplication id within ten minutes returns the first message's id.
   const backend: TimerBackend = {
     maxDelaySeconds: 7 * daySeconds,
     async publish(input) {
+      await Promise.resolve();
+      const seen = deduplicated.get(input.deduplicationId);
+      if (seen && clock - seen.at < 10 * 60_000) return seen.id;
       const id = `msg_${published.length + 1}`;
       published.push({ id, ...input });
+      deduplicated.set(input.deduplicationId, { id, at: clock });
       return id;
     },
     async cancel(id) {
@@ -111,8 +117,9 @@ test("a short timer cancels through the backend", async () => {
   assert.deepEqual(h.cancelled, ["msg_9"]);
 });
 
-test("a failed record cancels the first hop so nothing fires untracked", async () => {
+test("a hop whose record was never written lands stale and fires nothing", async () => {
   const h = harness();
+  const write = h.store.write;
   h.store.write = async () => {
     throw new Error("blob down");
   };
@@ -120,7 +127,26 @@ test("a failed record cancels the first hop so nothing fires untracked", async (
     h.timers.set({ url: "https://adam.test/deliver", body: {}, fireAtMs: h.now() + 20 * dayMs, key: "k" }),
     /blob down/u,
   );
-  assert.deepEqual(h.cancelled, ["msg_1"]);
+  h.store.write = write;
+  h.advance(h.published[0].delaySeconds * 1000);
+  assert.equal(await h.timers.hop(h.published[0].body as Hop, "msg_1"), "stale");
+  assert.equal(h.published.length, 1);
+});
+
+test("two copies of a hop landing together leave the deduplicated final leg live", async () => {
+  const h = harness();
+  await h.timers.set({ url: "https://adam.test/deliver", body: {}, fireAtMs: h.now() + 10 * dayMs, key: "k" });
+  const first = h.published[0];
+  h.advance(first.delaySeconds * 1000);
+  const outcomes = await Promise.all([
+    h.timers.hop(first.body as Hop, first.id),
+    h.timers.hop(first.body as Hop, first.id),
+  ]);
+  assert.deepEqual(outcomes.sort(), ["forwarded", "stale"]);
+  assert.equal(h.published.length, 2);
+  assert.equal(h.published[1].url, "https://adam.test/deliver");
+  assert.deepEqual(h.cancelled, []);
+  assert.equal(h.store.value?.timers[0].messageId, h.published[1].id);
 });
 
 test("setting the same long timer again keeps one live chain under one id", async () => {
@@ -129,7 +155,11 @@ test("setting the same long timer again keeps one live chain under one id", asyn
   const first = await h.timers.set(request);
   h.advance(5_000);
   assert.equal(await h.timers.set(request), first);
-  assert.equal(h.published[0].deduplicationId, h.published[1].deduplicationId);
+  assert.equal(h.published.length, 1);
+  assert.deepEqual(h.store.value?.timers.map((timer) => timer.messageId), ["msg_1"]);
+
+  h.advance(20 * 60_000);
+  assert.equal(await h.timers.set(request), first);
   assert.deepEqual(h.store.value?.timers.map((timer) => timer.messageId), ["msg_2"]);
   assert.equal(await h.timers.hop(h.published[0].body as Hop, "msg_1"), "stale");
 });

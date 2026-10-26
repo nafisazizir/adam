@@ -82,6 +82,16 @@ test("a run more than an hour late is skipped, not sent", async () => {
   assert.deepEqual(claim.arm, ["2026-11-15T08:00:00.000Z"]);
 });
 
+test("a retried run delivered after its next slot is judged by that slot, not skipped with it", async () => {
+  const routines = store();
+  const routine = await addRoutine(routines, { name: "a", instruction: "x", schedule: { every: "hours", interval: 6 } }, at(created));
+  const claim = await claimDueRoutines(routines, at("2026-10-26T06:00:00Z"));
+  await releaseRoutines(routines, claim.due);
+  const late = await claimDueRoutines(routines, at("2026-10-26T12:00:30Z"));
+  assert.deepEqual(late.due.map((entry) => entry.routine.id), [routine.id]);
+  assert.deepEqual(late.skipped, []);
+});
+
 test("a paused routine is never due, and resuming schedules it from now", async () => {
   const routines = store();
   const routine = await addRoutine(routines, { name: "a", instruction: "x", schedule: daily }, at(created));

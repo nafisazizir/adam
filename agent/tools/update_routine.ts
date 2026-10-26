@@ -4,7 +4,7 @@ import { z } from "zod";
 import { ownerChatRefusal } from "#lib/delivery.js";
 import { recurrenceSchema } from "#lib/recurrence.js";
 import { armRoutineRun, blobRoutineStore } from "#lib/routine-store.js";
-import { changeRoutine, routineDateSchema, routineView } from "#lib/routines.js";
+import { changeRoutine, listRoutines, restoreRoutine, routineDateSchema, routineView } from "#lib/routines.js";
 import { formatUserDateTime, userTimeZone } from "#lib/time.js";
 
 export default defineTool({
@@ -24,9 +24,17 @@ export default defineTool({
     const refusal = ownerChatRefusal("Changing a routine", ctx.session.auth.current);
     if (refusal) throw new Error(refusal);
 
-    const routine = await changeRoutine(blobRoutineStore, id, patch, { now: new Date(), timeZone: userTimeZone });
-    if (!routine) return { id, updated: false, reason: "There is no routine with that id; check list_routines." };
-    if (routine.nextRunAt) await armRoutineRun(routine.nextRunAt);
+    const previous = (await listRoutines(blobRoutineStore)).find((routine) => routine.id === id);
+    const routine = previous && (await changeRoutine(blobRoutineStore, id, patch, { now: new Date(), timeZone: userTimeZone }));
+    if (!previous || !routine) return { id, updated: false, reason: "There is no routine with that id; check list_routines." };
+    if (routine.nextRunAt && routine.nextRunAt !== previous.nextRunAt) {
+      try {
+        await armRoutineRun(routine.nextRunAt);
+      } catch (error) {
+        await restoreRoutine(blobRoutineStore, previous);
+        throw error;
+      }
+    }
     return routineView(routine, formatUserDateTime);
   },
 });

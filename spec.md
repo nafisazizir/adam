@@ -96,7 +96,9 @@ destination, and its id is that message's id. A later one hops: it publishes to 
 (`long-timers.json`); each hop lands with at most one horizon left, re-publishes the next leg and
 updates the record, and the last leg goes to the destination with the original body. The record's
 message id is the live leg, so a duplicate hop or a cancelled timer finds a different id (or none)
-and stops; cancelling removes the record and cancels the live leg. No schedule and no polling tick:
+and stops; cancelling removes the record and cancels the live leg. A hop whose record was never
+written stops the same way, so a failed write needs no cleanup; a duplicate hop that loses the
+record update cancels its final leg only when QStash did not deduplicate it onto the live one. No schedule and no polling tick:
 a three-week reminder costs three or four messages.
 
 The URL QStash hits is **our own deployment's public route** (the `reminders` or `workouts` custom
@@ -166,19 +168,23 @@ stub the route).
   - **Claiming.** `claimDueRoutines` advances every routine due within a minute in one conditional
     write; that write is the claim, so a duplicate or concurrent delivery finds nothing left. A run more
     than an hour late (a lost timer, an outage) is skipped and re-armed, the way Grok drops missed runs.
-    A routine past its `endsOn` is removed with its last run. If the hand-off fails,
+    Lateness is judged by the latest slot due, so a retried delivery that lands after its next slot
+    still runs once instead of skipping both. A routine past its `endsOn` is removed with its last
+    run. The next runs' timers are set before the hand-off; if setting one or the hand-off fails,
     `releaseRoutines` undoes only what the claim changed and the route answers 500, so QStash retries.
+    `update_routine` restores the routine if its new timer cannot be set, as `create_routine` deletes it.
   - **The turn.** `runDueRoutines` (`lib/routine-runner.ts`) delivers through `homeDelivery()` as the
-    owner (`routineAuth`, authenticator `routines`, `turnPolicy: "queue"`), under a daily cap of 48 runs
-    (`takeDailyRun`) so routines cannot eat the QStash budget reminders need. Each `<routine>` carries
+    owner (`routineAuth`, authenticator `routines`, `turnPolicy: "queue"`), under a daily cap of 8 routine runs
+    (`takeDailyRun`, counted per routine) because each run spends two Blob writes of Hobby's 2,000 a
+    month (see the Blob budget in deployment notes); a run over the cap is dropped and logged. Each `<routine>` carries
     its instruction, schedule and the notes of its last five runs: Adam records one line per run with
     `note_routine_run`, which survives compaction of the thread, so a routine can compare against its
     last run. Right-to-silence applies; nothing new is silence unless the instruction says otherwise.
   - **Gates.** `create_routine`, `update_routine` (also pause and resume) and `delete_routine` need the
     owner chatting (`ownerChatRefusal`), so a routine, briefing, mail or call turn cannot set one up;
     `list_routines` reads; `note_routine_run` takes a routine turn or the owner's chat. A routine turn is
-    a background turn: it proposes, and acts when the owner replies. At most 30 routines; an hourly rule
-    is the most frequent.
+    a background turn: it proposes, and acts when the owner replies. At most 30 routines; an hours rule runs at most every
+    six hours (`minimumHours`).
   - **Health checkpoint.** The first use: a routine ("every other Sunday at 6pm, do my health
     checkpoint") hands the coach its `wellness-checkpoint` skill, which reviews the window against the
     goals in owner memory and the current plan block (found through the coach's
@@ -1291,7 +1297,9 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   cannot fix are acknowledged instead, so only an outage of Google, Photon or the home pointer
   reaches that. Coding watches
   spend up to one a minute while Devin is busy (about 250 for a long session), reminders one each,
-  workouts two each. The cap keeps mail under a quarter of the budget, so reminders always fit.
+  workouts two each. Routines cost one per distinct run instant (routines due together share it), and
+  no rule runs more often than every six hours, so even 30 routines stay near 120 a day; a reminder or
+  routine more than seven days out adds one hop a week. The cap keeps mail under a quarter of the budget, so reminders always fit.
 - Vercel Blob on Hobby includes 2,000 advanced operations (put, copy, list) and 10,000 simple ones
   (a read that misses the cache, a head) a month; deletes are free. Going over locks Blob for 30
   days, which would take the home pointer, reminders, memory and the briefing down with it.
@@ -1316,6 +1324,11 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
     900 to 3,000 simple a month.
   - calendar changes: no Blob writes or state reads at all (the cursor, channels and markers are
     Runtime Cache); each run reads the home pointer like a mail run, a realistic 5 to 20 a day.
+  - routines: a run writes `routines.json` twice (the claim and its note), under a cap of 8 runs a
+    day, so at most 480 advanced a month (a fortnightly checkpoint and a few weekly routines: about
+    30), plus a put per create, change or delete and a few simple reads per run.
+  - long timers (more than seven days out): one put to `long-timers.json` when set and one per
+    weekly hop, a handful a month.
   - the Google account list: one put per account connected or disconnected (a handful), and a read
     each time its one-hour Runtime Cache entry lapses, about 720 simple; the address and token
     lookups behind each push stay in Runtime Cache.

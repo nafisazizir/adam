@@ -26,7 +26,7 @@ export default defineTool({
       "When it runs, in the user's time zone. 'every other Sunday at 6pm' is { every: 'weeks', interval: 2, " +
         "weekdays: ['sun'], time: '18:00' }; 'weekdays at 8' is { every: 'weeks', interval: 1, weekdays: " +
         "['mon','tue','wed','thu','fri'], time: '08:00' }; 'the 1st of every month at 9' is { every: 'months', " +
-        "interval: 1, day: 1, time: '09:00' }; 'every 3 hours' is { every: 'hours', interval: 3 }.",
+        "interval: 1, day: 1, time: '09:00' }; 'every 6 hours' is { every: 'hours', interval: 6 }, the most often one can run.",
     ),
     startsOn: routineDateSchema
       .optional()

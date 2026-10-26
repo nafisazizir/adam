@@ -123,21 +123,17 @@ export function createTimers(input: {
       };
       if (leg.final) return publishLeg(leg, hop);
 
+      // An unrecorded hop finds no record when it lands and stops, so a failed write needs no cleanup.
       const messageId = await publishLeg(leg, hop);
-      try {
-        await updateDocument(store, noLongTimers, (current) => ({
-          next: {
-            timers: [
-              ...withoutFired(current.timers, at).filter((timer) => timer.id !== hop.id),
-              { id: hop.id, fireAt: hop.fireAt, messageId },
-            ],
-          },
-          result: undefined,
-        }));
-      } catch (error) {
-        await cancelQuietly(messageId);
-        throw error;
-      }
+      await updateDocument(store, noLongTimers, (current) => ({
+        next: {
+          timers: [
+            ...withoutFired(current.timers, at).filter((timer) => timer.id !== hop.id),
+            { id: hop.id, fireAt: hop.fireAt, messageId },
+          ],
+        },
+        result: undefined,
+      }));
       return hop.id;
     },
 
@@ -160,24 +156,24 @@ export function createTimers(input: {
       if (!live || live.messageId !== messageId) return "stale";
 
       const at = now();
-      const next = await publishLeg(nextLeg(Date.parse(hop.fireAt), at), hop);
-      const kept = await updateDocument(store, noLongTimers, (current) => {
+      const leg = nextLeg(Date.parse(hop.fireAt), at);
+      const next = await publishLeg(leg, hop);
+      const outcome = await updateDocument(store, noLongTimers, (current) => {
         const entry = current.timers.find((timer) => timer.id === hop.id);
-        if (entry?.messageId !== messageId) return { next: current, result: false };
+        if (entry?.messageId !== messageId) return { next: current, result: { kept: false, live: entry?.messageId } };
         return {
           next: {
             timers: withoutFired(current.timers, at).map((timer) =>
               timer.id === hop.id ? { ...timer, messageId: next } : timer,
             ),
           },
-          result: true,
+          result: { kept: true, live: next },
         };
       });
-      if (!kept) {
-        await cancelQuietly(next);
-        return "stale";
-      }
-      return "forwarded";
+      if (outcome.kept) return "forwarded";
+      // A losing final leg would fire unchecked, unless QStash deduplicated it onto the live one.
+      if (leg.final && next !== outcome.live) await cancelQuietly(next);
+      return "stale";
     },
   };
 }

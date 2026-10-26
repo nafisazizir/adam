@@ -46,6 +46,18 @@ export interface RoutineClock {
   readonly timeZone: string;
 }
 
+// The last slot due by now, so a run delayed past its own slot (a retried delivery) is judged by the
+// slot it is late for, not skipped along with the next one.
+function latestDueSlot(routine: Routine, at: string, dueBy: number, timeZone: string): number {
+  let slot = Date.parse(at);
+  for (let step = 0; step < 1000; step += 1) {
+    const next = nextOccurrence(routine.schedule, new Date(routine.startsAt), new Date(slot), timeZone).getTime();
+    if (next > dueBy) break;
+    slot = next;
+  }
+  return slot;
+}
+
 function plannedRun(routine: Routine, clock: RoutineClock): string | null {
   const next = nextOccurrence(routine.schedule, new Date(routine.startsAt), clock.now, clock.timeZone);
   if (routine.endsOn && localDateOf(next, clock.timeZone) > routine.endsOn) return null;
@@ -168,6 +180,13 @@ export function recordRoutineRun(
   });
 }
 
+export function restoreRoutine(store: DocumentStore<RoutinesDocument>, previous: Routine): Promise<void> {
+  return updateDocument(store, noRoutines, (current) => ({
+    next: { routines: current.routines.map((routine) => (routine.id === previous.id ? previous : routine)) },
+    result: undefined,
+  }));
+}
+
 export async function listRoutines(store: DocumentStore<RoutinesDocument>): Promise<Routine[]> {
   return (await readDocument(store, noRoutines)).routines;
 }
@@ -201,7 +220,8 @@ export function claimDueRoutines(store: DocumentStore<RoutinesDocument>, clock: 
       }
       // From the later of now and the run, so a run claimed a few seconds early is not re-armed for itself.
       const advancedTo = plannedRun(routine, { ...clock, now: new Date(Math.max(now, Date.parse(at))) });
-      (now - Date.parse(at) > staleAfterMs ? skipped : due).push({ routine, at, advancedTo });
+      const late = now - latestDueSlot(routine, at, now + dueSlackMs, clock.timeZone) > staleAfterMs;
+      (late ? skipped : due).push({ routine, at, advancedTo });
       if (advancedTo) routines.push({ ...routine, nextRunAt: advancedTo });
     }
     const claimed = [...due, ...skipped];
