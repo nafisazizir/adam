@@ -22,6 +22,7 @@ export interface CallEnded {
   readonly callerNumber: string | null;
   readonly summary: string | null;
   readonly transcript: readonly CallLine[];
+  readonly startedAt: string | null;
   readonly durationSecs: number | null;
 }
 
@@ -104,6 +105,7 @@ const endedSchema = z.object({
       .nullish(),
     metadata: z
       .object({
+        start_time_unix_secs: z.unknown(),
         call_duration_secs: z.number().nullish(),
         phone_call: z.object({ external_number: optionalText }).nullish(),
       })
@@ -140,6 +142,10 @@ function variable(variables: Record<string, unknown> | null | undefined, name: s
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function instantOf(unixSecs: unknown): string | null {
+  return typeof unixSecs === "number" && Number.isFinite(unixSecs) ? new Date(unixSecs * 1000).toISOString() : null;
+}
+
 export function parseCallEnded(body: unknown): ParsedCallEnded {
   const parsed = endedSchema.safeParse(body);
   if (!parsed.success) {
@@ -168,6 +174,7 @@ export function parseCallEnded(body: unknown): ParsedCallEnded {
       callerNumber: callerNumberOf(variable(variables, "system__caller_id") ?? phoneCall?.external_number ?? null),
       summary: data.analysis?.transcript_summary ?? null,
       transcript,
+      startedAt: instantOf(data.metadata?.start_time_unix_secs),
       durationSecs: data.metadata?.call_duration_secs ?? null,
     },
   };

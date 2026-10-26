@@ -17,6 +17,8 @@ import {
   liveCallAuth,
   spokenReply,
 } from "#lib/calls.js";
+import { blobCallTranscriptStore } from "#lib/call-transcript-store.js";
+import { keepCallTranscript } from "#lib/call-transcripts.js";
 import { blobClaimStore } from "#lib/claim-store.js";
 import { claimOnce, releaseDay } from "#lib/daily-claim.js";
 import { homeDelivery } from "#lib/delivery.js";
@@ -205,10 +207,11 @@ export default defineChannel({
         return Response.json({ ok: true, ignored: "not_claimed" });
       }
 
+      const transcriptSaved = await keepCallTranscript(blobCallTranscriptStore, ended);
       try {
         await home.channel.deliver({
           to,
-          message: withTime(callEndedMessage(ended)),
+          message: withTime(callEndedMessage(ended, { transcriptSaved })),
           target: home.target,
           auth: afterCallAuth(home.owner, { conversationId: ended.conversationId }),
           turnPolicy: "queue",

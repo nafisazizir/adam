@@ -19,11 +19,12 @@ const endedCall: CallEnded = {
     { speaker: "caller", text: "ha, fair. ok thanks, bye" },
     { speaker: "adam", text: "bye!" },
   ],
+  startedAt: "2026-10-26T04:12:00.000Z",
   durationSecs: 48,
 };
 
 export function callEnded(): string {
-  return [currentTimeContext(), "", callEndedMessage(endedCall)].join("\n");
+  return [currentTimeContext(), "", callEndedMessage(endedCall, { transcriptSaved: true })].join("\n");
 }
 
 export function callStarted(): string {

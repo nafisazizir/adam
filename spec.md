@@ -571,6 +571,23 @@ stub the route).
     payload stays valid for 30 minutes, so each conversation id is claimed once (`claimOnce` over
     the Blob `ClaimStore`, released again if delivery fails). Look-alike tags of every call wrapper
     are stripped from relayed call text with `stripWrapperTags`.
+  - **Transcripts.** Once the claim is won, `keepCallTranscript` (`lib/call-transcripts.ts`) saves
+    the whole call as a neutral `CallTranscript` (conversation id, start time, duration, summary,
+    speaker lines; no caller number) to private Blob at `call-transcripts/<conversation id>.json`
+    (`lib/call-transcript-store.ts`), and only then delivers. A saved `<call_ended>` names
+    `read_call_transcript` with its conversation id, so a later turn reads details the summary,
+    the excerpt or compaction dropped; `list_calls` finds the id when the thread no longer has it
+    (one Blob list, newest first by save time). The id is ElevenLabs' conversation id used as an
+    opaque handle, never a URL, and must be one path segment (`[\w-]`), or nothing is saved.
+    Storage is best effort: a failed, misconfigured or slow write (aborted after 5 seconds, so a
+    hang cannot hold the claim past the function's limit) is logged, and `<call_ended>` goes out
+    without the pointer. A retry after a failed delivery overwrites the same file with the same
+    call. Transcripts are kept, not fetched from ElevenLabs' conversation API on demand, so they
+    outlive the vendor's retention and a voice-vendor swap, and only `lib/voice.ts` knows the
+    vendor's shape. The read is bounded: pages of whole lines up to 12,000 characters (a line is
+    clipped at 2,000), summary first, continued with `fromLine` (numbered from 1, like the page's
+    line range); the text sits inside `<call_transcript>` as untrusted content, with every call
+    wrapper's look-alike tags stripped.
   - **Only the owner.** `start` and `ask` share a secret header (`x-calls-secret`, compared in
     constant time). The caller must be a number that may text Adam over iMessage: `isOwnerCaller`
     runs `admitSender` from `lib/owner.ts` on it, so a set `OWNER_IMESSAGE_HANDLES` overrules the
@@ -590,7 +607,7 @@ stub the route).
       sign-in: like every turn outside the owner's direct chat it gets the token-only providers
       (`lib/connection-auth.ts`). Nothing in a call turn may wait on the owner.
     - **Allowed, so open to anyone who fakes the number.** A call turn acts as the owner's principal, so it can
-      read the thread's history, owner memory, Gmail and Calendar, Notion through an existing
+      read the thread's history, owner memory, past call transcripts, Gmail and Calendar, Notion through an existing
       grant and the owner's training data through riz-mcp, write Notion pages through that grant,
       and schedule reminders, which only ever land in the owner's own thread. A spoken passcode
       checked server-side in `ask` would close this if it is ever needed.
@@ -615,7 +632,8 @@ stub the route).
   (confirmed in chat, merged by Devin), `connect_google_account`, `disconnect_google_account` (confirmed
   in chat), `list_google_accounts`,
   `search_email`, `read_email`, `list_events`, `draft_email`, `create_event` and `update_event`
-  (confirmed in chat), `reply_to_call` (speak on the live call), `agent`
+  (confirmed in chat), `reply_to_call` (speak on the live call), `read_call_transcript` and
+  `list_calls` (past calls), `agent`
   (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -755,6 +773,8 @@ adam/
 │   │   ├── voice-agent.ts     # ElevenLabs only: the voice agent's config and syncVoiceAgent
 │   │   ├── voice-agent-store.ts # the synced ElevenLabs ids and post-call secret in private Blob
 │   │   ├── calls.ts           # vendor-free: call auth, owner caller check, messages, reply stream tap
+│   │   ├── call-transcripts.ts # CallTranscript, keepCallTranscript (best effort), bounded untrusted pages
+│   │   ├── call-transcript-store.ts # the CallTranscriptStore in private Vercel Blob
 │   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
 │   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
 │   │   ├── google-accounts-store.ts # the GoogleAccountStore in private Vercel Blob
@@ -783,6 +803,8 @@ adam/
 │   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
 │   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
 │   │   ├── reply_to_call.ts   # what the caller hears; only in a live call turn
+│   │   ├── read_call_transcript.ts # a past call's whole transcript, paged
+│   │   ├── list_calls.ts      # recent calls with a saved transcript, newest first
 │   │   ├── connect_google_account.ts # owner's direct chat only: add or reconnect an account by name
 │   │   ├── disconnect_google_account.ts # workflow tool: confirm in chat, revoke, forget the name
 │   │   ├── list_google_accounts.ts
@@ -835,7 +857,7 @@ across any number of Google accounts the owner connects by chatting (search, rea
 disconnect after a confirmation), with email and invites treated as untrusted data · new inbox mail as a trigger through Gmail push, texted only when a real
 person needs the owner · calls to Adam's own phone number through one ElevenLabs voice agent,
 answered from the owner's own thread, with texts mid-call and the call
-joining the chat history afterwards.
+joining the chat history afterwards, its full transcript kept for later lookups.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
 subagents · sending mail (drafts only, by design) · deleting events and answering invites · mail in the briefing · inbound burst debouncing (low-risk single-user; add a Photon
@@ -987,6 +1009,8 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   - owner memory: one simple read per turn of root, `coach` and `deep` (about 1,500 to 3,000),
     one put per save (about 30 to 60).
   - generated audio: one put and one read per voice note (about 10 to 20 each).
+  - calls: a claim and a transcript put per call (about 60 advanced for 30 calls), one list per
+    `list_calls` and one simple read per transcript page read.
   - new mail: one put per delivered heads-up plus a checkpoint at most every six hours per mailbox,
     about 90 + 240 = 330 advanced and a similar number of simple reads with two accounts, plus a
     daily read per account from `mail-watch`. Disconnecting deletes the account's checkpoint.
@@ -996,7 +1020,7 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   - the Google account list: one put per account connected or disconnected (a handful), and a read
     each time its one-hour Runtime Cache entry lapses, about 720 simple; the address and token
     lookups behind each push stay in Runtime Cache.
-  That is roughly 700 to 1,250 advanced and 3,600 to 7,400 simple a month: inside the limits, with
+  That is roughly 750 to 1,300 advanced and 3,600 to 7,400 simple a month: inside the limits, with
   the home pointer the largest variable. Check Observability → Blob after the first month.
 
 ---
@@ -1039,9 +1063,10 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    - **Status: built** (§4 "Calls") on ElevenLabs Agents over a Twilio local number, pending the
      owner's setup. The open question below is answered: the `calls` route taps the owner thread's
      event stream for Adam's `reply_to_call`. WhatsApp calling was dropped; a voice line on Photon
-     remains a later swap in the dashboards with no change in Adam. Follow-ups: keep the full
-     transcript (Blob, linked from the summary) so later turns can look up details compaction lost,
-     and outbound calls (Adam rings the owner for something urgent) as one more delivery channel.
+     remains a later swap in the dashboards with no change in Adam. The full transcript is kept in
+     private Blob, named in `<call_ended>` by its conversation id, so later turns read details
+     compaction lost (`read_call_transcript`, `list_calls`). Follow-up: outbound calls (Adam rings
+     the owner for something urgent) as one more delivery channel.
    - **Line.** Photon's Spectrum voice provider adds inbound and outbound SIP calls to the iMessage
      line, with cookbooks for ElevenLabs, Retell, LiveKit and Twilio; that would make the call
      number the text number. The docs don't say which plan or line type includes voice — confirm

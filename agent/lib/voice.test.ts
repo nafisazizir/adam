@@ -134,6 +134,7 @@ test("parses a post-call transcription into a neutral call summary", () => {
         { speaker: "caller", text: "remind me to call mum at 5" },
         { speaker: "adam", text: "done, 5pm it is" },
       ],
+      startedAt: "2025-10-18T08:58:20.000Z",
       durationSecs: 42,
     },
   });
@@ -144,13 +145,14 @@ test("a summary trusts the caller system variable over phone_call metadata", () 
     type: "post_call_transcription",
     data: {
       conversation_id: "conv_3",
-      metadata: { phone_call: { external_number: "+61499999999" } },
+      metadata: { start_time_unix_secs: "soon", phone_call: { external_number: "+61499999999" } },
       conversation_initiation_client_data: { dynamic_variables: { system__caller_id: "+61412345678" } },
     },
   });
   assert.ok(parsed.ok);
   assert.equal(parsed.ended.callerNumber, "+61412345678");
   assert.equal(parsed.ended.summary, null);
+  assert.equal(parsed.ended.startedAt, null);
 });
 
 test("ignores other webhook events and rejects junk", () => {
