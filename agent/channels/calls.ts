@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import { defineChannel, POST, type Session } from "eve/channels";
 
-import { photonAuthenticator } from "#channels/photon.js";
 import {
   afterCallAuth,
   awaitCallReply,
@@ -14,7 +13,9 @@ import {
   callStartedMessage,
   declinedCallBriefing,
   isOwnerCaller,
+  isOwnerOnCall,
   liveCallAuth,
+  otherParty,
   spokenReply,
 } from "#lib/calls.js";
 import { blobCallTranscriptStore } from "#lib/call-transcript-store.js";
@@ -23,8 +24,7 @@ import { blobClaimStore } from "#lib/claim-store.js";
 import { claimOnce, releaseDay } from "#lib/daily-claim.js";
 import { homeDelivery } from "#lib/delivery.js";
 import { callsAskPath, callsEndedPath, callsStartPath, env } from "#lib/env.js";
-import { readHomeTargetState } from "#lib/home-target.js";
-import { type KnownOwner, ownerRecordLookup } from "#lib/owner.js";
+import { knownOwner } from "#lib/known-owner.js";
 import { parseJson } from "#lib/qstash.js";
 import { currentTimeContext, formatUserDateTime } from "#lib/time.js";
 import {
@@ -44,13 +44,6 @@ const replyDeadlineMs = 25_000;
 const notConfigured = () => Response.json({ ok: false, error: "calls_not_configured" }, { status: 503 });
 const unauthorized = () => Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
 const invalidPayload = () => Response.json({ ok: false, error: "invalid_payload" }, { status: 400 });
-
-const ownerRecord = ownerRecordLookup(readHomeTargetState, photonAuthenticator);
-
-// The same owner the chat channels admit, so a number that can no longer text can't call either.
-async function knownOwner(): Promise<KnownOwner> {
-  return { handles: env.OWNER_IMESSAGE_HANDLES, record: await ownerRecord.current() };
-}
 
 function describe(callerNumber: string | null): string {
   return callerNumber ?? "an unknown caller";
@@ -126,8 +119,8 @@ export default defineChannel({
       const ask = parseCallRequest(parseJson(await request.text()));
       if (!ask) return invalidPayload();
 
-      if (!isOwnerCaller(ask.callerNumber, await knownOwner())) {
-        console.warn(`[calls] refused a request from ${describe(ask.callerNumber)}; not the owner`);
+      if (!isOwnerOnCall(ask, await knownOwner())) {
+        console.warn(`[calls] refused a request on a call with ${describe(otherParty(ask))}; not the owner`);
         return Response.json({ ok: false, error: "not_owner" }, { status: 403 });
       }
       const home = await homeDeliveryOrNull();
@@ -190,8 +183,8 @@ export default defineChannel({
       }
 
       const { ended } = parsed;
-      if (!isOwnerCaller(ended.callerNumber, await knownOwner())) {
-        console.warn(`[calls] skipping a call summary from ${describe(ended.callerNumber)}`);
+      if (!isOwnerOnCall(ended, await knownOwner())) {
+        console.warn(`[calls] skipping the summary of a call with ${describe(otherParty(ended))}`);
         return Response.json({ ok: true, ignored: "not_owner" });
       }
       const home = await homeDeliveryOrNull();

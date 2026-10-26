@@ -10,7 +10,9 @@ export function callRequest(request: string): string {
 
 const endedCall: CallEnded = {
   conversationId: "conv_eval_0001",
+  direction: "inbound",
   callerNumber: "+61412345678",
+  calledNumber: "+61290000000",
   summary: "The user called to ask how many weeks are left until Christmas; Adam said about ten. They chatted briefly and hung up.",
   transcript: [
     { speaker: "adam", text: "hey, it's Adam" },

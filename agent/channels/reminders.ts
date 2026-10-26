@@ -7,13 +7,14 @@ import { readHomeTarget, type HomeTarget } from "#lib/home-target.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
 import { forgetReminderWithin } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
-import { reminderAuth, reminderDestination } from "#lib/reminders.js";
+import { dueReminderMessage, reminderAuth, reminderDestination } from "#lib/reminders.js";
 import { currentTimeContext } from "#lib/time.js";
 
 const reminderSchema = z.object({
   message: z.string().min(1),
   channel: z.string().min(1),
   target: z.record(z.string(), z.unknown()),
+  ring: z.boolean().optional(),
 });
 
 async function currentHome(): Promise<HomeTarget | null> {
@@ -39,7 +40,7 @@ export default defineChannel({
         return new Response("invalid payload", { status: 400 });
       }
 
-      const { message, channel, target } = parsed.data;
+      const { message, channel, target, ring = false } = parsed.data;
       const messageId = request.headers.get("upstash-message-id");
       const retried = request.headers.get("upstash-retried");
       const home = await currentHome();
@@ -54,9 +55,9 @@ export default defineChannel({
       try {
         await delivery.deliver({
           to,
-          message: `${currentTimeContext()}\n\nA reminder you scheduled earlier is now due: ${message}`,
+          message: `${currentTimeContext()}\n\n${dueReminderMessage(message, ring)}`,
           target: destination.target,
-          auth: reminderAuth(home?.owner ?? null, messageId),
+          auth: reminderAuth(home?.owner ?? null, messageId, ring),
           turnPolicy: "queue",
         });
       } catch (error) {

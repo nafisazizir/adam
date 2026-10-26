@@ -1,5 +1,6 @@
 import { callBriefing } from "#lib/calls.js";
 import { sameHandle } from "#lib/owner.js";
+import { callVariables } from "#lib/voice.js";
 
 const apiBase = "https://api.elevenlabs.io";
 
@@ -88,7 +89,7 @@ export function askAdamTool(settings: VoiceAgentSettings, secretId: string) {
         request_headers: secretHeader(secretId),
         request_body_schema: {
           type: "object",
-          required: ["request", "conversation_id", "caller_id"],
+          required: ["request", "conversation_id", "caller_id", "called_number", "call_direction"],
           properties: {
             request: {
               type: "string",
@@ -96,6 +97,8 @@ export function askAdamTool(settings: VoiceAgentSettings, secretId: string) {
             },
             conversation_id: { type: "string", dynamic_variable: "system__conversation_id" },
             caller_id: { type: "string", dynamic_variable: "system__caller_id" },
+            called_number: { type: "string", dynamic_variable: "system__called_number" },
+            call_direction: { type: "string", dynamic_variable: "call_direction" },
           },
         },
       },
@@ -119,11 +122,7 @@ export function voiceAgentConfig(settings: VoiceAgentSettings, ids: AgentIds) {
         first_message: "{{greeting}}",
         language: "en",
         dynamic_variables: {
-          dynamic_variable_placeholders: {
-            call_briefing: placeholder.briefing,
-            greeting: placeholder.greeting,
-            local_time: placeholder.localTime,
-          },
+          dynamic_variable_placeholders: callVariables(placeholder, "inbound"),
         },
         prompt: {
           prompt: "{{call_briefing}}",

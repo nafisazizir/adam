@@ -600,7 +600,8 @@ stub the route).
   trigger (see "What a forged caller can and can't do" below). Only two files know ElevenLabs:
   `lib/voice.ts` at call time (signature and secret checks, payload parsing into neutral
   `CallStart`, `CallRequest` and `CallEnded`, each carrying the caller's E.164 number or null when
-  withheld, and the response shapes), and `lib/voice-agent.ts` at deploy time (the agent's whole
+  withheld, and on the last two the direction and the called number too, the response shapes, and
+  `placeOutboundCall`), and `lib/voice-agent.ts` at deploy time (the agent's whole
   configuration and the sync below). Retell, or a voice line on Photon, stays a swap of those two;
   WhatsApp calling would be a transport added there, not a change to the routes.
   - **The agent is code.** `syncVoiceAgent` (`lib/voice-agent.ts`) pushes everything the voice
@@ -681,8 +682,69 @@ stub the route).
     constant time). The caller must be a number that may text Adam over iMessage: `isOwnerCaller`
     runs `admitSender` from `lib/owner.ts` on it, so a set `OWNER_IMESSAGE_HANDLES` overrules the
     recorded owner exactly as in chat, and a call never claims an unknown owner. `start` declines
-    anyone else, and `ask` and `ended` check again, so a dashboard preview or web widget with no
-    caller id is refused.
+    anyone else, and `ask` and `ended` check again (`isOwnerOnCall`), so a dashboard preview or
+    web widget with no caller id is refused. Adam's own number is one end of every call, so those
+    two check the other end (`otherParty`): the caller on a call in, the called number on a call
+    Adam placed. The direction is Adam's own dynamic variable `call_direction`, which `start` sets
+    `inbound` and only `placeOutboundCall` sets `outbound`, so a caller cannot choose it, and a
+    forged caller on a call in is checked as the caller whatever number they fake, Adam's own
+    included. `ask_adam` binds it and `system__called_number` next to `system__caller_id`; a body
+    without them (a tool synced before outbound calls) reads as inbound. `ended` reads the same
+    variables, falling back to `metadata.phone_call` (`direction`, `external_number`,
+    `agent_number`).
+  - **Adam rings the owner** (`call_owner(reason)` over `ringOwner` in `lib/ring-owner.ts`).
+    `ringOwner(reason, deps)` is the primitive: it finds the number to ring (`ownerPhoneNumber`:
+    the recorded owner's handle, then `OWNER_IMESSAGE_HANDLES`, the first that parses as E.164 and
+    that `isOwnerCaller` admits, so the answers always reach the thread; an Apple ID email can't be
+    dialled, and with no phone handle the tool asks for the number in E.164 in
+    `OWNER_IMESSAGE_HANDLES`), claims a slot in the call budget, and calls `placeOutboundCall` with
+    `outboundCallBriefing(localTime, reason)`: the inbound persona and `ask_adam` rule plus the
+    reason, which is also the greeting ("Hey, it's Adam. <reason>"), with braces and newlines
+    stripped and capped at 300 characters. Only a call that certainly did not go out gives its slot
+    back: `placeOutboundCall` throws `CallNotPlaced` for every failure before the call request (the
+    number lookup), a 4xx on it and a parsed `success: false`. A lost connection, a 5xx or a body
+    that doesn't parse may follow a call that rang, so the slot stays claimed and the tool tells
+    Adam the call may have gone out and not to ring again. A later trigger can call `ringOwner`
+    directly once it has a gate of its own.
+    - **The vendor call.** `placeOutboundCall` lists `/v1/convai/phone-numbers`, takes
+      `CALLS_PHONE_NUMBER`'s `phone_number_id` and the agent assigned to it (the same agent, tool
+      and webhooks as a call in), and posts to `/v1/convai/twilio/outbound-call` (or
+      `/v1/convai/sip-trunk/outbound-call` for a SIP number) with `agent_id`,
+      `agent_phone_number_id`, `to_number`, `conversation_initiation_client_data.dynamic_variables`
+      (`callVariables`: the four `start` returns, with `call_direction: "outbound"`), a 30 s ring
+      timeout, and Twilio answering-machine detection that hangs up on `machine_start` or `fax`, so
+      a voicemail greeting is never relayed to Adam as requests. ElevenLabs runs the initiation
+      webhook for an outbound call only when the request carries no initiation data, so `start`
+      never sees one and there is no `<call_started>` for it. An unanswered call sends nothing
+      (`call_initiation_failure` is not subscribed); an answered one ends like any call, with
+      `<call_ended>`. The reason reaches ElevenLabs in the briefing, the one piece of call content
+      the vendor gets before anything is said.
+    - **Who may ring.** Only the owner's say-so: `ringOwnerRefusal` passes an owner chat turn
+      (`isOwnerChat`) and a reminder turn whose signed QStash payload carries `ring: true`
+      (`isRingingReminderTurn`: authenticator `reminders`, a user principal, attribute
+      `ring: "true"`). `schedule_reminder({ ring: true })` is refused outside the owner's chat, so
+      a mail, invite, coding-session or call turn can't launder a ringing reminder, and is refused
+      up front when calling is not set up or no handle of the owner's is a phone number, so a
+      wake-up call never quietly becomes a text. Every other turn (mail, the briefing, workouts,
+      coding updates, calls) is refused, since each carries text someone else wrote, and the
+      instructions say to text instead: a background turn can't ring. An owner chat turn can still
+      be steered by what its tools read (an email saying "phone him now" while summarising the
+      inbox), which costs at most one ring within the budget, opening with text Adam could have
+      texted anyway, as with the other owner-chat gates. Nothing asks for confirmation, so nothing
+      parks a background turn. A standing "call me if X emails" would need its own gate matched in
+      code, not by the model.
+    - **Budget.** At most one call every 10 minutes and six in a rolling 24 hours, kept in one
+      claim store pointer (`claimRateSlot` in `lib/rate-limit.ts`: the recent call times, written
+      conditionally); a store failure or a lost race refuses the call, so a loop or a replayed step
+      stops at the gap. A ringing reminder also rings once: `call_owner` passes `ringOnceKey`
+      (`ring-<QStash message id>`) and `ringOwner` takes it with `claimOnce`, so a redelivery
+      after the gap is refused; it is given back whenever the phone certainly did not ring, so a
+      redelivery after a refused call still can. There are no quiet hours: every allowed call is
+      one the owner asked for at that time, a 6 am wake-up included.
+    - **Configuration.** No new env var: it needs `ELEVENLABS_API_KEY`, `CALLS_PHONE_NUMBER` and
+      `CALLS_TOOL_SECRET` (without it `ask` refuses, so the call could relay nothing to Adam), and
+      the tool says which when one is missing. Once it rings, Adam texts the reason in one line, so
+      a missed call still reaches the owner.
   - **What a forged caller can and can't do.** A phone line's caller ID is cheap to fake from VoIP,
     and Australia has no STIR/SHAKEN, so the owner's number is the only gate; the owner chose that
     trade-off over a spoken passcode.
@@ -713,7 +775,9 @@ stub the route).
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` and `lastDailyRun` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchGoogleAccounts` and `stopWatchingGoogleAccount` in `lib/google-watch.ts` (over `watchMailboxes` in `lib/mail-watch.ts` and `watchCalendars` in `lib/calendar-watch.ts`); `coalescedRun` and `takeDailyRun` in `lib/coalesce.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `lib/daily-claim.ts`; `claimRateSlot` and `releaseRateSlot` in `lib/rate-limit.ts`; `ringOwner`
+  and `ringOwnerRefusal` in `lib/ring-owner.ts`; `knownOwner` (the owner the call routes and
+  `call_owner` admit) in `lib/known-owner.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchGoogleAccounts` and `stopWatchingGoogleAccount` in `lib/google-watch.ts` (over `watchMailboxes` in `lib/mail-watch.ts` and `watchCalendars` in `lib/calendar-watch.ts`); `coalescedRun` and `takeDailyRun` in `lib/coalesce.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -722,7 +786,7 @@ stub the route).
   in chat), `list_google_accounts`,
   `search_email`, `read_email`, `list_events`, `draft_email`, `create_event` and `update_event`
   (confirmed in chat), `reply_to_call` (speak on the live call), `read_call_transcript` and
-  `list_calls` (past calls), `agent`
+  `list_calls` (past calls), `call_owner` (ring the owner, on their say-so), `agent`
   (disables the built-in root-copy tool), plus the
   memory slot's `owner__save_memory` and `owner__remove_memory` and connection-provided tools.
 - **Outbound media** (`agent/lib/outbound.ts`): one primitive for everything the model attaches. The
@@ -898,6 +962,9 @@ adam/
 │   │   ├── calls.ts           # vendor-free: call auth, owner caller check, messages, reply stream tap
 │   │   ├── call-transcripts.ts # CallTranscript, keepCallTranscript (best effort), bounded untrusted pages
 │   │   ├── call-transcript-store.ts # the CallTranscriptStore in private Vercel Blob
+│   │   ├── ring-owner.ts      # ringOwner: owner's number, call budget, placeOutboundCall; who may ring
+│   │   ├── rate-limit.ts      # claimRateSlot: at most N claims per window with a gap, over a ClaimStore
+│   │   ├── known-owner.ts     # the owner the call routes and call_owner admit
 │   │   ├── google.ts          # the only file that knows Google: Connect tokens, Gmail, Calendar, MIME
 │   │   ├── google-accounts.ts # the owner's Google account names over a GoogleAccountStore, cached reads
 │   │   ├── google-accounts-store.ts # the GoogleAccountStore in private Vercel Blob
@@ -934,6 +1001,7 @@ adam/
 │   │   ├── reply_to_call.ts   # what the caller hears; only in a live call turn
 │   │   ├── read_call_transcript.ts # a past call's whole transcript, paged
 │   │   ├── list_calls.ts      # recent calls with a saved transcript, newest first
+│   │   ├── call_owner.ts      # ring the owner; only from their chat or a reminder they asked to ring
 │   │   ├── connect_google_account.ts # owner's direct chat only: add or reconnect an account by name
 │   │   ├── disconnect_google_account.ts # workflow tool: confirm in chat, revoke, forget the name
 │   │   ├── list_google_accounts.ts
@@ -989,7 +1057,8 @@ invitation, a move, a cancellation, a guest declining) as a trigger through Cale
 only when it upsets their plans soon · the rest of today's calendar and unread mail no trigger already sent, in the
 morning briefing · calls to Adam's own phone number through one ElevenLabs voice agent,
 answered from the owner's own thread, with texts mid-call and the call
-joining the chat history afterwards, its full transcript kept for later lookups.
+joining the chat history afterwards, its full transcript kept for later lookups · Adam ringing the
+owner when they ask in chat or set a ringing reminder.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
 subagents · sending mail (drafts only, by design) · deleting events and answering invites · inbound burst debouncing (low-risk single-user; add a Photon
@@ -1028,9 +1097,9 @@ DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service 
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
-ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it
+ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it; call_owner places calls with it
 ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
-CALLS_PHONE_NUMBER=...              # optional; Adam's number in E.164, assigned to the voice agent
+CALLS_PHONE_NUMBER=...              # optional; Adam's number in E.164, assigned to the voice agent; call_owner rings from it
 GOOGLE_CONNECTOR=...                # optional; the one Vercel Connect Google connector (id scl_… or UID google/<name>); accounts are added in chat
 GOOGLE_PUBSUB_TOPIC=...             # optional; projects/<project>/topics/<topic> Gmail watches publish to; unset, no watch
 GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service account email; unset, every push is refused
@@ -1215,8 +1284,11 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
      event stream for Adam's `reply_to_call`. WhatsApp calling was dropped; a voice line on Photon
      remains a later swap in the dashboards with no change in Adam. The full transcript is kept in
      private Blob, named in `<call_ended>` by its conversation id, so later turns read details
-     compaction lost (`read_call_transcript`, `list_calls`). Follow-up: outbound calls (Adam rings
-     the owner for something urgent) as one more delivery channel.
+     compaction lost (`read_call_transcript`, `list_calls`). Outbound calls are built (§4 "Adam
+     rings the owner"): `call_owner` rings through the same agent on the owner's say-so only (their
+     chat, or a reminder set with `ring: true`), within a call budget. Ringing about urgent mail on
+     Adam's own judgment stays out: mail is someone else's text, so it would need a rule matched in
+     code (a sender the owner listed), not by the model.
    - **Line.** Photon's Spectrum voice provider adds inbound and outbound SIP calls to the iMessage
      line, with cookbooks for ElevenLabs, Retell, LiveKit and Twilio; that would make the call
      number the text number. The docs don't say which plan or line type includes voice — confirm

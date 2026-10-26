@@ -61,10 +61,16 @@ export async function publishReminder(input: {
   target: Record<string, unknown>;
   delaySeconds: number;
   idempotencyKey: string;
+  ring?: boolean;
 }): Promise<string> {
   return publishCallback({
     url: env.remindersDeliverUrl,
-    body: { message: input.message, channel: input.channel, target: input.target },
+    body: {
+      message: input.message,
+      channel: input.channel,
+      target: input.target,
+      ...(input.ring && { ring: true }),
+    },
     delaySeconds: input.delaySeconds,
     deduplicationId: `reminder-${input.idempotencyKey}`.replace(/[^\w-]/gu, "_"),
   });
