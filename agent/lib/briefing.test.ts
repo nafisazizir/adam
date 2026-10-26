@@ -12,7 +12,8 @@ import {
 const time = "<current_time>now</current_time>";
 const context: BriefingContext = {
   owner: { issuer: "photon", principalId: "+61400000000" },
-  now: new Date("2026-10-26T20:00:00Z"),
+  now: new Date("2026-10-26T20:20:00Z"),
+  scheduledAt: new Date("2026-10-26T20:00:00Z"),
 };
 
 function section(name: string, render: BriefingSection["render"]): BriefingSection {

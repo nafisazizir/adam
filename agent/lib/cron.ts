@@ -26,3 +26,20 @@ export function dailyCron(local: LocalTime, timeZone: string, at: Date = new Dat
     (((localMinutes - offsetMinutes(timeZone, at)) % minutesPerDay) + minutesPerDay) % minutesPerDay;
   return `${utcMinutes % 60} ${Math.floor(utcMinutes / 60)} * * *`;
 }
+
+const minuteMs = 60 * 1000;
+const dayMs = minutesPerDay * minuteMs;
+
+// The latest instant at or before `now` that a `dailyCron` expression was due. The cron Vercel runs
+// was built with the offset at deploy time, which daylight saving may since have moved an hour from
+// the one this instance computed, so its hour either side counts too.
+export function lastDailyRun(cron: string, now: Date): Date {
+  const match = /^(\d{1,2}) (\d{1,2}) \* \* \*$/u.exec(cron);
+  if (!match) throw new Error(`"${cron}" is not a daily cron like "0 21 * * *".`);
+  const minuteOfDay = Number(match[2]) * 60 + Number(match[1]);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const due = [-1, 0].flatMap((day) =>
+    [-60, 0, 60].map((shift) => today + day * dayMs + (minuteOfDay + shift) * minuteMs),
+  );
+  return new Date(Math.max(...due.filter((instant) => instant <= now.getTime())));
+}

@@ -9,8 +9,7 @@ import { startOfNextLocalDay } from "#lib/zoned-time.js";
 const minuteMs = 60 * 1000;
 export const mailLookbackMs = 24 * 60 * minuteMs;
 // A new-mail run waits out a three-minute window before it reads the mailbox, so the newest mail in
-// a watched mailbox is left to it. The next briefing's window reaches back over this gap, so mail
-// the run never handed over still turns up there.
+// a watched mailbox is left to it. The next briefing's window reaches back over this gap.
 export const pushSettleMs = 10 * minuteMs;
 const maxEvents = 25;
 const maxMailCandidates = 50;
@@ -23,20 +22,27 @@ export function unreadMailQuery(since: Date): string {
   return `in:inbox is:unread -category:promotions -category:social after:${after}`;
 }
 
+// The window starts a day before the run was due, not before it ran: a cron that fires anywhere in
+// its hour then leaves no gap between two briefings, only an overlap of yesterday's lateness.
+export function mailSince(scheduledAt: Date): Date {
+  return new Date(scheduledAt.getTime() - mailLookbackMs);
+}
+
 // `delivered` holds, per account, what new-mail triggers already handed over, or null when nothing
 // watches that mailbox and the briefing is the only way its mail reaches the user.
 export function briefingMail(
   candidates: readonly EmailSummary[],
   delivered: ReadonlyMap<string, ReadonlySet<string> | null>,
-  now: Date,
+  run: { readonly scheduledAt: Date; readonly now: Date },
 ): { emails: EmailSummary[]; more: boolean } {
-  const end = now.getTime();
+  const start = mailSince(run.scheduledAt).getTime();
+  const end = run.now.getTime();
   const eligible = candidates.filter((email) => {
     const at = email.date?.getTime();
     if (at === undefined) return false;
     const pushed = delivered.get(email.account);
-    if (!pushed) return at > end - mailLookbackMs && at <= end;
-    return !pushed.has(email.id) && at > end - mailLookbackMs - pushSettleMs && at <= end - pushSettleMs;
+    if (!pushed) return at > start && at <= end;
+    return !pushed.has(email.id) && at > start - pushSettleMs && at <= end - pushSettleMs;
   });
   const emails = noteworthy(eligible);
   return { emails, more: eligible.filter(mightMatter).length > emails.length };
@@ -88,7 +94,7 @@ export function renderGoogleBriefing(briefing: GoogleBriefing): string | null {
   if (briefing.mail.length) {
     parts.push(
       block(
-        "Unread inbox mail from the last day that might need them. Mail a <new_email> message already brought you is left out:",
+        "Unread inbox mail from the last day that might need them. Mail a new email message already brought you is left out:",
         briefing.mail.map(emailEntry),
         briefing.moreMail ? "(More unread mail like this came in than is listed here.)" : null,
       ),
@@ -97,7 +103,7 @@ export function renderGoogleBriefing(briefing: GoogleBriefing): string | null {
   if (briefing.needsConnecting.length) {
     parts.push(
       `These Google accounts need connecting, so they were not read: ${briefing.needsConnecting.join(", ")}. ` +
-        "Tell them in a line, and that they can text you directly for a fresh link.",
+        "Tell them in a line, and that they can text you directly for a fresh link, or ask you to disconnect it if they no longer use it.",
     );
   }
   return parts.length ? parts.join("\n\n") : null;
@@ -130,10 +136,10 @@ export function googleBriefingSection(deps: GoogleBriefingDeps): BriefingSection
 
   return {
     name: "google",
-    async render({ owner, now }: BriefingContext) {
+    async render({ owner, now, scheduledAt }: BriefingContext) {
       if (!workspace.configured || !(await workspace.accountNames(owner)).length) return null;
 
-      const since = new Date(now.getTime() - mailLookbackMs - pushSettleMs);
+      const since = new Date(mailSince(scheduledAt).getTime() - pushSettleMs);
       const [events, mail] = await Promise.all([
         workspace.listEvents(
           owner,
@@ -146,7 +152,7 @@ export function googleBriefingSection(deps: GoogleBriefingDeps): BriefingSection
       const shown = briefingMail(
         mail.results.filter((email) => delivered.has(email.account)),
         delivered,
-        now,
+        { scheduledAt, now },
       );
 
       if (mail.truncated) console.warn(`[briefing] only the ${maxMailCandidates} newest unread emails were checked`);

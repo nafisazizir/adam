@@ -53,7 +53,7 @@ export const needsThem: GoogleBriefing = {
 export function googleBriefingMessage(google: GoogleBriefing): Promise<string> {
   const section: BriefingSection = { name: "google", render: () => renderGoogleBriefing(google) };
   const now = new Date();
-  return briefingMessage(currentTimeContext(now), { owner: { issuer: "eval", principalId: "eval" }, now }, [
+  return briefingMessage(currentTimeContext(now), { owner: { issuer: "eval", principalId: "eval" }, now, scheduledAt: now }, [
     briefingGuidance,
     section,
   ]);

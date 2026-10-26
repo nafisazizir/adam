@@ -10,6 +10,8 @@ export const briefingAuthenticator = "briefing";
 export interface BriefingContext {
   readonly owner: HomeOwner;
   readonly now: Date;
+  // When the cron was due, which Vercel Hobby may run up to an hour later.
+  readonly scheduledAt: Date;
 }
 
 export interface BriefingSection {

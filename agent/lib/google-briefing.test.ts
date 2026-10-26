@@ -15,10 +15,13 @@ import {
 } from "#lib/google-briefing.js";
 import type { MailboxState, StoredMailboxState } from "#lib/new-mail.js";
 
-const now = new Date("2026-10-25T20:00:00Z");
 const minute = 60 * 1000;
+const scheduledAt = new Date("2026-10-25T20:00:00Z");
+const now = new Date(scheduledAt.getTime() + 40 * minute);
+const run = { scheduledAt, now };
 const ago = (ms: number) => new Date(now.getTime() - ms);
-const context: BriefingContext = { owner: { issuer: "photon", principalId: "+61400000000" }, now };
+const beforeDue = (ms: number) => new Date(scheduledAt.getTime() - ms);
+const context: BriefingContext = { owner: { issuer: "photon", principalId: "+61400000000" }, now, scheduledAt };
 
 function email(id: string, overrides: Partial<EmailSummary> = {}): EmailSummary {
   return {
@@ -66,18 +69,18 @@ test("asks Gmail for unread inbox mail that could matter, since a time in epoch 
   assert.match(query, /after:1792958400$/u);
 });
 
-test("an unwatched mailbox shows its noteworthy mail from the last day", () => {
+test("an unwatched mailbox shows its noteworthy mail since a day before the run was due", () => {
   const { emails, more } = briefingMail(
     [
       email("fresh", { date: ago(minute) }),
-      email("day-old", { date: ago(mailLookbackMs - minute) }),
-      email("too-old", { date: ago(mailLookbackMs + minute) }),
+      email("day-old", { date: beforeDue(mailLookbackMs - minute) }),
+      email("yesterdays", { date: beforeDue(mailLookbackMs + minute) }),
       email("read", { unread: false }),
       email("promo", { category: "promotions" }),
       email("undated", { date: null }),
     ],
     new Map(),
-    now,
+    run,
   );
   assert.deepEqual(
     emails.map((e) => e.id),
@@ -92,11 +95,11 @@ test("a watched mailbox leaves out what new-mail triggers sent and what they hav
       email("sent", { date: ago(2 * 60 * minute) }),
       email("waiting", { date: ago(2 * 60 * minute) }),
       email("too-fresh", { date: ago(pushSettleMs - minute) }),
-      email("from-the-last-gap", { date: ago(mailLookbackMs + pushSettleMs - minute) }),
+      email("from-the-last-gap", { date: beforeDue(mailLookbackMs + pushSettleMs - minute) }),
       email("other-account", { account: "work", date: ago(minute) }),
     ],
     new Map([["personal", new Set(["sent"])]]),
-    now,
+    run,
   );
   assert.deepEqual(
     emails.map((e) => e.id),
@@ -104,9 +107,22 @@ test("a watched mailbox leaves out what new-mail triggers sent and what they hav
   );
 });
 
+test("two briefings leave no mail between them, however late in its hour each one ran", () => {
+  const day = 24 * 60 * minute;
+  const first = { scheduledAt, now: new Date(scheduledAt.getTime() + 5 * minute) };
+  const second = { scheduledAt: new Date(scheduledAt.getTime() + day), now: new Date(scheduledAt.getTime() + day + 50 * minute) };
+  for (const delivered of [new Map(), new Map([["personal", new Set<string>()]])]) {
+    for (let at = scheduledAt.getTime() - 30 * minute; at <= second.now.getTime() - pushSettleMs; at += minute) {
+      const mail = [email(`at-${at}`, { date: new Date(at) })];
+      const shown = [first, second].filter((briefing) => briefingMail(mail, delivered, briefing).emails.length > 0);
+      assert.ok(shown.length > 0, `mail at ${new Date(at).toISOString()} reached no briefing`);
+    }
+  }
+});
+
 test("more is set when noteworthy mail had to be cut", () => {
   const many = Array.from({ length: 12 }, (_, i) => email(`m${i}`, { date: ago((i + 1) * minute) }));
-  const { emails, more } = briefingMail(many, new Map(), now);
+  const { emails, more } = briefingMail(many, new Map(), run);
   assert.equal(emails.length, 10);
   assert.equal(more, true);
 });
@@ -132,6 +148,8 @@ test("renders events, mail and accounts needing connecting, with mail and events
   assert.match(text, /marked important\n<email_content account="personal" id="ask">/u);
   assert.doesNotMatch(text, /More unread mail/u);
   assert.match(text, /need connecting, so they were not read: work\./u);
+  assert.match(text, /disconnect it if they no longer use it/u);
+  assert.doesNotMatch(text, /<new_email>/u);
 });
 
 test("mail cannot close its own wrapper or the briefing, even with one tag hidden in the other", async () => {
@@ -219,7 +237,7 @@ test("reads the rest of today and the last day of mail, checking state only for 
   const text = await googleBriefingSection(deps).render(context);
 
   assert.deepEqual(calls.ranges, [{ from: now, to: new Date("2026-10-26T13:00:00Z") }]);
-  assert.match(calls.queries[0] ?? "", new RegExp(`after:${Math.floor((now.getTime() - mailLookbackMs - pushSettleMs) / 1000)}$`, "u"));
+  assert.match(calls.queries[0] ?? "", new RegExp(`after:${Math.floor(beforeDue(mailLookbackMs + pushSettleMs).getTime() / 1000)}$`, "u"));
   assert.deepEqual(calls.reads.sort(), ["personal", "work"]);
   assert.ok(text);
   assert.match(text, /id="standup"/u);

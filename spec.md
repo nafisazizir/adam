@@ -623,7 +623,7 @@ stub the route).
   `untrusted`/`stripWrapperTags` in `lib/untrusted.ts`;
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
-  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
+  `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` and `lastDailyRun` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
   `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` and `stopWatchingMailbox` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
@@ -680,7 +680,10 @@ stub the route).
   re-run the same day is not skipped as already claimed.
   - **`briefing`** (7am local, once a day, Hobby-safe). Delivers a `<briefing>` trigger built by
     `lib/briefing.ts` from a list of section providers. Each section renders text or nothing from
-    a `BriefingContext` (the home owner and the time the run started), a failing section or one
+    a `BriefingContext` (the home owner, the time the run started, and `scheduledAt`, when the cron
+    was due: `lastDailyRun` in `lib/cron.ts`, the latest instant at or before now at the cron's
+    UTC time, or the hour either side, since daylight saving may have moved the offset computed now
+    from the one baked in at deploy), a failing section or one
     still waiting after 30 seconds is left out rather than failing the briefing, and section text
     cannot close the wrapper tag (`stripWrapperTags` repeats until nothing is left to strip, so a
     tag split around another, `</bri</briefing>efing>`, is removed too). The sections:
@@ -695,13 +698,19 @@ stub the route).
       unconfigured or no account listed it renders nothing and makes no Google call. Otherwise, as
       the home owner: the rest of today's events (`listEvents` from now to the next local midnight,
       `startOfNextLocalDay`, every shown calendar, declined ones dropped) and unread inbox mail
-      from the last day (`searchEmail`, filtered by `mightMatter` and capped at ten like a
-      `<new_email>`). Mail a new-mail trigger already handed over is left out: for each account
-      with candidate mail the section reads that mailbox's existing state document
+      since a day before `scheduledAt`, up to now (`searchEmail`, filtered by `mightMatter` and
+      capped at ten like a `<new_email>`). Anchoring to when the run was due rather than when it
+      ran means a Hobby cron firing anywhere in its hour leaves no gap between two briefings, only
+      an overlap of at most yesterday's lateness, in which still-unread mail the model already saw
+      in the same thread can show again. Mail a new-mail trigger already handed over is left out:
+      for each account with candidate mail the section reads that mailbox's existing state document
       (`deliveredMail` in `lib/new-mail.ts`), skips ids in `delivered`, and also skips mail newer
-      than ten minutes that a pending mail run will pick up; the window then reaches back ten
-      minutes further, so nothing falls between two briefings. A mailbox that was never watched has
-      no state, and its whole last day counts. A state read that fails drops that account's mail
+      than ten minutes that a pending mail run will pick up; that mailbox's window then starts ten
+      minutes earlier, so the next briefing still reaches it. A mailbox that was never watched has
+      no state, and its whole window counts. The briefing records nothing in `delivered`, so mail it
+      shows that push hands over late anyway (a mailbox held back by the daily run cap, a run
+      retried more than ten minutes late, a lapsed watch replaying from its checkpoint) can arrive
+      again as a `<new_email>` in the same thread. A state read that fails drops that account's mail
       (a missed line beats a repeated heads-up). Accounts that need connecting are named so the
       owner hears about it in a line; other per-account failures are logged and left out. Nothing
       to show renders nothing. Events and mail are tagged `<calendar_content>`/`<email_content>`,
@@ -999,7 +1008,8 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   the number of instances. Newsletters arrive overnight too, and every mail run maps its address by
   touching every account, so with new-mail triggers on expect about 24 requests per account per
   day: about 720 a month per account, 1,440 with two, roughly $3 a month of overage on Hobby.
-  Without new-mail triggers it is far fewer.
+  Without new-mail triggers it is far fewer: mostly the morning briefing's one request per account,
+  about 30 a month per account, plus whatever chat reads.
   The account list costs one Blob write per connect of a new name or disconnect, and about 24
   reads a day.
 - New-mail triggers (the PR #39 description is the step-by-step runbook) need, in the same Google
