@@ -134,6 +134,7 @@ test("parses a post-call transcription into a neutral call summary", () => {
         { speaker: "caller", text: "remind me to call mum at 5" },
         { speaker: "adam", text: "done, 5pm it is" },
       ],
+      startedAt: "2025-10-18T08:58:20.000Z",
       durationSecs: 42,
     },
   });
@@ -151,6 +152,7 @@ test("a summary trusts the caller system variable over phone_call metadata", () 
   assert.ok(parsed.ok);
   assert.equal(parsed.ended.callerNumber, "+61412345678");
   assert.equal(parsed.ended.summary, null);
+  assert.equal(parsed.ended.startedAt, null);
 });
 
 test("ignores other webhook events and rejects junk", () => {
