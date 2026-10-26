@@ -155,6 +155,15 @@ test("a summary trusts the caller system variable over phone_call metadata", () 
   assert.equal(parsed.ended.startedAt, null);
 });
 
+test("a summary without a start time still parses", () => {
+  const parsed = parseCallEnded({
+    type: "post_call_transcription",
+    data: { conversation_id: "conv_4", metadata: { call_duration_secs: 12 } },
+  });
+  assert.ok(parsed.ok);
+  assert.equal(parsed.ended.startedAt, null);
+});
+
 test("ignores other webhook events and rejects junk", () => {
   assert.deepEqual(parseCallEnded({ type: "post_call_audio", data: {} }), { ok: false, reason: "ignored" });
   assert.deepEqual(parseCallEnded({ type: "post_call_transcription" }), { ok: false, reason: "invalid" });
