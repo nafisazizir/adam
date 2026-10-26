@@ -95,10 +95,11 @@ export interface TranscriptPage {
   readonly nextLine: number | null;
 }
 
-// Pages by whole lines, always at least one, so any call reads back in bounded pieces.
-export function transcriptPage(transcript: CallTranscript, fromLine: number): TranscriptPage {
+// Pages by whole lines, always at least one, so any call reads back in bounded pieces. Lines are
+// numbered from 1 in the label, `fromLine` and `nextLine` alike.
+export function transcriptPage(transcript: CallTranscript, fromLine: number = 1): TranscriptPage {
   const total = transcript.lines.length;
-  const start = Math.min(Math.max(0, Math.trunc(fromLine)), total);
+  const start = Math.min(Math.max(0, Math.trunc(fromLine) - 1), total);
   const body: string[] = [];
   let used = 0;
 
@@ -121,7 +122,7 @@ export function transcriptPage(transcript: CallTranscript, fromLine: number): Tr
   return {
     transcript: untrusted("call_transcript", { conversation: transcript.conversationId }, body, callTags),
     lines: total === 0 ? "none" : start === end ? `none past line ${total}` : `${start + 1}-${end} of ${total}`,
-    nextLine: end < total ? end : null,
+    nextLine: end < total ? end + 1 : null,
   };
 }
 

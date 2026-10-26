@@ -145,7 +145,7 @@ test("a summary trusts the caller system variable over phone_call metadata", () 
     type: "post_call_transcription",
     data: {
       conversation_id: "conv_3",
-      metadata: { phone_call: { external_number: "+61499999999" } },
+      metadata: { start_time_unix_secs: "soon", phone_call: { external_number: "+61499999999" } },
       conversation_initiation_client_data: { dynamic_variables: { system__caller_id: "+61412345678" } },
     },
   });

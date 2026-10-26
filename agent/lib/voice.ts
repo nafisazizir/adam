@@ -105,7 +105,7 @@ const endedSchema = z.object({
       .nullish(),
     metadata: z
       .object({
-        start_time_unix_secs: z.number().nullish(),
+        start_time_unix_secs: z.unknown(),
         call_duration_secs: z.number().nullish(),
         phone_call: z.object({ external_number: optionalText }).nullish(),
       })
@@ -142,7 +142,7 @@ function variable(variables: Record<string, unknown> | null | undefined, name: s
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function instantOf(unixSecs: number | null | undefined): string | null {
+function instantOf(unixSecs: unknown): string | null {
   return typeof unixSecs === "number" && Number.isFinite(unixSecs) ? new Date(unixSecs * 1000).toISOString() : null;
 }
 

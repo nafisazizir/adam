@@ -8,7 +8,8 @@ import { formatUserDateTime } from "#lib/time.js";
 export default defineTool({
   description:
     "List the user's most recent phone calls with you that have a saved transcript, newest first, " +
-    "each with its conversation id and when it ended in the user's local time. Use it to find the " +
+    "each with its conversation id and when its transcript was saved (right after the call ended, " +
+    "in the user's local time). Use it to find the " +
     "id for read_call_transcript when this thread no longer has it.",
   inputSchema: z.object({
     limit: z.number().int().min(1).max(30).optional().describe("How many calls, 10 if left out."),
@@ -26,7 +27,7 @@ export default defineTool({
     return {
       calls: recentCalls(saved, limit ?? 10).map((call) => ({
         conversation: call.conversationId,
-        endedAt: formatUserDateTime(call.savedAt),
+        savedAt: formatUserDateTime(call.savedAt),
       })),
     };
   },

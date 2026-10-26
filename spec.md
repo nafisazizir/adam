@@ -585,8 +585,9 @@ stub the route).
     call. Transcripts are kept, not fetched from ElevenLabs' conversation API on demand, so they
     outlive the vendor's retention and a voice-vendor swap, and only `lib/voice.ts` knows the
     vendor's shape. The read is bounded: pages of whole lines up to 12,000 characters (a line is
-    clipped at 2,000), summary first, continued with `fromLine`; the text sits inside
-    `<call_transcript>` as untrusted content, with every call wrapper's look-alike tags stripped.
+    clipped at 2,000), summary first, continued with `fromLine` (numbered from 1, like the page's
+    line range); the text sits inside `<call_transcript>` as untrusted content, with every call
+    wrapper's look-alike tags stripped.
   - **Only the owner.** `start` and `ask` share a secret header (`x-calls-secret`, compared in
     constant time). The caller must be a number that may text Adam over iMessage: `isOwnerCaller`
     runs `admitSender` from `lib/owner.ts` on it, so a set `OWNER_IMESSAGE_HANDLES` overrules the

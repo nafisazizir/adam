@@ -17,9 +17,9 @@ export default defineTool({
     fromLine: z
       .number()
       .int()
-      .min(0)
+      .min(1)
       .optional()
-      .describe("Where to start, from the previous page's nextLine; leave out for the start."),
+      .describe("The line number to start at, from the previous page's nextLine; leave out for line 1."),
   }),
   label: { start: () => "Read a call transcript" },
   async execute({ conversation, fromLine }) {
@@ -39,7 +39,7 @@ export default defineTool({
       conversation,
       startedAt: transcript.startedAt ? formatUserDateTime(new Date(transcript.startedAt)) : null,
       durationSecs: transcript.durationSecs,
-      ...transcriptPage(transcript, fromLine ?? 0),
+      ...transcriptPage(transcript, fromLine),
     };
   },
 });
