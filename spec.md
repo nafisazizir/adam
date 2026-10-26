@@ -158,7 +158,10 @@ stub the route).
     `nextOccurrence(rule, anchor, after, timeZone)` over every N hours, days, weeks (on chosen weekdays)
     or months (on a day, clamped to a short month's end), DST-safe, with `describeRecurrence` for the
     words; `lib/routines.ts` holds the routines in one private Blob document (`routines.json`, through
-    `updateDocument` in `lib/json-document.ts` over `blobDocumentStore` in `lib/blob-document.ts`). Cron
+    `updateDocument` in `lib/json-document.ts` over `blobDocumentStore` in `lib/blob-document.ts`, which
+    fails loudly on a corrupt document instead of reading it as empty, since it is the only record;
+    stored schedules are read with `storedRecurrenceSchema`, looser than what the model may set, so a
+    tighter rule never makes saved routines unreadable). Cron
     was rejected: it cannot say "every other Sunday", and a QStash schedule per routine would spend the
     free plan's ten.
   - **Chained timers.** A routine stores its `nextRunAt`; each run computes the next and sets a timer for
@@ -174,9 +177,11 @@ stub the route).
     `releaseRoutines` undoes only what the claim changed and the route answers 500, so QStash retries.
     `update_routine` restores the routine if its new timer cannot be set, as `create_routine` deletes it.
   - **The turn.** `runDueRoutines` (`lib/routine-runner.ts`) delivers through `homeDelivery()` as the
-    owner (`routineAuth`, authenticator `routines`, `turnPolicy: "queue"`), under a daily cap of 8 routine runs
-    (`takeDailyRun`, counted per routine) because each run spends two Blob writes of Hobby's 2,000 a
-    month (see the Blob budget in deployment notes); a run over the cap is dropped and logged. Each `<routine>` carries
+    owner (`routineAuth`, authenticator `routines`, `turnPolicy: "queue"`), within a run budget: each run spends two Blob writes of Hobby's 2,000 a month
+    (see the Blob budget in deployment notes), so `addRoutine` and `changeRoutine` refuse a change
+    that takes the active routines past 8 expected runs a day (`runsPerDay` in `lib/recurrence.ts`),
+    with a message the owner can act on. A daily cap of the same 8 (`takeDailyRun`, one slot per run,
+    reused by its retries) backs it up; a run over it is dropped and logged. Each `<routine>` carries
     its instruction, schedule and the notes of its last five runs: Adam records one line per run with
     `note_routine_run`, which survives compaction of the thread, so a routine can compare against its
     last run. Right-to-silence applies; nothing new is silence unless the instruction says otherwise.
@@ -1324,8 +1329,9 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
     900 to 3,000 simple a month.
   - calendar changes: no Blob writes or state reads at all (the cursor, channels and markers are
     Runtime Cache); each run reads the home pointer like a mail run, a realistic 5 to 20 a day.
-  - routines: a run writes `routines.json` twice (the claim and its note), under a cap of 8 runs a
-    day, so at most 480 advanced a month (a fortnightly checkpoint and a few weekly routines: about
+  - routines: a run writes `routines.json` twice (the claim and its note), and the active routines
+    may add up to at most 8 expected runs a day (refused when one is created, resumed or rescheduled
+    past it), so at most 480 advanced a month (a fortnightly checkpoint and a few weekly routines: about
     30), plus a put per create, change or delete and a few simple reads per run.
   - long timers (more than seven days out): one put to `long-timers.json` when set and one per
     weekly hop, a handful a month.

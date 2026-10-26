@@ -3,13 +3,29 @@ import type { RouteHandlerArgs } from "eve/channels";
 import { takeDailyRun } from "#lib/coalesce.js";
 import { homeDelivery } from "#lib/delivery.js";
 import { armRoutineRun, blobRoutineStore } from "#lib/routine-store.js";
-import { claimDueRoutines, type DueRoutine, releaseRoutines, routineAuth, routinesMessage } from "#lib/routines.js";
+import {
+  claimDueRoutines,
+  type DueRoutine,
+  maxRunsPerDay,
+  releaseRoutines,
+  routineAuth,
+  routinesMessage,
+} from "#lib/routines.js";
 import { sharedCache } from "#lib/shared-cache.js";
 import { currentTimeContext, formatUserDateTime, userLocalDate, userTimeZone } from "#lib/time.js";
 
-// Each routine run spends two writes to the routines document (the claim and its note) of Hobby
-// Blob's 2,000 advanced operations a month, and the spec's Blob budget counts on this cap.
-const dailyRunCap = 8;
+// A backstop: the run budget in lib/routines.ts already keeps active routines within it.
+const dailyRunCap = maxRunsPerDay;
+const slotTtlSeconds = 2 * 24 * 60 * 60;
+
+// A retried delivery of the same run reuses its slot, so failures cannot spend the day's cap.
+async function takeRunSlot(entry: DueRoutine, day: string): Promise<boolean> {
+  const slot = `routine-slot:${entry.routine.id}:${entry.at}`;
+  if (await sharedCache.get(slot)) return true;
+  if (!(await takeDailyRun(sharedCache, { key: "routine-runs", day, cap: dailyRunCap, label: "routines" }))) return false;
+  await sharedCache.set(slot, true, slotTtlSeconds);
+  return true;
+}
 
 export async function runDueRoutines(to: RouteHandlerArgs["to"], now: Date = new Date()): Promise<void> {
   const home = await homeDelivery();
@@ -32,7 +48,7 @@ export async function runDueRoutines(to: RouteHandlerArgs["to"], now: Date = new
   const day = userLocalDate(now);
   const due: DueRoutine[] = [];
   for (const entry of claim.due) {
-    if (await takeDailyRun(sharedCache, { key: "routine-runs", day, cap: dailyRunCap, label: "routines" })) due.push(entry);
+    if (await takeRunSlot(entry, day)) due.push(entry);
     else console.warn(`[routines] dropped ${entry.routine.id}'s run at ${entry.at}: over today's cap of ${dailyRunCap}`);
   }
   if (!due.length) return;

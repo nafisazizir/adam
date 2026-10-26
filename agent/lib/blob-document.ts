@@ -10,8 +10,9 @@ function token(): string {
   return env.BLOB_READ_WRITE_TOKEN;
 }
 
-// A corrupt document reads as `empty`, so the next write repairs it instead of wedging every caller.
-export function blobDocumentStore<T>(pathname: string, schema: z.ZodType<T>, empty: T): DocumentStore<T> {
+// These documents are the only record of what they hold, so a corrupt one fails loudly rather than
+// reading as empty and being overwritten by the next write.
+export function blobDocumentStore<T>(pathname: string, schema: z.ZodType<T>): DocumentStore<T> {
   return {
     async read() {
       const result = await get(pathname, { access: "private", token: token(), useCache: false });
@@ -19,7 +20,7 @@ export function blobDocumentStore<T>(pathname: string, schema: z.ZodType<T>, emp
       if (result.statusCode !== 200) throw new Error(`${pathname} read returned ${result.statusCode}`);
 
       const text = await new Response(result.stream).text();
-      return { value: parse(pathname, schema, text) ?? empty, etag: result.blob.etag };
+      return { value: parse(pathname, schema, text), etag: result.blob.etag };
     },
     async write(value, expected) {
       try {
@@ -32,13 +33,14 @@ export function blobDocumentStore<T>(pathname: string, schema: z.ZodType<T>, emp
   };
 }
 
-function parse<T>(pathname: string, schema: z.ZodType<T>, text: string): T | null {
+function parse<T>(pathname: string, schema: z.ZodType<T>, text: string): T {
+  let json: unknown;
   try {
-    const parsed = schema.safeParse(JSON.parse(text));
-    if (parsed.success) return parsed.data;
+    json = JSON.parse(text);
   } catch {
-    // falls through to the same repair path as a schema mismatch
+    throw new Error(`${pathname} in Blob is not JSON; fix or delete it by hand`);
   }
-  console.warn(`[blob-document] ${pathname} is corrupt; treating it as empty so the next write repairs it`);
-  return null;
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) throw new Error(`${pathname} in Blob does not match its schema; fix or delete it by hand`);
+  return parsed.data;
 }

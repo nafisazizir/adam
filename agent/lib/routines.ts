@@ -6,7 +6,13 @@ import { z } from "zod";
 import type { HomeOwner } from "#lib/home-target.js";
 import { type DocumentStore, readDocument, updateDocument } from "#lib/json-document.js";
 import { ownerAuth } from "#lib/owner.js";
-import { describeRecurrence, nextOccurrence, type Recurrence, recurrenceSchema } from "#lib/recurrence.js";
+import {
+  describeRecurrence,
+  nextOccurrence,
+  type Recurrence,
+  runsPerDay,
+  storedRecurrenceSchema,
+} from "#lib/recurrence.js";
 import { untrusted } from "#lib/untrusted.js";
 import { localDateOf, startOfLocalDay } from "#lib/zoned-time.js";
 
@@ -18,7 +24,7 @@ const routineSchema = z.object({
   id: z.string(),
   name: z.string(),
   instruction: z.string(),
-  schedule: recurrenceSchema,
+  schedule: storedRecurrenceSchema,
   startsAt: z.string(),
   endsOn: routineDateSchema.optional(),
   paused: z.boolean(),
@@ -33,6 +39,9 @@ export type RoutineRun = z.infer<typeof routineRunSchema>;
 export const noRoutines: RoutinesDocument = { routines: [] };
 
 export const maxRoutines = 30;
+// Each run writes the routines document twice (its claim and its note), so active routines may add
+// up to this many runs a day: 480 of Hobby Blob's 2,000 advanced operations a month at most.
+export const maxRunsPerDay = 8;
 const keptRuns = 5;
 // Runs due within a minute of each other go out as one turn.
 const dueSlackMs = 60_000;
@@ -75,6 +84,15 @@ function anchor(startsOn: string | undefined, clock: RoutineClock): string {
   return (startsOn ? startOfLocalDay(startsOn, clock.timeZone) : clock.now).toISOString();
 }
 
+function withinRunBudget(routines: readonly Routine[]): void {
+  const perDay = routines.filter((routine) => !routine.paused).reduce((sum, routine) => sum + runsPerDay(routine.schedule), 0);
+  if (perDay > maxRunsPerDay + 1e-9) {
+    throw new RoutineError(
+      `Together the active routines would run about ${Math.round(perDay * 10) / 10} times a day, over the limit of ${maxRunsPerDay}. Make one less frequent, or pause or delete another.`,
+    );
+  }
+}
+
 export interface NewRoutine {
   readonly name: string;
   readonly instruction: string;
@@ -106,7 +124,9 @@ export async function addRoutine(
     if (current.routines.length >= maxRoutines) {
       throw new RoutineError(`There are already ${maxRoutines} routines; delete one before adding another.`);
     }
-    return { next: { routines: [...current.routines, routine] }, result: routine };
+    const routines = [...current.routines, routine];
+    withinRunBudget(routines);
+    return { next: { routines }, result: routine };
   });
 }
 
@@ -148,10 +168,9 @@ export function changeRoutine(
       patch.endsOn !== undefined ||
       (patch.paused !== undefined && patch.paused !== existing.paused);
     const routine = timingChanged ? scheduled(merged, clock) : merged;
-    return {
-      next: { routines: current.routines.map((entry) => (entry.id === id ? routine : entry)) },
-      result: routine,
-    };
+    const routines = current.routines.map((entry) => (entry.id === id ? routine : entry));
+    if (timingChanged) withinRunBudget(routines);
+    return { next: { routines }, result: routine };
   });
 }
 
@@ -180,11 +199,20 @@ export function recordRoutineRun(
   });
 }
 
-export function restoreRoutine(store: DocumentStore<RoutinesDocument>, previous: Routine): Promise<void> {
-  return updateDocument(store, noRoutines, (current) => ({
-    next: { routines: current.routines.map((routine) => (routine.id === previous.id ? previous : routine)) },
-    result: undefined,
-  }));
+// Only while the routine is still exactly what the update wrote, so a run claimed or noted since survives.
+export function restoreRoutine(
+  store: DocumentStore<RoutinesDocument>,
+  previous: Routine,
+  written: Routine,
+): Promise<void> {
+  return updateDocument(store, noRoutines, (current) => {
+    const stored = current.routines.find((routine) => routine.id === previous.id);
+    if (!stored || JSON.stringify(stored) !== JSON.stringify(written)) return { next: current, result: undefined };
+    return {
+      next: { routines: current.routines.map((routine) => (routine.id === previous.id ? previous : routine)) },
+      result: undefined,
+    };
+  });
 }
 
 export async function listRoutines(store: DocumentStore<RoutinesDocument>): Promise<Routine[]> {

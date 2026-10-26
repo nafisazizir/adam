@@ -1,9 +1,9 @@
 import { blobDocumentStore } from "#lib/blob-document.js";
 import { env } from "#lib/env.js";
-import { noRoutines, routinesDocumentSchema } from "#lib/routines.js";
+import { routinesDocumentSchema } from "#lib/routines.js";
 import { timers } from "#lib/timers.js";
 
-export const blobRoutineStore = blobDocumentStore("routines.json", routinesDocumentSchema, noRoutines);
+export const blobRoutineStore = blobDocumentStore("routines.json", routinesDocumentSchema);
 
 // Every routine due at one instant shares a timer key, so they arrive as one run.
 export function armRoutineRun(at: string): Promise<string> {

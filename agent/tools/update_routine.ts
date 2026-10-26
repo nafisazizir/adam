@@ -31,7 +31,7 @@ export default defineTool({
       try {
         await armRoutineRun(routine.nextRunAt);
       } catch (error) {
-        await restoreRoutine(blobRoutineStore, previous);
+        await restoreRoutine(blobRoutineStore, previous, routine);
         throw error;
       }
     }

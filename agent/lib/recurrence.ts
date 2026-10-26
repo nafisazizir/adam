@@ -10,31 +10,62 @@ const clockTime = z
   .regex(/^([01]\d|2[0-3]):[0-5]\d$/u)
   .describe("Local 24-hour time HH:mm, e.g. 18:00.");
 const interval = (max: number, unit: string) =>
-  z.number().int().min(1).max(max).default(1).describe(`Every how many ${unit}; 1 for every ${unit.replace(/s$/u, "")}.`);
+  z
+    .number()
+    .int()
+    .min(1)
+    .max(max)
+    .default(1)
+    .describe(`Every how many ${unit}; 1 for every ${unit.replace(/s$/u, "")}.`);
 
 // Each run spends two Blob writes of Hobby's 2,000 a month and a QStash message, so nothing runs
 // more often than four times a day.
 export const minimumHours = 6;
 
-export const recurrenceSchema = z.discriminatedUnion("every", [
-  z.object({
-    every: z.literal("hours"),
-    interval: z.number().int().min(minimumHours).max(168).describe(`Every how many hours; at least ${minimumHours}.`),
-  }),
-  z.object({ every: z.literal("days"), interval: interval(365, "days"), time: clockTime }),
-  z.object({
-    every: z.literal("weeks"),
-    interval: interval(52, "weeks"),
-    weekdays: z.array(z.enum(weekdays)).min(1).describe("The days of the week it runs on."),
-    time: clockTime,
-  }),
-  z.object({
-    every: z.literal("months"),
-    interval: interval(12, "months"),
-    day: z.number().int().min(1).max(31).describe("Day of the month; past a short month's end it runs on its last day."),
-    time: clockTime,
-  }),
-]);
+function recurrence(leastHours: number) {
+  return z.discriminatedUnion("every", [
+    z.object({
+      every: z.literal("hours"),
+      interval: z.number().int().min(leastHours).max(168).describe(`Every how many hours; at least ${minimumHours}.`),
+    }),
+    z.object({ every: z.literal("days"), interval: interval(365, "days"), time: clockTime }),
+    z.object({
+      every: z.literal("weeks"),
+      interval: interval(52, "weeks"),
+      weekdays: z.array(z.enum(weekdays)).min(1).describe("The days of the week it runs on."),
+      time: clockTime,
+    }),
+    z.object({
+      every: z.literal("months"),
+      interval: interval(12, "months"),
+      day: z
+        .number()
+        .int()
+        .min(1)
+        .max(31)
+        .describe("Day of the month; past a short month's end it runs on its last day."),
+      time: clockTime,
+    }),
+  ]);
+}
+
+export const recurrenceSchema = recurrence(minimumHours);
+// Stored routines are read with the loosest rule, so tightening what the model may set never makes
+// a saved document unreadable.
+export const storedRecurrenceSchema = recurrence(1);
+
+export function runsPerDay(rule: Recurrence): number {
+  switch (rule.every) {
+    case "hours":
+      return 24 / rule.interval;
+    case "days":
+      return 1 / rule.interval;
+    case "weeks":
+      return rule.weekdays.length / (7 * rule.interval);
+    case "months":
+      return 1 / (30 * rule.interval);
+  }
+}
 
 export type Recurrence = z.infer<typeof recurrenceSchema>;
 type CalendarRecurrence = Exclude<Recurrence, { every: "hours" }>;

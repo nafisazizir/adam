@@ -11,8 +11,10 @@ import {
   maxRoutines,
   recordRoutineRun,
   releaseRoutines,
+  restoreRoutine,
   routineAuth,
   type RoutinesDocument,
+  routinesDocumentSchema,
   routinesMessage,
 } from "#lib/routines.js";
 
@@ -47,10 +49,56 @@ test("a routine that would end before its first run is refused", async () => {
 
 test("the routine count is capped", async () => {
   const routines = store();
+  const monthly: Recurrence = { every: "months", interval: 1, day: 1, time: "09:00" };
   for (let i = 0; i < maxRoutines; i += 1) {
-    await addRoutine(routines, { name: `r${i}`, instruction: "y", schedule: daily }, at(created));
+    await addRoutine(routines, { name: `r${i}`, instruction: "y", schedule: monthly }, at(created));
   }
-  await assert.rejects(addRoutine(routines, { name: "one more", instruction: "y", schedule: daily }, at(created)), /already/u);
+  await assert.rejects(addRoutine(routines, { name: "one more", instruction: "y", schedule: monthly }, at(created)), /already/u);
+});
+
+test("active routines may add up to the daily run budget, and pausing one frees room", async () => {
+  const routines = store();
+  const sixHourly: Recurrence = { every: "hours", interval: 6 };
+  const first = await addRoutine(routines, { name: "a", instruction: "x", schedule: sixHourly }, at(created));
+  await addRoutine(routines, { name: "b", instruction: "x", schedule: sixHourly }, at(created));
+  await assert.rejects(addRoutine(routines, { name: "c", instruction: "x", schedule: daily }, at(created)), /over the limit of 8/u);
+
+  await changeRoutine(routines, first.id, { paused: true }, at(created));
+  const third = await addRoutine(routines, { name: "c", instruction: "x", schedule: daily }, at(created));
+  await assert.rejects(changeRoutine(routines, first.id, { paused: false }, at(created)), /over the limit/u);
+  assert.equal(routines.value?.routines.find((routine) => routine.id === first.id)?.paused, true);
+  assert.ok(third.nextRunAt);
+});
+
+test("restoring an update only undoes it while nothing has written the routine since", async () => {
+  const routines = store();
+  const previous = await addRoutine(routines, { name: "a", instruction: "x", schedule: daily }, at(created));
+  const written = (await changeRoutine(routines, previous.id, { name: "b" }, at(created)))!;
+  await recordRoutineRun(routines, previous.id, { at: created, note: "kept", notified: false });
+  await restoreRoutine(routines, previous, written);
+  assert.equal(routines.value?.routines[0].name, "b");
+
+  const rewritten = (await changeRoutine(routines, previous.id, { name: "c" }, at(created)))!;
+  await restoreRoutine(routines, routines.value!.routines[0], rewritten);
+  assert.equal(routines.value?.routines[0].name, "c");
+});
+
+test("a stored routine reads even when the model-facing floor has since tightened", () => {
+  const stored = {
+    routines: [
+      {
+        id: "routine_old",
+        name: "a",
+        instruction: "x",
+        schedule: { every: "hours", interval: 2 },
+        startsAt: created,
+        paused: false,
+        nextRunAt: null,
+        runs: [],
+      },
+    ],
+  };
+  assert.equal(routinesDocumentSchema.safeParse(stored).success, true);
 });
 
 test("routines due together are claimed once and advanced to their next run", async () => {
