@@ -64,7 +64,7 @@ export function describeEmail(email: Email) {
   };
 }
 
-export function describeEvent(event: CalendarEvent) {
+export function describeEvent(event: CalendarEvent, enclosing: readonly string[] = []) {
   return {
     account: event.account,
     calendarId: event.calendarId,
@@ -82,6 +82,6 @@ export function describeEvent(event: CalendarEvent) {
       line("Organizer", event.organizer),
       line("Attendees", event.attendees.join(", ")),
       line("Description", event.description),
-    ]),
+    ], enclosing),
   };
 }

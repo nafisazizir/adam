@@ -2,13 +2,15 @@ import { defineSchedule } from "eve/schedules";
 
 import { briefingAuth, briefingMessage } from "#lib/briefing.js";
 import { blobClaimStore } from "#lib/claim-store.js";
-import { dailyCron } from "#lib/cron.js";
+import { dailyCron, lastDailyRun } from "#lib/cron.js";
 import { claimDay, releaseDay } from "#lib/daily-claim.js";
 import { homeDelivery } from "#lib/delivery.js";
 import { currentTimeContext, userLocalDate, userTimeZone } from "#lib/time.js";
 
+const cron = dailyCron({ hour: 7 }, userTimeZone);
+
 export default defineSchedule({
-  cron: dailyCron({ hour: 7 }, userTimeZone),
+  cron,
   async run({ to, waitUntil }) {
     const home = await homeDelivery();
     if (!home) {
@@ -16,7 +18,8 @@ export default defineSchedule({
       return;
     }
 
-    const day = userLocalDate();
+    const now = new Date();
+    const day = userLocalDate(now);
     const claim = await claimDay(blobClaimStore, "briefing", day);
     if (!claim) {
       console.log(`[briefing] skipping; ${day} is already claimed`);
@@ -28,7 +31,7 @@ export default defineSchedule({
       try {
         await channel.deliver({
           to,
-          message: await briefingMessage(currentTimeContext()),
+          message: await briefingMessage(currentTimeContext(now), { owner, now, scheduledAt: lastDailyRun(cron, now) }),
           target,
           auth: briefingAuth(owner, day),
           turnPolicy: "queue",

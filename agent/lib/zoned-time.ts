@@ -55,3 +55,8 @@ export function startOfLocalDay(date: string, timeZone: string): Date {
   });
   return new Date(Math.min(...onThatDay));
 }
+
+export function startOfNextLocalDay(instant: Date, timeZone: string): Date {
+  const today = Math.floor(wallClockAsUtc(instant.getTime(), timeZone) / dayMs) * dayMs;
+  return startOfLocalDay(new Date(today + dayMs).toISOString().slice(0, 10), timeZone);
+}

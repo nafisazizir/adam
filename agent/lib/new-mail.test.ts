@@ -6,6 +6,7 @@ import {
   checkpointEveryMs,
   claimLeaseMs,
   coalescedMailRun,
+  deliveredMail,
   dailyMailRunCap,
   maxEmailsPerTrigger,
   mightMatter,
@@ -142,6 +143,12 @@ function memoryStore(initial?: MailboxState) {
   };
   return { store, writes, current: () => doc?.state ?? null, reads: () => reads };
 }
+
+test("delivered mail is what the mailbox state records, and nothing for an unwatched mailbox", async () => {
+  assert.equal(await deliveredMail(memoryStore().store, "personal"), null);
+  const watched = memoryStore(state("100", { delivered: ["a", "b"] }));
+  assert.deepEqual([...((await deliveredMail(watched.store, "personal")) ?? [])], ["a", "b"]);
+});
 
 function fakeMailbox(options: {
   added?: string[];

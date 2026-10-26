@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { localDateTimeToInstant, startOfLocalDay } from "#lib/zoned-time.js";
+import { localDateTimeToInstant, startOfLocalDay, startOfNextLocalDay } from "#lib/zoned-time.js";
 
 const iso = (local: string, zone: string) => localDateTimeToInstant(local, zone).toISOString();
 
@@ -45,4 +45,18 @@ test("starts the day when the clock jumps where daylight saving begins at midnig
 test("rejects malformed and impossible dates", () => {
   assert.throws(() => startOfLocalDay("tomorrow", "UTC"), /not a local date/);
   assert.throws(() => startOfLocalDay("2026-02-30", "UTC"), /not a real date/);
+});
+
+test("the next local day starts at the coming local midnight", () => {
+  const at = (iso: string) => startOfNextLocalDay(new Date(iso), "Australia/Sydney").toISOString();
+  assert.equal(at("2026-10-25T20:00:00Z"), "2026-10-26T13:00:00.000Z");
+  assert.equal(at("2026-10-26T12:59:00Z"), "2026-10-26T13:00:00.000Z");
+  assert.equal(at("2026-10-26T13:00:00Z"), "2026-10-27T13:00:00.000Z");
+});
+
+test("the next local day after a daylight saving change keeps its own offset", () => {
+  assert.equal(
+    startOfNextLocalDay(new Date("2026-10-03T20:00:00Z"), "Australia/Sydney").toISOString(),
+    "2026-10-04T13:00:00.000Z",
+  );
 });
