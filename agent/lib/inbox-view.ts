@@ -6,13 +6,13 @@ function when(date: Date | null): string | null {
   return date ? formatUserDateTime(date) : null;
 }
 
-function eventTime(time: EventTime): string {
+export function describeTime(time: EventTime): string {
   return time.allDay ? formatCalendarDate(time.date) : formatUserDateTime(time.at);
 }
 
 export function describeSpan(start: EventTime, end: EventTime): string {
-  if (start.allDay && end.allDay && start.date === end.date) return `${eventTime(start)}, all day`;
-  return `${eventTime(start)} to ${eventTime(end)}`;
+  if (start.allDay && end.allDay && start.date === end.date) return `${describeTime(start)}, all day`;
+  return `${describeTime(start)} to ${describeTime(end)}`;
 }
 
 function line(label: string, value: string): string | null {
@@ -70,8 +70,8 @@ export function describeEvent(event: CalendarEvent, enclosing: readonly string[]
     calendarId: event.calendarId,
     id: event.id,
     allDay: event.start.allDay,
-    start: eventTime(event.start),
-    end: event.end.allDay ? `${eventTime(event.end)} (last day, inclusive)` : eventTime(event.end),
+    start: describeTime(event.start),
+    end: event.end.allDay ? `${describeTime(event.end)} (last day, inclusive)` : describeTime(event.end),
     myResponse: event.myResponse,
     link: event.link,
     meetLink: event.meetLink,

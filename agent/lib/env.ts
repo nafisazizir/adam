@@ -18,6 +18,8 @@ export const codingSessionsWatchPath = "/eve/v1/coding-sessions/watch";
 export const codingSessionsNotifyPath = "/eve/v1/coding-sessions/notify";
 export const mailPushPath = "/eve/v1/mail/push";
 export const mailProcessPath = "/eve/v1/mail/process";
+export const calendarPushPath = "/eve/v1/calendar/push";
+export const calendarProcessPath = "/eve/v1/calendar/process";
 export const callsStartPath = "/eve/v1/calls/start";
 export const callsAskPath = "/eve/v1/calls/ask";
 export const callsEndedPath = "/eve/v1/calls/ended";
@@ -130,6 +132,8 @@ export const env = {
   codingSessionsNotifyUrl: `${parsed.data.BASE_URL}${codingSessionsNotifyPath}`,
   mailPushUrl: `${parsed.data.BASE_URL}${mailPushPath}`,
   mailProcessUrl: `${parsed.data.BASE_URL}${mailProcessPath}`,
+  calendarPushUrl: `${parsed.data.BASE_URL}${calendarPushPath}`,
+  calendarProcessUrl: `${parsed.data.BASE_URL}${calendarProcessPath}`,
   callsStartUrl: `${parsed.data.BASE_URL}${callsStartPath}`,
   callsAskUrl: `${parsed.data.BASE_URL}${callsAskPath}`,
   callsEndedUrl: `${parsed.data.BASE_URL}${callsEndedPath}`,

@@ -249,6 +249,52 @@ export interface MailboxHistory {
   readonly nextPageToken: string | null;
 }
 
+export interface Guest {
+  // Lowercased.
+  readonly address: string;
+  readonly label: string;
+}
+
+// One event as a calendar's sync reports it. `event` is null for a deletion Google reports by id only.
+export interface EventRevision {
+  readonly id: string;
+  readonly updated: string;
+  readonly cancelled: boolean;
+  // A plain event, not a birthday, focus time, out of office, working location or one Gmail made.
+  readonly ordinary: boolean;
+  // Organised by this calendar's own account; `organizer` is the organiser's lowercased address.
+  readonly organizedByOwner: boolean;
+  readonly organizer: string | null;
+  readonly recurring: boolean;
+  // When a recurring series stops, if its rules say; null for one that runs on or ends by a count.
+  readonly seriesUntil: Date | null;
+  readonly instanceOf: string | null;
+  readonly originalStart: EventTime | null;
+  readonly declinedBy: readonly Guest[];
+  readonly event: CalendarEvent | null;
+}
+
+export interface CalendarChangesPage {
+  readonly revisions: EventRevision[];
+  readonly nextPageToken: string | null;
+  // Only on the last page.
+  readonly nextSyncToken: string | null;
+}
+
+export interface CalendarWatch {
+  readonly channelId: string;
+  readonly resourceId: string;
+  readonly expiresAt: Date;
+}
+
+export interface CalendarWatchRequest {
+  readonly calendarId: string;
+  readonly channelId: string;
+  readonly address: string;
+  readonly token: string;
+  readonly ttlSeconds: number;
+}
+
 interface Page<T> {
   readonly items: T[];
   readonly more: boolean;
@@ -351,6 +397,34 @@ const historySchema = z.object({
     .default([]),
   historyId: z.string(),
   nextPageToken: z.string().optional(),
+});
+
+const revisionSchema = eventSchema.extend({
+  start: eventTimeSchema.optional(),
+  end: eventTimeSchema.optional(),
+  updated: z.string().default(""),
+  eventType: z.string().default("default"),
+  recurrence: z.array(z.string()).optional(),
+  recurringEventId: z.string().optional(),
+  originalStartTime: eventTimeSchema.optional(),
+});
+
+const changesSchema = z.object({
+  items: z.array(revisionSchema).default([]),
+  nextPageToken: z.string().optional(),
+  nextSyncToken: z.string().optional(),
+});
+
+// Descriptions are left out: a change trigger never needs one, and they are where invite spam lives.
+const changeFields =
+  "nextPageToken,nextSyncToken,items(id,status,summary,location,htmlLink,hangoutLink,start,end,organizer," +
+  "attendees(email,displayName,responseStatus,self),recurrence,recurringEventId,originalStartTime,updated,eventType)";
+const changesPageSize = 2500;
+
+const channelSchema = z.object({
+  id: z.string(),
+  resourceId: z.string(),
+  expiration: z.union([z.string(), z.number()]).optional(),
 });
 
 const entities: Record<string, string> = {
@@ -596,6 +670,56 @@ function toEvent(
     myResponse: raw.attendees.find((attendee) => attendee.self)?.responseStatus ?? null,
     link: raw.htmlLink ?? null,
     meetLink: raw.hangoutLink ?? null,
+  };
+}
+
+function hasTime(time: z.infer<typeof eventTimeSchema> | undefined): time is z.infer<typeof eventTimeSchema> {
+  return Boolean(time?.date || time?.dateTime);
+}
+
+function untilDate(value: string): Date | null {
+  const match = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2}))?/u.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour = "23", minute = "59", second = "59"] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isNaN(parsed) ? null : new Date(parsed);
+}
+
+// The latest UNTIL across the series' rules, or null when any rule has none.
+function seriesUntil(recurrence: readonly string[] | undefined): Date | null {
+  const rules = (recurrence ?? []).filter((line) => /^RRULE:/iu.test(line));
+  if (!rules.length) return null;
+  let latest: Date | null = null;
+  for (const rule of rules) {
+    const until = /UNTIL=([0-9TZ]+)/iu.exec(rule)?.[1];
+    const date = until ? untilDate(until) : null;
+    if (!date) return null;
+    if (!latest || date > latest) latest = date;
+  }
+  return latest;
+}
+
+function toRevision(
+  account: string,
+  calendar: { id: string; name: string },
+  raw: z.infer<typeof revisionSchema>,
+): EventRevision {
+  const { start, end } = raw;
+  return {
+    id: raw.id,
+    updated: raw.updated,
+    cancelled: raw.status === "cancelled",
+    ordinary: raw.eventType === "default",
+    organizedByOwner: raw.organizer?.self === true,
+    organizer: raw.organizer?.email?.trim().toLowerCase() || null,
+    recurring: Boolean(raw.recurrence?.length),
+    seriesUntil: seriesUntil(raw.recurrence),
+    instanceOf: raw.recurringEventId ?? null,
+    originalStart: hasTime(raw.originalStartTime) ? toEventTime(raw.originalStartTime) : null,
+    declinedBy: raw.attendees
+      .filter((attendee) => !attendee.self && attendee.responseStatus === "declined" && attendee.email)
+      .map((attendee) => ({ address: (attendee.email ?? "").trim().toLowerCase(), label: person(attendee) })),
+    event: hasTime(start) && hasTime(end) ? toEvent(account, calendar, { ...raw, start, end }) : null,
   };
 }
 
@@ -1112,6 +1236,12 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
       return { disconnected: true, account: account.label, hadGrant };
     },
 
+    // Every listed account's address that could be read; an account that cannot is left out.
+    async accountAddresses(owner: GoogleOwner | null): Promise<string[]> {
+      const found = await Promise.all((await accountsOf(owner)).map((account) => addressOf(account).catch(() => null)));
+      return found.filter((address) => address !== null).map((address) => address.trim().toLowerCase());
+    },
+
     // Null only when every account answered or needs connecting; a transient failure throws, so a
     // caller can retry instead of treating the address as unknown.
     async accountWithAddress(owner: GoogleOwner | null, address: string): Promise<string | null> {
@@ -1268,6 +1398,59 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         },
       });
       return toEvent(account.label, calendarOf(account, ref.calendarId), updated);
+    },
+
+    // Without a sync token this lists every event the calendar has, which is what gives the first
+    // token. A token Google no longer honours fails with a GoogleApiError of status 410.
+    async calendarChanges(
+      owner: GoogleOwner | null,
+      name: string,
+      calendarId: string,
+      cursor: { readonly syncToken: string | null; readonly pageToken?: string },
+    ): Promise<CalendarChangesPage> {
+      const account = await only(owner, name);
+      const url = new URL(`${calendarBase}/calendars/${encodeURIComponent(calendarId)}/events`);
+      url.searchParams.set("maxResults", String(changesPageSize));
+      url.searchParams.set("fields", changeFields);
+      url.searchParams.set("timeZone", timeZone);
+      if (cursor.syncToken) url.searchParams.set("syncToken", cursor.syncToken);
+      if (cursor.pageToken) url.searchParams.set("pageToken", cursor.pageToken);
+      const page = await googleCall(account, url, changesSchema);
+      const calendar = calendarOf(account, calendarId);
+      return {
+        revisions: page.items.map((raw) => toRevision(account.label, calendar, raw)),
+        nextPageToken: page.nextPageToken ?? null,
+        nextSyncToken: page.nextSyncToken ?? null,
+      };
+    },
+
+    // Google posts to `address` on every change to an ordinary event, echoing `token`, until the
+    // channel expires or is stopped; it never renews one.
+    async watchCalendar(owner: GoogleOwner | null, name: string, watch: CalendarWatchRequest): Promise<CalendarWatch> {
+      const url = new URL(`${calendarBase}/calendars/${encodeURIComponent(watch.calendarId)}/events/watch`);
+      url.searchParams.set("eventTypes", "default");
+      const channel = await googleCall(await only(owner, name), url, channelSchema, {
+        body: {
+          id: watch.channelId,
+          type: "web_hook",
+          address: watch.address,
+          token: watch.token,
+          params: { ttl: String(watch.ttlSeconds) },
+        },
+      });
+      const expiresAt = channel.expiration === undefined ? Date.now() + watch.ttlSeconds * 1000 : Number(channel.expiration);
+      return { channelId: channel.id, resourceId: channel.resourceId, expiresAt: new Date(expiresAt) };
+    },
+
+    // Only the user who opened a channel, through the same OAuth client, can stop it.
+    async stopCalendarWatch(
+      owner: GoogleOwner | null,
+      name: string,
+      channel: { readonly channelId: string; readonly resourceId: string },
+    ): Promise<void> {
+      await googleCall(await only(owner, name), new URL(`${calendarBase}/channels/stop`), z.unknown(), {
+        body: { id: channel.channelId, resourceId: channel.resourceId },
+      });
     },
 
     // Gmail stops pushing to the topic after seven days unless the watch is renewed.

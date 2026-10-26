@@ -34,6 +34,12 @@ export function userLocalDate(now: Date = new Date()): string {
   return localDateFormat.format(now);
 }
 
+const timeOfDayFormat = new Intl.DateTimeFormat("en-AU", { timeZone, timeStyle: "short" });
+
+export function formatUserTime(date: Date): string {
+  return timeOfDayFormat.format(date);
+}
+
 export function formatUserDateTime(date: Date): string {
   return `${dateTimeFormat.format(date)} ${offsetAt(date)}`.trim();
 }

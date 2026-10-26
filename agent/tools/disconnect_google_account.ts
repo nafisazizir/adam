@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { ownerChatRefusal } from "#lib/delivery.js";
 import { google, type GoogleDisconnect, type GoogleOwner } from "#lib/google.js";
-import { forgetMailbox, stopWatchingMailbox, watchMailboxes } from "#lib/mail-watch.js";
+import { forgetGoogleAccount, isWatching, stopWatchingGoogleAccount, watchGoogleAccounts } from "#lib/google-watch.js";
 import { ownerPrincipal } from "#lib/owner.js";
 
 type Caller = { readonly ok: true; readonly owner: GoogleOwner } | { readonly ok: false; readonly reason: string };
@@ -34,11 +34,11 @@ async function findAccount(owner: GoogleOwner, name: string): Promise<Found> {
   }
 }
 
-// The watch is stopped while the token still works; the mailbox's state goes only once the revoke
-// did, and a failed revoke restarts the watch so heads-ups continue for an account still connected.
+// The watches are stopped while the token still works; the account's state goes only once the revoke
+// did, and a failed revoke restarts them so heads-ups continue for an account still connected.
 async function disconnect(owner: GoogleOwner, account: string): Promise<GoogleDisconnect> {
   "use step";
-  await stopWatchingMailbox(owner, account);
+  await stopWatchingGoogleAccount(owner, account);
   let result: GoogleDisconnect;
   try {
     result = await google.disconnect(owner, account);
@@ -46,12 +46,12 @@ async function disconnect(owner: GoogleOwner, account: string): Promise<GoogleDi
     result = { disconnected: false, account, reason: errorMessage(error) };
   }
   if (result.disconnected) {
-    await forgetMailbox(account);
+    await forgetGoogleAccount(account);
     return result;
   }
-  const rewatched = await watchMailboxes(owner, { accounts: [account], force: true }).catch(() => null);
-  const watching = rewatched?.[account] === "watching" || rewatched?.[account] === "started";
-  return watching ? { ...result, reason: `${result.reason} New-mail heads-ups for it carry on.` } : result;
+  const rewatched = await watchGoogleAccounts(owner, { accounts: [account], force: true }).catch(() => null);
+  const watching = rewatched !== null && isWatching(rewatched, account);
+  return watching ? { ...result, reason: `${result.reason} Heads-ups for its mail and calendar carry on.` } : result;
 }
 
 export default defineWorkflowTool({

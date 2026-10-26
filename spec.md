@@ -102,6 +102,7 @@ stub the route).
    Vercel Cron      ──▶│ periodic briefing/sweep                │      (durable)        via channel
    Strava/Hevy      ──▶│ completed workout (workouts channel)   │
    Gmail push       ──▶│ new mail (mail channel, Pub/Sub)       │
+   Calendar push    ──▶│ calendar changes (calendar channel)    │
    Phone call       ──▶│ voice calls (calls channel)            │
                        └────────────────────────────────────────┘
                                          │
@@ -346,7 +347,8 @@ stub the route).
     that misses the cache backfills it only if no write has cached a newer list meanwhile. A
     corrupt document fails the Google tools loudly rather than reading as empty. Besides the list,
     the only Google state Adam keeps is each mailbox's history cursor and recently delivered ids for
-    new-mail triggers, and access tokens live briefly, sealed, in Runtime Cache.
+    new-mail triggers, each primary calendar's sync token and event fingerprints for calendar
+    triggers (Runtime Cache only), and access tokens, which live briefly, sealed, in Runtime Cache.
   - **Consent.** `connect_google_account(account)` (the owner's direct chat only, through
     `ownerLinkRefusal` in `lib/connection-auth.ts` on `isOwnerDirectChat`: in a group anyone could
     open the link first and connect their own account as the owner's) takes the owner's own name for
@@ -365,11 +367,11 @@ stub the route).
     and says so, and the owner can retry instead of believing access is gone. A name that never
     signed in (Connect has no token for it) is simply removed. A revoke that worked followed by a
     list write that failed is reported as disconnected with a warning (the name shows as needing
-    connecting until a second disconnect removes it). With new-mail triggers on, it first stops the
-    account's Gmail watch (`users.stop`, while the token still works), and only once the revoke
-    worked drops the mailbox's cursor and checkpoint (`stopWatchingMailbox` and
-    `forgetMailbox` in `lib/mail-watch.ts`); a failed revoke restarts the watch, so heads-ups
-    continue for an account that is still connected. A stop that fails is logged and the watch
+    connecting until a second disconnect removes it). It first stops the account's push watches
+    while the token still works (`stopWatchingGoogleAccount` in `lib/google-watch.ts`: Gmail's
+    `users.stop`, and Calendar's `channels.stop` with the calendar's cursor dropped), and only once
+    the revoke worked drops the mailbox's cursor and checkpoint (`forgetGoogleAccount`); a failed
+    revoke restarts both watches, so heads-ups continue for an account that is still connected. A stop that fails is logged and the watch
     lapses within seven days; pushes for an address no longer on the list are acknowledged and
     ignored. A mail run checks its account is still listed before it writes any state, so a run
     already queued cannot recreate the state of an account just removed.
@@ -380,7 +382,7 @@ stub the route).
     Adam cannot see it, and it returns if the name is added again.
   - **Background turns never sign in.** Tokens come from `@vercel/connect`'s `getToken`, which never
     starts a sign-in: a missing or revoked grant (`user_authorization_required` / `no_token`) becomes
-    `GoogleNeedsConnectingError` for that account, so the briefing or a mail trigger reports it and
+    `GoogleNeedsConnectingError` for that account, so the briefing or a mail or calendar trigger reports it and
     the owner asks for a link in the direct chat (the same rule as Notion, #36).
   - **Reads.** `search_email` (Gmail `q` syntax) and `list_events` fan out over every account
     unless one is named, and return per-account `errors` (`needsConnecting` marks the ones that need
@@ -428,6 +430,13 @@ stub the route).
     `currentHistoryId` (`users.getProfile`), `emailSummaries` (message metadata, with the Gmail tab
     as `category`; a message deleted before it is fetched is left out) and `accountWithAddress`
     (the account a push names), used by the `mail` channel below.
+  - **For calendar triggers.** `watchCalendar` (`events.watch` on one calendar, `eventTypes=default`,
+    a `web_hook` channel with Adam's token and a seven-day `ttl`), `stopCalendarWatch`
+    (`channels.stop`) and `calendarChanges` (`events.list` with or without a `syncToken`, 2,500 a
+    page, `fields` without descriptions; an expired token is Google's 410). Each item becomes an
+    `EventRevision`: whether it is cancelled, ordinary (`eventType` default), organised by the owner
+    (`organizer.self`), a series or one of its instances, which guests declined, and the
+    `CalendarEvent` (null for a deletion Google reports by id only). Used by the `calendar` channel.
   - **Untrusted content.** Every text field written by a sender or event organiser reaches the model
     inside `<email_content>` or `<calendar_content>` (`lib/untrusted.ts`, which strips any
     look-alike of that tag from the text so it cannot close early), and `instructions.md` says mail is
@@ -495,14 +504,94 @@ stub the route).
     again up to three times, then answers 409 so QStash retries. The one remaining double-send is a
     retry after a successful delivery whose response was lost, on a cache that lost the marker.
     An account that needs connecting is logged and skipped, never signed in.
-  - **Watch renewal** is the `mail-watch` schedule (below), which renews every watch. A started
+  - **Watch renewal** is the `google-watch` schedule (below), which renews every watch. A started
     watch leaves a `secretCache` marker that lives until a day before the watch expires, and
     `list_google_accounts` starts a watch only for a connected account without one
-    (`watchMailboxes` in `lib/mail-watch.ts`), so an account the owner just (re)connected does not
+    (`watchGoogleAccounts` in `lib/google-watch.ts`, over `watchMailboxes` in `lib/mail-watch.ts`), so an account the owner just (re)connected does not
     wait for 6am and an ordinary listing costs no Gmail or Blob call. The address a watch records
     comes from the mailbox profile, which reads whatever account the token now belongs to.
-    Reconnecting an existing name first stops its watch (`users.stop`, while the old token still
-    works) and drops the marker, so the listing after consent watches the new mailbox.
+    Reconnecting an existing name first stops its watches (`stopWatchingGoogleAccount`, while the
+    old token still works) and drops the marker, so the listing after consent watches the new mailbox.
+- **Calendar changes** (`agent/channels/calendar.ts`): a change someone else makes to an event on
+  an account's primary calendar is a trigger, the way new mail is. Calendar push is a direct HTTPS
+  webhook, not Pub/Sub: `events.watch` opens a channel that POSTs to `/eve/v1/calendar/push` with
+  no body. Route logic lives in `lib/calendar-routes.ts` (`calendarPushHandler`,
+  `calendarRunHandler`), the change logic in `lib/calendar-changes.ts`, both unit-tested. It is on
+  whenever `GOOGLE_CONNECTOR` is set and `BASE_URL` is https (Google refuses anything else); no
+  Google Cloud setup or env var beyond Google itself.
+  - **Which calendar.** Only each account's primary calendar: invitations land there and Adam
+    writes there; shared and subscribed calendars change under other people all day.
+  - **Push.** A notification is trusted only by its `X-Goog-Channel-Token`, which Google echoes
+    from the watch: `account=<label>&calendar=<id>&exp=<channel end>&sig=<HMAC>`
+    (`lib/calendar-push.ts`, the only file that knows the X-Goog headers), the HMAC over the
+    channel id, account, calendar and end under a key derived with HKDF from
+    `QSTASH_CURRENT_SIGNING_KEY` (the `secretCache` root, so no new secret; rotating it also resets
+    that cache, and the next renewal opens channels with fresh tokens). A token copied to another
+    channel fails, and one replayed after its channel ended cannot spend the daily run cap; anything
+    else is 401. The `sync` message that opens each channel is acknowledged and ignored. The route
+    makes no Google call; a failed QStash publish is a 500, which Google retries with backoff.
+  - **Coalescing.** Google pushes on every change, the owner's own included. Pushes for one
+    calendar in a five-minute window share a QStash deduplication id and one run just after it
+    (`coalescedCalendarRun` over `coalescedRun` in `lib/coalesce.ts`, the primitive mail's
+    coalescing now uses too), a `secretCache` marker skips the publish for a window already queued,
+    and `takeDailyCalendarRun` caps each calendar at 60 runs a local day (`takeDailyRun`, shared with
+    mail).
+  - **Who changed it.** The Calendar API never says who made a change, so `changeOf` reads it off
+    what changed, against a fingerprint of each event Adam last saw (start, end, a hash of the
+    place, the owner's response, hashes of the lowercased addresses of guests who had declined,
+    whether it is a series).
+    - On an event this account organises (`organizer.self`) only a guest newly declining counts
+      (`declined`); the owner's own moves, edits and cancellations never do.
+    - `organizer.self` only means "this calendar", so an event whose organiser is the address of
+      any connected account (`accountAddresses`, from the cached userinfo addresses) is the
+      owner's too and never counts on another account's calendar: an event on `personal` that
+      invites the owner's `work` address is not a new invitation on `work`, and its guests'
+      replies are told once, by `personal`.
+    - On an event they were invited to, a reply is their own doing and never counts; the organiser
+      cancelling an event Adam knew (`cancelled`; an unseen one cancelled is not told) or moving its
+      time or place (`changed`, with the old time) does, unless the owner had declined it.
+    - An event Adam never saw counts only as an `invited` it is still `needsAction` on, or as a
+      `changed` when it is a series instance moved off its original start. One occurrence of a
+      series is never an invitation, and is judged against the series' fingerprint when Adam knows
+      the series (so one cancelled occurrence of a known series is told).
+    - `update_event` leaves a 30-minute `secretCache` marker on the event (`noteOwnCalendarEdit`),
+      which a run skips like a told marker, so Adam's edit to an invitation whose guests may modify
+      it never reads as the organiser's.
+    - Past events, series whose `UNTIL` has passed and non-default event types (birthdays, focus
+      time, out of office, working location, events from Gmail) never count.
+    - A whole series' times are its first occurrence, so a series change reads as "a recurring
+      event, each time 10:00 am to 10:30 am", with the old time of day (and "on other days" when
+      its days moved), never the date it began, and sorts as if it met today.
+    The ten most urgent become one `<calendar_change>` trigger (`calendarChangeMessage`; titles,
+    places, organisers, guests and decliners inside `untrusted("calendar_content", …,
+    ["calendar_change"])`; descriptions are never fetched) delivered to the home thread as the owner
+    (`calendarAuth`, authenticator `calendar`, `turnPolicy: "queue"`), where root texts or calls
+    `stay_silent`. An unanswered invitation for today can reach the owner twice, as a
+    `<calendar_change>` and again in the next morning's briefing; both land in the same thread.
+  - **State, and the Blob budget.** Calendar state never touches Blob. The cursor, per account and
+    calendar, is one `secretCache` entry: the sync token and the fingerprints of up to 400 tracked
+    events (live series first, then the soonest upcoming events, so the cap drops what lies
+    furthest out), about 60 KB at most, kept 30 days and rewritten every run. A missing cursor (the
+    first run, an eviction, a disconnect) or a 410 re-syncs the whole calendar and tells nothing; so
+    does a run whose changes run past five pages. The trade-off: an eviction costs at most the
+    heads-up for the change whose push found the cursor gone.
+  - **Exactly once, best effort.** A run tells each change once per version of its event: a
+    `secretCache` marker (event id and `updated`) goes down before delivery and comes off if
+    delivery fails, so the QStash retry resends it; the cursor moves only after delivery, and a
+    lost cursor write replays changes the markers then skip. Two runs for one calendar overlap only
+    across windows, so a double text needs that and a cache miss together. A failure no retry can
+    fix (a calendar with more events than ten pages, a Google 4xx other than 429) is logged and
+    acknowledged, so it never spends QStash retries.
+  - **Watches.** `renewCalendarWatches` (through `watchCalendars` in `lib/calendar-watch.ts`) syncs
+    a calendar before its first channel opens, so the first push has something to compare with. A
+    channel lasts seven days and Google never renews one, so a new channel (a fresh UUID) opens
+    when the last is within two days of expiring or unknown, and the old one is stopped after; the
+    channel record (id, resource id, expiry) lives in `secretCache`. An account connected without
+    calendar access, or needing connecting, is `needs_connecting` and skipped. A run for an account
+    no longer listed marks its channel stale for a week, and the push route then acknowledges that
+    channel without publishing, so a channel that outlived its account (a failed stop) costs one
+    QStash message. Known limit: a cancelled occurrence of a series that Google reports by id only
+    is not told, since Adam keeps no titles.
 - **Calls** (`agent/channels/calls.ts`, `agent/lib/calls.ts`, `agent/lib/voice.ts`): the owner
   phones Adam's own number (a Twilio local number imported into ElevenLabs), which reaches one
   ElevenLabs Agents voice agent. The voice agent is a thin front end that holds the conversation
@@ -624,7 +713,7 @@ stub the route).
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` and `lastDailyRun` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` and `stopWatchingMailbox` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchGoogleAccounts` and `stopWatchingGoogleAccount` in `lib/google-watch.ts` (over `watchMailboxes` in `lib/mail-watch.ts` and `watchCalendars` in `lib/calendar-watch.ts`); `coalescedRun` and `takeDailyRun` in `lib/coalesce.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -718,13 +807,15 @@ stub the route).
       most one simple read per account with mail per morning.
     Later features (an overnight browser digest) add a section to `briefingSections` without
     touching the schedule.
-  - **`mail-watch`** (6am local, once a day). Gmail stops pushing to the topic seven days after a
-    watch, so this renews `watchMailbox` on the inbox for every account on the account list, as
-    the home owner, with `GOOGLE_PUBSUB_TOPIC`, and records the returned history id for an account
-    with no stored state (`watchMailboxes` in `lib/mail-watch.ts` over `renewMailboxWatches` in
-    `lib/new-mail.ts`). An account that needs
-    connecting is logged and skipped; any other failure fails the cron run. Without the topic it
-    does nothing. Renewing twice is harmless, so it claims no day. A second cron is fine on Hobby,
+  - **`google-watch`** (6am local, once a day; it was `mail-watch`). One run renews every push feed
+    on every account on the account list, as the home owner, through `watchGoogleAccounts` in
+    `lib/google-watch.ts`, the one seam the tools use too. Gmail stops pushing to the topic seven
+    days after a watch, so it renews `watchMailbox` on the inbox with `GOOGLE_PUBSUB_TOPIC` and
+    records the returned history id for an account with no stored state (`watchMailboxes` in
+    `lib/mail-watch.ts` over `renewMailboxWatches` in `lib/new-mail.ts`); it opens a new Calendar
+    channel when the current one is within two days of expiring (`watchCalendars`). An account that
+    needs connecting is logged and skipped; any other failure fails the cron run. A feed that is
+    off (no topic, or no https `BASE_URL`) is skipped. Renewing twice is harmless, so it claims no day. A second cron is fine on Hobby,
     which allows 100 per project, each at most once a day.
 - **Instructions** (`agent/instructions.md`): personality + right-to-silence + when-to-nudge. This
   is the actual product surface; right-to-silence is applied to workout debriefs when they re-enter
@@ -749,7 +840,8 @@ adam/
 │   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
 │   │   ├── calls.ts           # voice agent webhooks: call start briefing, ask_adam, post-call summary
 │   │   ├── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
-│   │   └── mail.ts            # Gmail push via Pub/Sub, coalesced through QStash into one <new_email>
+│   │   ├── mail.ts            # Gmail push via Pub/Sub, coalesced through QStash into one <new_email>
+│   │   └── calendar.ts        # Calendar push webhook, coalesced through QStash into one <calendar_change>
 │   ├── connections/
 │   │   ├── notion.ts
 │   │   └── riz-mcp.ts
@@ -814,6 +906,12 @@ adam/
 │   │   ├── mail-routes.ts     # the push and run route handlers behind channels/mail.ts
 │   │   ├── mail-watch.ts      # watchMailboxes: start or renew every account's Gmail watch; stopWatchingMailbox
 │   │   ├── mailbox-state-store.ts # per-account checkpoint, delivered ids and delivery lease in private Vercel Blob
+│   │   ├── coalesce.ts        # coalescedRun and takeDailyRun: one QStash run per push window, a daily cap
+│   │   ├── calendar-push.ts   # Calendar push: sign and verify channel tokens, read the X-Goog headers
+│   │   ├── calendar-changes.ts # who changed what, <calendar_change>, processCalendar, channel renewal
+│   │   ├── calendar-routes.ts # the push and run route handlers behind channels/calendar.ts
+│   │   ├── calendar-watch.ts  # watchCalendars: open or renew each primary calendar's channel; stopWatchingCalendar
+│   │   ├── google-watch.ts    # watchGoogleAccounts: every push feed on an account, for tools and the schedule
 │   │   ├── shared-cache.ts    # Vercel Runtime Cache, best effort; secretCache seals values and HMACs keys
 │   │   ├── inbox-view.ts      # emails and events as the model sees them, untrusted text tagged
 │   │   ├── mime.ts            # composeEmail: RFC 5322 plain-text message for drafts
@@ -848,7 +946,7 @@ adam/
 │   │   └── agent.ts           # disables the built-in root-copy agent tool
 │   └── schedules/
 │       ├── briefing.ts        # 7am local: <briefing> into the home thread, silent unless something matters
-│       └── mail-watch.ts      # 6am local: renew each account's Gmail watch on the Pub/Sub topic
+│       └── google-watch.ts    # 6am local: renew each account's Gmail watch and Calendar channel
 ├── scripts/
 │   ├── sync-riz-mcp-skill.ts
 │   ├── riz-mcp-skill.lock.json
@@ -886,7 +984,9 @@ pull requests merged on the owner's say-so after a confirmation naming the PR ·
 remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar
 across any number of Google accounts the owner connects by chatting (search, read, list events;
 disconnect after a confirmation), with email and invites treated as untrusted data · new inbox mail as a trigger through Gmail push, texted only when a real
-person needs the owner · the rest of today's calendar and unread mail no trigger already sent, in the
+person needs the owner · changes someone else makes to the owner's primary calendars (a new
+invitation, a move, a cancellation, a guest declining) as a trigger through Calendar push, texted
+only when it upsets their plans soon · the rest of today's calendar and unread mail no trigger already sent, in the
 morning briefing · calls to Adam's own phone number through one ElevenLabs voice agent,
 answered from the owner's own thread, with texts mid-call and the call
 joining the chat history afterwards, its full transcript kept for later lookups.
@@ -1018,15 +1118,25 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   subscription to `${BASE_URL}/eve/v1/mail/push` with authentication enabled (a service account,
   audience exactly that URL). Set `GOOGLE_PUBSUB_TOPIC` to the full topic name and
   `GOOGLE_PUSH_SERVICE_ACCOUNT` to the subscription's service account, then redeploy. The watch
-  starts on the next `mail-watch` run; to start it now, run the `mail-watch` job from Settings →
-  Cron Jobs (or POST `/eve/v1/dev/schedules/mail-watch` under `eve dev`), or ask Adam in chat which
+  starts on the next `google-watch` run; to start it now, run the `google-watch` job from Settings →
+  Cron Jobs (or POST `/eve/v1/dev/schedules/google-watch` under `eve dev`), or ask Adam in chat which
   Google accounts are connected, which starts the watch for each connected one. Leave the
   subscription's "payload unwrapping" off (with it on every push is acknowledged as malformed) and
   give it an exponential-backoff retry policy. Mail that arrives before the first watch is never
   triggered on.
+- Calendar triggers need nothing set up: with `GOOGLE_CONNECTOR` and an https `BASE_URL` the next
+  `google-watch` run (or a chat asking which Google accounts are connected) syncs each primary
+  calendar and opens its channel. An account connected before the calendar scopes shows as needing
+  connecting until it is reconnected. Each run re-reads the account list and costs one Calendar
+  call, plus a token request when the cached one lapsed.
 - QStash's free tier is 1,000 messages a day, and every retry counts as another message. Mail
   costs one per three-minute window with inbox activity per mailbox, capped at 120 a day per
-  mailbox: 240 a day with two accounts at the very worst, a realistic 30 to 100. Coding watches
+  mailbox: 240 a day with two accounts at the very worst, a realistic 30 to 100. Calendar costs one
+  per five-minute window with changes per primary calendar, capped at 60 runs a day each: 120 with
+  two accounts, a realistic 5 to 20. Each run that fails transiently is retried up to three times
+  by QStash, so a calendar whose runs all fail costs up to 240 messages a day; failures retrying
+  cannot fix are acknowledged instead, so only an outage of Google, Photon or the home pointer
+  reaches that. Coding watches
   spend up to one a minute while Devin is busy (about 250 for a long session), reminders one each,
   workouts two each. The cap keeps mail under a quarter of the budget, so reminders always fit.
 - Vercel Blob on Hobby includes 2,000 advanced operations (put, copy, list) and 10,000 simple ones
@@ -1047,10 +1157,12 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
     `list_calls` and one simple read per transcript page read.
   - new mail: one put per delivered heads-up plus a checkpoint at most every six hours per mailbox,
     about 90 + 240 = 330 advanced and a similar number of simple reads with two accounts, plus a
-    daily read per account from `mail-watch`. Disconnecting deletes the account's checkpoint.
+    daily read per account from `google-watch`. Disconnecting deletes the account's checkpoint.
     Each mail run also reads the home pointer first (`homeDelivery()`), through the CDN cache:
     a realistic 30 to 100 runs a day (240 at the cap with two accounts), counted here at worst as
     900 to 3,000 simple a month.
+  - calendar changes: no Blob writes or state reads at all (the cursor, channels and markers are
+    Runtime Cache); each run reads the home pointer like a mail run, a realistic 5 to 20 a day.
   - the Google account list: one put per account connected or disconnected (a handful), and a read
     each time its one-hour Runtime Cache entry lapses, about 720 simple; the address and token
     lookups behind each push stay in Runtime Cache.
@@ -1076,7 +1188,10 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    accounts, search and read mail, list events, on root Adam, with Vercel Connect holding the Google
    grants. **New-mail triggers are built**
    (§4, `channels/mail.ts`): Gmail push through Pub/Sub, coalesced through QStash, filtered, and
-   delivered as one `<new_email>` to the home thread where root exercises right-to-silence. **The
+   delivered as one `<new_email>` to the home thread where root exercises right-to-silence.
+   **Calendar triggers are built** (§4 "Calendar changes", `channels/calendar.ts`): Calendar push on
+   each primary calendar, coalesced through QStash, filtered to what someone else changed, and
+   delivered as one `<calendar_change>`; state stays in Runtime Cache. **The
    briefing's Google section is built** (§4 `briefing`): today's events and unread mail no
    trigger already sent, pre-rendered. Next: an `inbox` subagent if triage crowds root's context. **Writes are
    built** (§4 "Writes"): drafts, never sends, and event create/update behind `ctx.ask`.
@@ -1145,8 +1260,11 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    "life review" running `coach` + `finance` in parallel and merging).
 9. **External event triggers.** Strava/Hevy workout webhooks are built in `workouts`; new-mail
    triggers are built in `mail` (item 1): Gmail `users.watch` to Pub/Sub, renewed daily by
-   `mail-watch` (a watch expires after 7 days). Pushes are lossy, but each run reads history from
-   the stored id, so a missed push is caught up by the next one.
+   `google-watch` (a watch expires after 7 days). Pushes are lossy, but each run reads history from
+   the stored id, so a missed push is caught up by the next one. Calendar triggers are built in
+   `calendar` (item 1): `events.watch` channels straight to an HTTPS route, renewed by the same
+   `google-watch` run before their 7 days end; each run reads changes from the stored sync token,
+   so a missed push is caught up by the next one too.
 10. **Multi-user hardening.** Per-user Connect OAuth for connections, per-user reminder/memory keys,
     auth on inbound routes, and an identity layer (Redis or Postgres) mapping an iMessage handle and
     a WhatsApp number to the same logical user. `admitSender` becomes a lookup of the sender in
