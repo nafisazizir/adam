@@ -65,6 +65,14 @@ test("routines due together are claimed once and advanced to their next run", as
   assert.equal((await claimDueRoutines(routines, at(firstCheckpoint))).due.length, 0);
 });
 
+test("a run claimed seconds early is advanced past itself, not re-armed for the same instant", async () => {
+  const routines = store();
+  await addRoutine(routines, { name: "a", instruction: "x", schedule: daily }, at(created));
+  const claim = await claimDueRoutines(routines, at("2026-10-26T21:59:30Z"));
+  assert.equal(claim.due.length, 1);
+  assert.deepEqual(claim.arm, ["2026-10-27T22:00:00.000Z"]);
+});
+
 test("a run more than an hour late is skipped, not sent", async () => {
   const routines = store();
   await addRoutine(routines, { name: "a", instruction: "x", schedule: fortnightly }, at(created));

@@ -199,7 +199,8 @@ export function claimDueRoutines(store: DocumentStore<RoutinesDocument>, clock: 
         routines.push(routine);
         continue;
       }
-      const advancedTo = plannedRun(routine, clock);
+      // From the later of now and the run, so a run claimed a few seconds early is not re-armed for itself.
+      const advancedTo = plannedRun(routine, { ...clock, now: new Date(Math.max(now, Date.parse(at))) });
       (now - Date.parse(at) > staleAfterMs ? skipped : due).push({ routine, at, advancedTo });
       if (advancedTo) routines.push({ ...routine, nextRunAt: advancedTo });
     }

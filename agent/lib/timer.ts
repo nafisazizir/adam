@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
@@ -53,6 +53,11 @@ function deduplicationId(key: string): string {
   return key.replace(/[^\w-]/gu, "_");
 }
 
+// One id per key: setting a key again replaces its timer, and only the newest chain stays live.
+function timerId(key: string): string {
+  return `${longTimerPrefix}${createHash("sha256").update(key).digest("hex").slice(0, 24)}`;
+}
+
 function withoutFired(timers: LongTimer[], now: number): LongTimer[] {
   return timers.filter((timer) => Date.parse(timer.fireAt) > now - keepFiredMs);
 }
@@ -64,11 +69,9 @@ export function createTimers(input: {
   store: DocumentStore<LongTimers>;
   hopUrl: string;
   now?: () => number;
-  newId?: () => string;
 }): Timers {
   const { backend, store, hopUrl } = input;
   const now = input.now ?? Date.now;
-  const newId = input.newId ?? randomUUID;
   const horizonMs = backend.maxDelaySeconds * 1000 - hourMs;
 
   function nextLeg(fireAtMs: number, at: number): Leg {
@@ -76,6 +79,11 @@ export function createTimers(input: {
     if (remaining <= horizonMs) return { final: true, delaySeconds: seconds(remaining), atMs: fireAtMs };
     const hopMs = Math.min(horizonMs, remaining - horizonMs);
     return { final: false, delaySeconds: seconds(hopMs), atMs: at + hopMs };
+  }
+
+  // Counted back from the instant, so a replayed set lands on the same id as the first.
+  function legsLeft(hop: Hop, leg: Leg): number {
+    return Math.ceil((Date.parse(hop.fireAt) - leg.atMs) / horizonMs);
   }
 
   function publishLeg(leg: Leg, hop: Hop): Promise<string> {
@@ -90,7 +98,7 @@ export function createTimers(input: {
           url: hopUrl,
           body: hop,
           delaySeconds: leg.delaySeconds,
-          deduplicationId: deduplicationId(`${hop.key}-hop-${leg.atMs}`),
+          deduplicationId: deduplicationId(`${hop.key}-hop-${legsLeft(hop, leg)}`),
         });
   }
 
@@ -107,7 +115,7 @@ export function createTimers(input: {
       const at = now();
       const leg = nextLeg(request.fireAtMs, at);
       const hop: Hop = {
-        id: `${longTimerPrefix}${newId()}`,
+        id: timerId(request.key),
         url: request.url,
         body: request.body,
         fireAt: new Date(request.fireAtMs).toISOString(),
@@ -118,7 +126,12 @@ export function createTimers(input: {
       const messageId = await publishLeg(leg, hop);
       try {
         await updateDocument(store, noLongTimers, (current) => ({
-          next: { timers: [...withoutFired(current.timers, at), { id: hop.id, fireAt: hop.fireAt, messageId }] },
+          next: {
+            timers: [
+              ...withoutFired(current.timers, at).filter((timer) => timer.id !== hop.id),
+              { id: hop.id, fireAt: hop.fireAt, messageId },
+            ],
+          },
           result: undefined,
         }));
       } catch (error) {

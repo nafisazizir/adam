@@ -32,14 +32,7 @@ function harness() {
     },
   };
   const store = memoryDocumentStore<LongTimers>();
-  let ids = 0;
-  const timers = createTimers({
-    backend,
-    store,
-    hopUrl: "https://adam.test/hop",
-    now: () => clock,
-    newId: () => `t${(ids += 1)}`,
-  });
+  const timers = createTimers({ backend, store, hopUrl: "https://adam.test/hop", now: () => clock });
   return {
     timers,
     store,
@@ -66,7 +59,7 @@ test("a timer beyond the horizon hops until its last leg lands on the destinatio
   const h = harness();
   const fireAtMs = h.now() + 20 * dayMs;
   const id = await h.timers.set({ url: "https://adam.test/deliver", body: { a: 1 }, fireAtMs, key: "k" });
-  assert.equal(id, "timer_t1");
+  assert.match(id, /^timer_[0-9a-f]{24}$/u);
   assert.equal(h.published[0].url, "https://adam.test/hop");
   assert.deepEqual(h.store.value?.timers, [{ id, fireAt: new Date(fireAtMs).toISOString(), messageId: "msg_1" }]);
 
@@ -128,4 +121,15 @@ test("a failed record cancels the first hop so nothing fires untracked", async (
     /blob down/u,
   );
   assert.deepEqual(h.cancelled, ["msg_1"]);
+});
+
+test("setting the same long timer again keeps one live chain under one id", async () => {
+  const h = harness();
+  const request = { url: "https://adam.test/deliver", body: {}, fireAtMs: h.now() + 20 * dayMs, key: "k" };
+  const first = await h.timers.set(request);
+  h.advance(5_000);
+  assert.equal(await h.timers.set(request), first);
+  assert.equal(h.published[0].deduplicationId, h.published[1].deduplicationId);
+  assert.deepEqual(h.store.value?.timers.map((timer) => timer.messageId), ["msg_2"]);
+  assert.equal(await h.timers.hop(h.published[0].body as Hop, "msg_1"), "stale");
 });
