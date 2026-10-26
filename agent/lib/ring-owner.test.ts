@@ -6,8 +6,8 @@ import { afterCallAuth, liveCallAuth } from "#lib/calls.js";
 import type { ClaimStore, StoredClaim } from "#lib/daily-claim.js";
 import { ownerAuth } from "#lib/owner.js";
 import { reminderAuth } from "#lib/reminders.js";
-import { outboundLine, type RingOwnerDeps, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
-import type { OutboundCall, OutboundLine } from "#lib/voice.js";
+import { outboundLine, ringOnceKey, type RingOwnerDeps, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
+import { CallNotPlaced, type OutboundCall, type OutboundLine } from "#lib/voice.js";
 
 const owner = { issuer: "photon-imessage", principalId: "+61412345678" };
 const chat = ownerAuth(owner, { authenticator: "photon-imessage", attributes: { thread_id: "iMessage;-;+61412345678", direct: "true" } });
@@ -43,24 +43,26 @@ test("calling out needs the key, Adam's number and the tool secret", () => {
 });
 
 function memoryBudget() {
-  let stored: StoredClaim | null = null;
+  const stored = new Map<string, StoredClaim>();
   let version = 0;
   const store: ClaimStore = {
-    async read() {
-      return stored;
+    async read(job) {
+      return stored.get(job) ?? null;
     },
-    async write(_job, day, expected) {
-      const matches = expected === "absent" ? stored === null : stored?.etag === expected.etag;
+    async write(job, day, expected) {
+      const current = stored.get(job);
+      const matches = expected === "absent" ? current === undefined : current?.etag === expected.etag;
       if (!matches) throw new Error("conflict");
       version += 1;
-      stored = { day, etag: `e${version}` };
-      return { etag: stored.etag };
+      stored.set(job, { day, etag: `e${version}` });
+      return { etag: `e${version}` };
     },
-    async remove() {
-      stored = null;
+    async remove(job, etag) {
+      if (stored.get(job)?.etag !== etag) throw new Error("conflict");
+      stored.delete(job);
     },
   };
-  return { store, value: () => stored?.day ?? null };
+  return { store, value: (job = "outbound-calls") => stored.get(job)?.day ?? null };
 }
 
 const line: OutboundLine = { apiKey: "k", fromNumber: "+61290000000" };
@@ -100,15 +102,56 @@ test("a second call inside the gap is refused without dialling", async () => {
   assert.equal(ring.placed.length, 1);
 });
 
-test("a call that does not go out gives its slot back", async () => {
+test("a call that certainly did not go out gives its slot back", async () => {
   const ring = deps({
     place: async () => {
-      throw new Error("geo permissions");
+      throw new CallNotPlaced("geo permissions");
     },
   });
   const failed = await ringOwner("x", ring.deps);
   assert.match(!failed.rung ? failed.error : "", /did not go out \(geo permissions\)/u);
   assert.equal(ring.budget.value(), "");
+});
+
+test("a call that may have gone out keeps its slot, so a retry can't ring twice", async () => {
+  const ring = deps({
+    place: async () => {
+      throw new Error("ElevenLabs POST returned 502");
+    },
+  });
+  const failed = await ringOwner("x", ring.deps);
+  assert.ok(!failed.rung && failed.uncertain);
+  assert.match(!failed.rung ? failed.error : "", /may have gone out/u);
+  assert.equal(ring.budget.value(), String(now));
+  assert.equal((await ringOwner("x", { ...ring.deps, now: () => now + 60_000 })).rung, false);
+});
+
+test("a ringing reminder rings once, however late QStash redelivers it", async () => {
+  const auth = reminderAuth(owner, "msg:1", true);
+  const key = ringOnceKey(auth);
+  assert.equal(key, "ring-msg_1");
+  assert.equal(ringOnceKey(reminderAuth(owner, "msg:1")), undefined);
+  assert.equal(ringOnceKey(chat), undefined);
+
+  const ring = deps();
+  assert.equal((await ringOwner("wake up", ring.deps, key)).rung, true);
+  const later = await ringOwner("wake up", { ...ring.deps, now: () => now + 60 * 60_000 }, key);
+  assert.match(!later.rung ? later.error : "", /already rang them/u);
+  assert.equal(ring.placed.length, 1);
+});
+
+test("a ringing reminder whose call certainly failed can ring on a redelivery", async () => {
+  let attempts = 0;
+  const ring = deps({
+    place: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new CallNotPlaced("not imported");
+      return { conversationId: "conv_out" };
+    },
+  });
+  assert.equal((await ringOwner("wake up", ring.deps, "ring-msg_2")).rung, false);
+  assert.equal(ring.budget.value("ring-msg_2"), null);
+  assert.equal((await ringOwner("wake up", ring.deps, "ring-msg_2")).rung, true);
 });
 
 test("refuses clearly when calling is not set up or there is no number to ring", async () => {

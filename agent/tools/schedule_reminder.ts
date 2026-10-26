@@ -1,13 +1,15 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { ownerPhoneNumber } from "#lib/calls.js";
 import { deliveryChannelForAuth, homeDelivery, isOwnerChat } from "#lib/delivery.js";
+import { knownOwner } from "#lib/known-owner.js";
 import { publishReminder } from "#lib/qstash.js";
 import { replayStableKey } from "#lib/replay-key.js";
 import { recordReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderTiming } from "#lib/reminder-timing.js";
-import { configuredOutboundLine } from "#lib/ring-owner.js";
+import { configuredOutboundLine, noOwnerNumber } from "#lib/ring-owner.js";
 import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
 
 export default defineTool({
@@ -60,6 +62,9 @@ export default defineTool({
     }
     if (ring && !configuredOutboundLine()) {
       throw new Error("Calling out isn't set up, so this reminder can't ring them. Tell them, and offer a text reminder instead.");
+    }
+    if (ring && !ownerPhoneNumber(await knownOwner())) {
+      throw new Error(`This reminder can't ring them. ${noOwnerNumber} Offer a text reminder instead.`);
     }
     const now = Date.now();
     const timing = reminderTiming(

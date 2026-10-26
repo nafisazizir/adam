@@ -7,6 +7,7 @@ import {
   hasCallsSecret,
   parseCallEnded,
   parseCallRequest,
+  CallNotPlaced,
   callerNumberOf,
   callStartResponse,
   parseCallStart,
@@ -284,12 +285,44 @@ test("an outbound call fails clearly before dialling when the number can't ring 
   await assert.rejects(placeOutboundCall(line, outbound, exotel.fetchImpl), /exotel number/u);
 });
 
-test("an outbound call ElevenLabs refuses is an error", async () => {
+test("a refusal before or by ElevenLabs means the call certainly did not go out", async () => {
   const refused = fakeElevenLabs([twilioNumber], { success: false, message: "geo permissions", conversation_id: null, callSid: null });
-  await assert.rejects(placeOutboundCall(line, outbound, refused.fetchImpl), /did not place the call: geo permissions/u);
+  await assert.rejects(placeOutboundCall(line, outbound, refused.fetchImpl), (error) =>
+    error instanceof CallNotPlaced && /did not place the call: geo permissions/u.test(error.message),
+  );
 
-  const failing = (async () => new Response("bad key", { status: 401 })) as unknown as typeof fetch;
-  await assert.rejects(placeOutboundCall(line, outbound, failing), /returned 401: bad key/u);
+  const badKey = (async () => new Response("bad key", { status: 401 })) as unknown as typeof fetch;
+  await assert.rejects(placeOutboundCall(line, outbound, badKey), CallNotPlaced);
+
+  const offline = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof fetch;
+  await assert.rejects(placeOutboundCall(line, outbound, offline), CallNotPlaced);
+
+  const invalid = postAnswering(() => new Response("bad number", { status: 422 }));
+  await assert.rejects(placeOutboundCall(line, outbound, invalid), CallNotPlaced);
+
+  for (const missing of [fakeElevenLabs([]), fakeElevenLabs([{ ...twilioNumber, assigned_agent: null }])]) {
+    await assert.rejects(placeOutboundCall(line, outbound, missing.fetchImpl), CallNotPlaced);
+  }
+});
+
+function postAnswering(answer: () => Response | Promise<Response>) {
+  return (async (input: string | URL | Request) =>
+    String(input).endsWith("/v1/convai/phone-numbers") ? Response.json([twilioNumber]) : answer()) as typeof fetch;
+}
+
+test("a failure once the call request is sent may follow a call that went out", async () => {
+  const ambiguous = [
+    postAnswering(() => new Response("bad gateway", { status: 502 })),
+    postAnswering(() => new Response("<html>", { status: 200 })),
+    postAnswering(() => {
+      throw new TypeError("socket hang up");
+    }),
+  ];
+  for (const fetchImpl of ambiguous) {
+    await assert.rejects(placeOutboundCall(line, outbound, fetchImpl), (error) => !(error instanceof CallNotPlaced));
+  }
 });
 
 test("ignores other webhook events and rejects junk", () => {

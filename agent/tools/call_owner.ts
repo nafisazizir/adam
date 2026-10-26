@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { blobClaimStore } from "#lib/claim-store.js";
 import { knownOwner } from "#lib/known-owner.js";
-import { configuredOutboundLine, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
+import { configuredOutboundLine, ringOnceKey, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
 import { placeOutboundCall } from "#lib/voice.js";
 
 export default defineTool({
@@ -21,15 +21,12 @@ export default defineTool({
       .describe("One or two short spoken sentences saying why you're calling, the way you'd open the call."),
   }),
   async execute({ reason }, ctx) {
-    const refusal = ringOwnerRefusal(ctx.session.auth.current);
+    const auth = ctx.session.auth.current;
+    const refusal = ringOwnerRefusal(auth);
     if (refusal) return { ringing: false, error: refusal };
 
-    const outcome = await ringOwner(reason, {
-      line: configuredOutboundLine(),
-      owner: knownOwner,
-      budget: blobClaimStore,
-      place: placeOutboundCall,
-    });
+    const deps = { line: configuredOutboundLine(), owner: knownOwner, budget: blobClaimStore, place: placeOutboundCall };
+    const outcome = await ringOwner(reason, deps, ringOnceKey(auth));
     if (!outcome.rung) return { ringing: false, error: outcome.error };
     return { ringing: true, conversationId: outcome.conversationId };
   },

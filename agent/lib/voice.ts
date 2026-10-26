@@ -276,34 +276,50 @@ const placedSchema = z.object({
 
 type Fetch = typeof fetch;
 
-async function elevenLabsJson(
+// Thrown only when the phone certainly did not ring. Anything else from placeOutboundCall (a lost
+// connection, a 5xx, a body that doesn't parse) may follow a call that went out.
+export class CallNotPlaced extends Error {}
+
+function elevenLabsRequest(
   line: OutboundLine,
   fetchImpl: Fetch,
   method: "GET" | "POST",
   path: string,
   body?: unknown,
-): Promise<unknown> {
-  const response = await fetchImpl(`${apiBase}${path}`, {
+) {
+  return fetchImpl(`${apiBase}${path}`, {
     method,
     headers: { "xi-api-key": line.apiKey, ...(body === undefined ? {} : { "content-type": "application/json" }) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`ElevenLabs ${method} ${path} returned ${response.status}: ${text.slice(0, 300)}`);
-  return text ? JSON.parse(text) : {};
+}
+
+async function failure(response: Response, method: string, path: string): Promise<string> {
+  return `ElevenLabs ${method} ${path} returned ${response.status}: ${(await response.text()).slice(0, 300)}`;
 }
 
 // The voice agent is whichever agent the number answers with, so an outbound call reaches the same
-// agent, tool and webhooks as a call in.
+// agent, tool and webhooks as a call in. Nothing has dialled yet, so every failure here is certain.
 async function outboundNumber(line: OutboundLine, fetchImpl: Fetch) {
-  const listed = await elevenLabsJson(line, fetchImpl, "GET", "/v1/convai/phone-numbers");
-  const numbers = phoneNumbersSchema.parse(listed);
+  const path = "/v1/convai/phone-numbers";
+  let numbers: z.infer<typeof phoneNumbersSchema>;
+  try {
+    const response = await elevenLabsRequest(line, fetchImpl, "GET", path);
+    if (!response.ok) throw new CallNotPlaced(await failure(response, "GET", path));
+    numbers = phoneNumbersSchema.parse(await response.json());
+  } catch (error) {
+    if (error instanceof CallNotPlaced) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CallNotPlaced(`could not list ElevenLabs phone numbers: ${detail}`);
+  }
   const number = numbers.find((candidate) => sameHandle(candidate.phone_number, line.fromNumber));
-  if (!number) throw new Error(`${line.fromNumber} is not imported into ElevenLabs`);
-  if (!number.assigned_agent) throw new Error(`${line.fromNumber} has no voice agent assigned in ElevenLabs yet`);
+  if (!number) throw new CallNotPlaced(`${line.fromNumber} is not imported into ElevenLabs`);
+  if (!number.assigned_agent) {
+    throw new CallNotPlaced(`${line.fromNumber} has no voice agent assigned in ElevenLabs yet`);
+  }
   const provider = number.provider ?? "twilio";
   if (provider !== "twilio" && provider !== "sip_trunk") {
-    throw new Error(`${line.fromNumber} is a ${provider} number, which Adam can't call out from`);
+    throw new CallNotPlaced(`${line.fromNumber} is a ${provider} number, which Adam can't call out from`);
   }
   return { id: number.phone_number_id, agentId: number.assigned_agent.agent_id, path: outboundPaths[provider] };
 }
@@ -333,9 +349,15 @@ export async function placeOutboundCall(
   fetchImpl: Fetch = fetch,
 ): Promise<PlacedCall> {
   const number = await outboundNumber(line, fetchImpl);
-  const placed = placedSchema.parse(
-    await elevenLabsJson(line, fetchImpl, "POST", number.path, outboundCallBody(call, number)),
-  );
-  if (!placed.success) throw new Error(`ElevenLabs did not place the call: ${placed.message ?? "no reason given"}`);
+  const response = await elevenLabsRequest(line, fetchImpl, "POST", number.path, outboundCallBody(call, number));
+  // A 4xx is ElevenLabs refusing the request before dialling; a 5xx may come after it dialled.
+  if (response.status >= 400 && response.status < 500) {
+    throw new CallNotPlaced(await failure(response, "POST", number.path));
+  }
+  if (!response.ok) throw new Error(await failure(response, "POST", number.path));
+  const placed = placedSchema.parse(await response.json());
+  if (!placed.success) {
+    throw new CallNotPlaced(`ElevenLabs did not place the call: ${placed.message ?? "no reason given"}`);
+  }
   return { conversationId: placed.conversation_id ?? null };
 }

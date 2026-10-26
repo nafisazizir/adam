@@ -700,8 +700,12 @@ stub the route).
     `OWNER_IMESSAGE_HANDLES`), claims a slot in the call budget, and calls `placeOutboundCall` with
     `outboundCallBriefing(localTime, reason)`: the inbound persona and `ask_adam` rule plus the
     reason, which is also the greeting ("Hey, it's Adam. <reason>"), with braces and newlines
-    stripped and capped at 300 characters. A placement that fails gives its slot back. A later
-    trigger can call `ringOwner` directly once it has a gate of its own.
+    stripped and capped at 300 characters. Only a call that certainly did not go out gives its slot
+    back: `placeOutboundCall` throws `CallNotPlaced` for every failure before the call request (the
+    number lookup), a 4xx on it and a parsed `success: false`. A lost connection, a 5xx or a body
+    that doesn't parse may follow a call that rang, so the slot stays claimed and the tool tells
+    Adam the call may have gone out and not to ring again. A later trigger can call `ringOwner`
+    directly once it has a gate of its own.
     - **The vendor call.** `placeOutboundCall` lists `/v1/convai/phone-numbers`, takes
       `CALLS_PHONE_NUMBER`'s `phone_number_id` and the agent assigned to it (the same agent, tool
       and webhooks as a call in), and posts to `/v1/convai/twilio/outbound-call` (or
@@ -720,15 +724,23 @@ stub the route).
       (`isRingingReminderTurn`: authenticator `reminders`, a user principal, attribute
       `ring: "true"`). `schedule_reminder({ ring: true })` is refused outside the owner's chat, so
       a mail, invite, coding-session or call turn can't launder a ringing reminder, and is refused
-      up front when calling is not set up. Every other turn (mail, the briefing, workouts, coding
-      updates, calls) is refused, since each carries text someone else wrote, and the instructions
-      say to text instead. Nothing asks for confirmation, so nothing parks a background turn. A
-      standing "call me if X emails" would need its own gate matched in code, not by the model.
+      up front when calling is not set up or no handle of the owner's is a phone number, so a
+      wake-up call never quietly becomes a text. Every other turn (mail, the briefing, workouts,
+      coding updates, calls) is refused, since each carries text someone else wrote, and the
+      instructions say to text instead: a background turn can't ring. An owner chat turn can still
+      be steered by what its tools read (an email saying "phone him now" while summarising the
+      inbox), which costs at most one ring within the budget, opening with text Adam could have
+      texted anyway, as with the other owner-chat gates. Nothing asks for confirmation, so nothing
+      parks a background turn. A standing "call me if X emails" would need its own gate matched in
+      code, not by the model.
     - **Budget.** At most one call every 10 minutes and six in a rolling 24 hours, kept in one
       claim store pointer (`claimRateSlot` in `lib/rate-limit.ts`: the recent call times, written
       conditionally); a store failure or a lost race refuses the call, so a loop or a replayed step
-      stops at the gap. There are no quiet hours: every allowed call is one the owner asked for at
-      that time, a 6 am wake-up included.
+      stops at the gap. A ringing reminder also rings once: `call_owner` passes `ringOnceKey`
+      (`ring-<QStash message id>`) and `ringOwner` takes it with `claimOnce`, so a redelivery
+      after the gap is refused; it is given back whenever the phone certainly did not ring, so a
+      redelivery after a refused call still can. There are no quiet hours: every allowed call is
+      one the owner asked for at that time, a 6 am wake-up included.
     - **Configuration.** No new env var: it needs `ELEVENLABS_API_KEY`, `CALLS_PHONE_NUMBER` and
       `CALLS_TOOL_SECRET` (without it `ask` refuses, so the call could relay nothing to Adam), and
       the tool says which when one is missing. Once it rings, Adam texts the reason in one line, so
