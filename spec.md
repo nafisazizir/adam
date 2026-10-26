@@ -624,7 +624,7 @@ stub the route).
   the owner memory slot definition in `lib/owner-memory.ts`; `guardedMemory` (best-effort recall,
   write tools behind a caller check) in `lib/memory.ts`;
   `callRizMcpTool` in `lib/riz-mcp.ts`; `dailyCron` in `lib/cron.ts`; `claimDay`, `claimOnce` and `releaseDay` in
-  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` and `stopWatchingMailbox` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
+  `lib/daily-claim.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchMailboxes` and `stopWatchingMailbox` in `lib/mail-watch.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
@@ -679,15 +679,36 @@ stub the route).
   etag is still the claim's) and the run rethrows, so Vercel records the cron run as failed and a
   re-run the same day is not skipped as already claimed.
   - **`briefing`** (7am local, once a day, Hobby-safe). Delivers a `<briefing>` trigger built by
-    `lib/briefing.ts` from a list of section providers. Each section renders text or nothing, a
-    failing section is left out rather than failing the briefing, and section text cannot close the
-    wrapper tag (`stripWrapperTags` repeats until nothing is left to strip, so a tag split around
-    another, `</bri</briefing>efing>`, is removed too). The only section today is the static guidance: check today's reminders with
-    `list_reminders` and coding sessions waiting on the owner with `list_coding_sessions`, then send
-    one short message if something is real and `stay_silent` otherwise, which is the expected
-    outcome most mornings. It is a background turn, so it schedules, starts, messages and merges
-    nothing and never waits on the owner. Later features (calendar and mail highlights, an overnight
-    browser digest) add a section to `briefingSections` without touching the schedule.
+    `lib/briefing.ts` from a list of section providers. Each section renders text or nothing from
+    a `BriefingContext` (the home owner and the time the run started), a failing section or one
+    still waiting after 30 seconds is left out rather than failing the briefing, and section text
+    cannot close the wrapper tag (`stripWrapperTags` repeats until nothing is left to strip, so a
+    tag split around another, `</bri</briefing>efing>`, is removed too). The sections:
+    - **guidance** (static): check today's reminders with `list_reminders` and coding sessions
+      waiting on the owner with `list_coding_sessions`, then send one short message if something
+      is real and `stay_silent` otherwise, which is the expected outcome most mornings. It is a
+      background turn, so it schedules, starts, messages and merges nothing and never waits on the
+      owner.
+    - **google** (`lib/google-briefing.ts`, `googleBriefingSection` over the Google workspace and
+      the mailbox state store). Pre-rendered rather than left to the model, so the morning costs one
+      model step, no tool round trips, and the filtering is code rather than judgement. With Google
+      unconfigured or no account listed it renders nothing and makes no Google call. Otherwise, as
+      the home owner: the rest of today's events (`listEvents` from now to the next local midnight,
+      `startOfNextLocalDay`, every shown calendar, declined ones dropped) and unread inbox mail
+      from the last day (`searchEmail`, filtered by `mightMatter` and capped at ten like a
+      `<new_email>`). Mail a new-mail trigger already handed over is left out: for each account
+      with candidate mail the section reads that mailbox's existing state document
+      (`deliveredMail` in `lib/new-mail.ts`), skips ids in `delivered`, and also skips mail newer
+      than ten minutes that a pending mail run will pick up; the window then reaches back ten
+      minutes further, so nothing falls between two briefings. A mailbox that was never watched has
+      no state, and its whole last day counts. A state read that fails drops that account's mail
+      (a missed line beats a repeated heads-up). Accounts that need connecting are named so the
+      owner hears about it in a line; other per-account failures are logged and left out. Nothing
+      to show renders nothing. Events and mail are tagged `<calendar_content>`/`<email_content>`,
+      stripped of `briefing` look-alikes in the same pass. It adds no state and no Blob writes: at
+      most one simple read per account with mail per morning.
+    Later features (an overnight browser digest) add a section to `briefingSections` without
+    touching the schedule.
   - **`mail-watch`** (6am local, once a day). Gmail stops pushing to the topic seven days after a
     watch, so this renews `watchMailbox` on the inbox for every account on the account list, as
     the home owner, with `GOOGLE_PUBSUB_TOPIC`, and records the returned history id for an account
@@ -764,6 +785,7 @@ adam/
 │   │   ├── coding-sessions.ts # brief wrapper, state vocabulary, watch ticks, update messages
 │   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
 │   │   ├── briefing.ts        # morning briefing message from a list of section providers
+│   │   ├── google-briefing.ts # the briefing's Google section: today's events, unread mail no trigger sent
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
 │   │   ├── daily-claim.ts     # claimDay/releaseDay: one run per job per local date, over a ClaimStore
 │   │   ├── claim-store.ts     # the ClaimStore in private Vercel Blob
@@ -855,12 +877,13 @@ pull requests merged on the owner's say-so after a confirmation naming the PR ·
 remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar
 across any number of Google accounts the owner connects by chatting (search, read, list events;
 disconnect after a confirmation), with email and invites treated as untrusted data · new inbox mail as a trigger through Gmail push, texted only when a real
-person needs the owner · calls to Adam's own phone number through one ElevenLabs voice agent,
+person needs the owner · the rest of today's calendar and unread mail no trigger already sent, in the
+morning briefing · calls to Adam's own phone number through one ElevenLabs voice agent,
 answered from the owner's own thread, with texts mid-call and the call
 joining the chat history afterwards, its full transcript kept for later lookups.
 
 **Out (deferred):** Redis · semantic memory recall · multi-user · multi-channel · `inbox` and `finance`
-subagents · sending mail (drafts only, by design) · deleting events and answering invites · mail in the briefing · inbound burst debouncing (low-risk single-user; add a Photon
+subagents · sending mail (drafts only, by design) · deleting events and answering invites · inbound burst debouncing (low-risk single-user; add a Photon
 `onMessage` buffer only if it bites).
 
 ### Environment variables
@@ -1005,7 +1028,8 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
     nothing.
   - the reminder list: a read and a write per schedule, cancel and delivery (list also prunes),
     about 150 advanced and 250 simple for 60 reminders.
-  - daily claims for the briefing: 30 advanced, 30 simple.
+  - daily claims for the briefing: 30 advanced, 30 simple; its Google section reads a mailbox's
+    state only when that account has unread mail to show, at most 60 simple with two accounts.
   - owner memory: one simple read per turn of root, `coach` and `deep` (about 1,500 to 3,000),
     one put per save (about 30 to 60).
   - generated audio: one put and one read per voice note (about 10 to 20 each).
@@ -1042,8 +1066,9 @@ plans, OAuth consent screens, logging in to accounts) are listed so a brief can 
    accounts, search and read mail, list events, on root Adam, with Vercel Connect holding the Google
    grants. **New-mail triggers are built**
    (§4, `channels/mail.ts`): Gmail push through Pub/Sub, coalesced through QStash, filtered, and
-   delivered as one `<new_email>` to the home thread where root exercises right-to-silence. Next:
-   mail in the briefing, and an `inbox` subagent if triage crowds root's context. **Writes are
+   delivered as one `<new_email>` to the home thread where root exercises right-to-silence. **The
+   briefing's Google section is built** (§4 `briefing`): today's events and unread mail no
+   trigger already sent, pre-rendered. Next: an `inbox` subagent if triage crowds root's context. **Writes are
    built** (§4 "Writes"): drafts, never sends, and event create/update behind `ctx.ask`.
    - **Seam.** `lib/google.ts` is the only file that knows Google. Tools speak in accounts named by
      label or address and take an `account` argument or search all of them. Built on the Google REST

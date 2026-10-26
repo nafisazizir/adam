@@ -44,6 +44,6 @@ export default defineTool({
       { from: start, to: end },
       { account, primaryOnly, max },
     );
-    return { events: found.results.map(describeEvent), errors: found.errors, truncated: found.truncated };
+    return { events: found.results.map((event) => describeEvent(event)), errors: found.errors, truncated: found.truncated };
   },
 });

@@ -152,6 +152,16 @@ export interface MailboxStateStore {
   remove(account: string): Promise<void>;
 }
 
+// The mail new-mail triggers have already handed to the model, or null for a mailbox that was never
+// watched, so none of its mail can have gone out that way.
+export async function deliveredMail(
+  store: Pick<MailboxStateStore, "read">,
+  account: string,
+): Promise<ReadonlySet<string> | null> {
+  const stored = await store.read(account);
+  return stored ? new Set(stored.state.delivered) : null;
+}
+
 export interface MailboxReader {
   history(startHistoryId: string, pageToken?: string): Promise<MailboxHistory>;
   summaries(ids: readonly string[]): Promise<EmailSummary[]>;

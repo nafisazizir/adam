@@ -16,7 +16,8 @@ export default defineSchedule({
       return;
     }
 
-    const day = userLocalDate();
+    const now = new Date();
+    const day = userLocalDate(now);
     const claim = await claimDay(blobClaimStore, "briefing", day);
     if (!claim) {
       console.log(`[briefing] skipping; ${day} is already claimed`);
@@ -28,7 +29,7 @@ export default defineSchedule({
       try {
         await channel.deliver({
           to,
-          message: await briefingMessage(currentTimeContext()),
+          message: await briefingMessage(currentTimeContext(now), { owner, now }),
           target,
           auth: briefingAuth(owner, day),
           turnPolicy: "queue",
