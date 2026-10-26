@@ -1,12 +1,13 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { deliveryChannelForAuth, homeDelivery } from "#lib/delivery.js";
+import { deliveryChannelForAuth, homeDelivery, isOwnerChat } from "#lib/delivery.js";
 import { publishReminder } from "#lib/qstash.js";
 import { replayStableKey } from "#lib/replay-key.js";
 import { recordReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderTiming } from "#lib/reminder-timing.js";
+import { configuredOutboundLine } from "#lib/ring-owner.js";
 import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
 
 export default defineTool({
@@ -18,7 +19,8 @@ export default defineTool({
     "current local date and time in context. Never convert a clock time into seconds " +
     "yourself. leadMinutes (only with at) fires that many minutes before at. A reminder " +
     "with leadMinutes that would fire in the past or within 5 minutes returns " +
-    "{ skipped: 'too soon' } instead of being scheduled; a plain at in the past is an error. message is the reminder text in your own voice.",
+    "{ skipped: 'too soon' } instead of being scheduled; a plain at in the past is an error. message is the reminder text in your own voice. " +
+    "ring: true rings their phone when it fires, only when they asked for a call ('call me at 7', a wake-up call), and only from their chat.",
   inputSchema: z.object({
     message: z
       .string()
@@ -41,13 +43,23 @@ export default defineTool({
       .min(0)
       .optional()
       .describe("With at: fire this many minutes before at. Default 0."),
+    ring: z
+      .boolean()
+      .optional()
+      .describe("Ring their phone when it fires. Only when they asked you to call them for it."),
   }),
-  async execute({ message, delaySeconds: relativeDelay, at, leadMinutes = 0 }, ctx) {
+  async execute({ message, delaySeconds: relativeDelay, at, leadMinutes = 0, ring = false }, ctx) {
     if ((relativeDelay === undefined) === (at === undefined)) {
       throw new Error("Give exactly one of delaySeconds or at.");
     }
     if (relativeDelay !== undefined && leadMinutes > 0) {
       throw new Error("leadMinutes only works together with at.");
+    }
+    if (ring && !isOwnerChat(ctx.session.auth.current)) {
+      throw new Error("Only the user can ask for a reminder that rings them, from chat. Schedule it without ring.");
+    }
+    if (ring && !configuredOutboundLine()) {
+      throw new Error("Calling out isn't set up, so this reminder can't ring them. Tell them, and offer a text reminder instead.");
     }
     const now = Date.now();
     const timing = reminderTiming(
@@ -82,10 +94,11 @@ export default defineTool({
       target: resolved.target,
       delaySeconds,
       idempotencyKey: replayStableKey(ctx, message, at ?? relativeDelay!, leadMinutes),
+      ring,
     });
     const fireAt = new Date(fireAtMs);
     await recordReminder(blobReminderListStore, { id, message, fireAt: fireAt.toISOString() });
 
-    return { id, message, fireAt: formatUserDateTime(fireAt) };
+    return { id, message, fireAt: formatUserDateTime(fireAt), ...(ring && { ring }) };
   },
 });
