@@ -5,11 +5,19 @@ import type { SessionAuthContext } from "eve/context";
 import type { HomeOwner } from "#lib/home-target.js";
 import { admitSender, type KnownOwner, ownerAuth } from "#lib/owner.js";
 import { stripWrapperTags } from "#lib/untrusted.js";
-import type { CallBriefing, CallEnded, CallLine } from "#lib/voice.js";
+import {
+  type CallBriefing,
+  type CallEnded,
+  type CallLine,
+  callerNumberOf,
+  type CallParties,
+} from "#lib/voice.js";
 
 export const callsAuthenticator = "calls";
 
 export const replyToCallTool = "reply_to_call";
+
+export const callOwnerTool = "call_owner";
 
 const maxTranscriptLines = 24;
 const maxTranscriptChars = 4000;
@@ -65,12 +73,35 @@ export function isOwnerCaller(callerNumber: string | null, owner: KnownOwner): b
   return admission.admitted && !admission.claimed;
 }
 
+// Adam's own number is one end of every call, so the owner must be the other: the caller on a call
+// in, and on a call Adam placed, the number it dialled.
+export function otherParty(call: CallParties): string | null {
+  return call.direction === "outbound" ? call.calledNumber : call.callerNumber;
+}
+
+export function isOwnerOnCall(call: CallParties, owner: KnownOwner): boolean {
+  return isOwnerCaller(otherParty(call), owner);
+}
+
+// The number Adam rings is one the call routes admit, so the owner's answers reach their thread. An
+// iMessage handle may be an Apple ID email, which can't be dialled.
+export function ownerPhoneNumber(owner: KnownOwner): string | null {
+  const recorded = owner.record.kind === "recorded" ? [owner.record.principalId] : [];
+  for (const handle of [...recorded, ...owner.handles]) {
+    const number = callerNumberOf(handle);
+    if (number && isOwnerCaller(number, owner)) return number;
+  }
+  return null;
+}
+
 function relayed(text: string): string {
   return stripWrapperTags(text, ...callTags);
 }
 
+const personaLine =
+  "You are Adam, the user's personal agent, on a live call with them. Be warm, quick and a little witty, like a clever friend.";
+
 const briefingLines = [
-  "You are Adam, the user's personal agent, on a live call with them. Be warm, quick and a little witty, like a clever friend.",
   "Speak in short, plain, natural sentences. No lists, no markdown, never read out a link.",
   "Handle only small talk yourself. For everything else, such as their plans, calendar, reminders, notes, coding work, texting them photos or links, or any task or question about their life, say a quick 'one sec' and call ask_adam with one complete, self-contained request in their words plus any detail from the call.",
   "Then say what ask_adam returns, in your own words and just as briefly. Never make up an answer it did not give you, and never claim you did something it did not confirm.",
@@ -79,8 +110,30 @@ const briefingLines = [
 
 export function callBriefing(localTime: string): CallBriefing {
   return {
-    briefing: [...briefingLines, `It is ${localTime} for them.`].join("\n"),
+    briefing: [personaLine, ...briefingLines, `It is ${localTime} for them.`].join("\n"),
     greeting: "hey, it's Adam",
+    localTime,
+  };
+}
+
+const maxReasonChars = 300;
+
+// Spoken by the voice agent and placed into its prompt, so no braces that read as template variables.
+function spokenText(text: string): string {
+  return text.replace(/[{}]/gu, "").replace(/\s+/gu, " ").trim().slice(0, maxReasonChars);
+}
+
+export function outboundCallBriefing(localTime: string, reason: string): CallBriefing {
+  const why = spokenText(reason);
+  return {
+    briefing: [
+      personaLine,
+      `You phoned them, and they picked up. You called because: ${why}`,
+      "Your greeting already told them why. If they did not catch it, say it again plainly, then follow their lead.",
+      ...briefingLines,
+      `It is ${localTime} for them.`,
+    ].join("\n"),
+    greeting: `Hey, it's Adam. ${why}`,
     localTime,
   };
 }

@@ -238,6 +238,8 @@ test("the ask_adam tool sends the secret header and binds the call's ids to syst
   assert.deepEqual(api_schema.request_headers, { "x-calls-secret": { secret_id: "sec_1" } });
   assert.equal(api_schema.request_body_schema.properties.conversation_id.dynamic_variable, "system__conversation_id");
   assert.equal(api_schema.request_body_schema.properties.caller_id.dynamic_variable, "system__caller_id");
+  assert.equal(api_schema.request_body_schema.properties.called_number.dynamic_variable, "system__called_number");
+  assert.equal(api_schema.request_body_schema.properties.call_direction.dynamic_variable, "call_direction");
 });
 
 test("the agent takes its persona from the start webhook, needs signed urls, and leaves the voice alone unless set", () => {
@@ -249,7 +251,9 @@ test("the agent takes its persona from the start webhook, needs signed urls, and
     "call_briefing",
     "greeting",
     "local_time",
+    "call_direction",
   ]);
+  assert.equal(config.conversation_config.agent.dynamic_variables.dynamic_variable_placeholders.call_direction, "inbound");
   assert.equal(config.platform_settings.auth.enable_auth, true);
   assert.equal(config.platform_settings.overrides.enable_conversation_initiation_client_data_from_webhook, true);
   assert.deepEqual(config.platform_settings.workspace_overrides.conversation_initiation_client_data_webhook, {

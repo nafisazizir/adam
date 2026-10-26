@@ -15,7 +15,9 @@ import type { CallEnded } from "#lib/voice.js";
 
 const ended: CallEnded = {
   conversationId: "conv_01jx",
+  direction: "inbound",
   callerNumber: "+61412345678",
+  calledNumber: "+61290000000",
   summary: "The user asked about dinner.",
   transcript: [
     { speaker: "adam", text: "hey, it's Adam" },

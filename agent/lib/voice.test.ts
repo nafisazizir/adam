@@ -8,7 +8,9 @@ import {
   parseCallEnded,
   parseCallRequest,
   callerNumberOf,
+  callStartResponse,
   parseCallStart,
+  placeOutboundCall,
   sameSecret,
 } from "#lib/voice.js";
 
@@ -88,7 +90,13 @@ test("parses an ask_adam call", () => {
       conversation_id: "conv_1",
       caller_id: "+61412345678",
     }),
-    { conversationId: "conv_1", callerNumber: "+61412345678", request: "remind me at 5" },
+    {
+      conversationId: "conv_1",
+      direction: "inbound",
+      callerNumber: "+61412345678",
+      calledNumber: null,
+      request: "remind me at 5",
+    },
   );
   assert.equal(parseCallRequest({ request: "", conversation_id: "conv_1" }), null);
   assert.equal(parseCallRequest({ request: "hi" }), null);
@@ -127,7 +135,9 @@ test("parses a post-call transcription into a neutral call summary", () => {
     ok: true,
     ended: {
       conversationId: "conv_1",
+      direction: "inbound",
       callerNumber: "+61412345678",
+      calledNumber: "+61290000000",
       summary: "The user asked for a reminder to call their mum at 5pm.",
       transcript: [
         { speaker: "adam", text: "hey, it's Adam" },
@@ -162,6 +172,124 @@ test("a summary without a start time still parses", () => {
   });
   assert.ok(parsed.ok);
   assert.equal(parsed.ended.startedAt, null);
+});
+
+test("an ask_adam call reads the direction Adam set and the number it dialled", () => {
+  assert.deepEqual(
+    parseCallRequest({
+      request: "what's the plan?",
+      conversation_id: "conv_2",
+      caller_id: "+61290000000",
+      called_number: "+61412345678",
+      call_direction: "outbound",
+    }),
+    {
+      conversationId: "conv_2",
+      direction: "outbound",
+      callerNumber: "+61290000000",
+      calledNumber: "+61412345678",
+      request: "what's the plan?",
+    },
+  );
+  assert.equal(parseCallRequest({ request: "hi", conversation_id: "c", call_direction: "sideways" }), null);
+});
+
+test("the start webhook marks every call it briefs as inbound", () => {
+  const response = callStartResponse({ briefing: "b", greeting: "g", localTime: "t" });
+  assert.deepEqual(response.dynamic_variables, { call_briefing: "b", greeting: "g", local_time: "t", call_direction: "inbound" });
+});
+
+test("a summary of a call Adam placed puts the owner on the called end", () => {
+  const parsed = parseCallEnded({
+    type: "post_call_transcription",
+    data: {
+      conversation_id: "conv_4",
+      metadata: {
+        start_time_unix_secs: 1_760_777_900,
+        phone_call: { direction: "outbound", external_number: "+61412345678", agent_number: "+61290000000" },
+      },
+      conversation_initiation_client_data: { dynamic_variables: { call_direction: "outbound" } },
+    },
+  });
+  assert.ok(parsed.ok);
+  assert.equal(parsed.ended.direction, "outbound");
+  assert.equal(parsed.ended.calledNumber, "+61412345678");
+  assert.equal(parsed.ended.callerNumber, "+61290000000");
+});
+
+interface Recorded {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Record<string, string>;
+  readonly body: unknown;
+}
+
+function fakeElevenLabs(numbers: unknown[], placed: unknown = { success: true, message: "ok", conversation_id: "conv_out", callSid: "CA1" }) {
+  const calls: Recorded[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({
+      method: init?.method ?? "GET",
+      url,
+      headers: init?.headers as Record<string, string>,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    if (url.endsWith("/v1/convai/phone-numbers")) return Response.json(numbers);
+    if (url.endsWith("/outbound-call")) return Response.json(placed);
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+const line = { apiKey: "xi_test", fromNumber: "+61 2 9000 0000" };
+const outbound = { toNumber: "+61412345678", briefing: { briefing: "b", greeting: "Hey, it's Adam. g", localTime: "t" } };
+const twilioNumber = {
+  phone_number: "+61290000000",
+  phone_number_id: "pn_1",
+  provider: "twilio",
+  assigned_agent: { agent_id: "agent_1", agent_name: "Adam" },
+};
+
+test("an outbound call goes from Adam's number, with its agent, carrying the briefing as outbound", async () => {
+  const api = fakeElevenLabs([{ ...twilioNumber, phone_number: "+15550000000", phone_number_id: "pn_other" }, twilioNumber]);
+  assert.deepEqual(await placeOutboundCall(line, outbound, api.fetchImpl), { conversationId: "conv_out" });
+
+  const [list, post] = api.calls;
+  assert.equal(list?.url, "https://api.elevenlabs.io/v1/convai/phone-numbers");
+  assert.equal(post?.method, "POST");
+  assert.equal(post?.url, "https://api.elevenlabs.io/v1/convai/twilio/outbound-call");
+  assert.equal(post?.headers["xi-api-key"], "xi_test");
+  const body = post?.body as Record<string, any>;
+  assert.equal(body.agent_id, "agent_1");
+  assert.equal(body.agent_phone_number_id, "pn_1");
+  assert.equal(body.to_number, "+61412345678");
+  assert.deepEqual(body.conversation_initiation_client_data, {
+    dynamic_variables: { call_briefing: "b", greeting: "Hey, it's Adam. g", local_time: "t", call_direction: "outbound" },
+  });
+  assert.equal(body.telephony_call_config.ringing_timeout_secs, 30);
+});
+
+test("a SIP trunk number calls out through the SIP endpoint", async () => {
+  const api = fakeElevenLabs([{ ...twilioNumber, provider: "sip_trunk" }]);
+  await placeOutboundCall(line, outbound, api.fetchImpl);
+  assert.equal(api.calls[1]?.url, "https://api.elevenlabs.io/v1/convai/sip-trunk/outbound-call");
+});
+
+test("an outbound call fails clearly before dialling when the number can't ring out", async () => {
+  await assert.rejects(placeOutboundCall(line, outbound, fakeElevenLabs([]).fetchImpl), /not imported into ElevenLabs/u);
+  const unassigned = fakeElevenLabs([{ ...twilioNumber, assigned_agent: null }]);
+  await assert.rejects(placeOutboundCall(line, outbound, unassigned.fetchImpl), /no voice agent assigned/u);
+  assert.equal(unassigned.calls.length, 1);
+  const exotel = fakeElevenLabs([{ ...twilioNumber, provider: "exotel" }]);
+  await assert.rejects(placeOutboundCall(line, outbound, exotel.fetchImpl), /exotel number/u);
+});
+
+test("an outbound call ElevenLabs refuses is an error", async () => {
+  const refused = fakeElevenLabs([twilioNumber], { success: false, message: "geo permissions", conversation_id: null, callSid: null });
+  await assert.rejects(placeOutboundCall(line, outbound, refused.fetchImpl), /did not place the call: geo permissions/u);
+
+  const failing = (async () => new Response("bad key", { status: 401 })) as unknown as typeof fetch;
+  await assert.rejects(placeOutboundCall(line, outbound, failing), /returned 401: bad key/u);
 });
 
 test("ignores other webhook events and rejects junk", () => {
