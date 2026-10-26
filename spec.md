@@ -522,13 +522,14 @@ stub the route).
   - **Which calendar.** Only each account's primary calendar: invitations land there and Adam
     writes there; shared and subscribed calendars change under other people all day.
   - **Push.** A notification is trusted only by its `X-Goog-Channel-Token`, which Google echoes
-    from the watch: `account=<label>&calendar=<id>&sig=<HMAC>` (`lib/calendar-push.ts`, the only
-    file that knows the X-Goog headers), the HMAC over the channel id, account and calendar under a
-    key derived with HKDF from `QSTASH_CURRENT_SIGNING_KEY` (the `secretCache` root, so no new
-    secret; rotating it also resets that cache, and the next renewal opens channels with fresh
-    tokens). A token copied to another channel fails; anything else is 401. The `sync` message that
-    opens each channel is acknowledged and ignored. The route makes no Google call; a failed QStash
-    publish is a 500, which Google retries with backoff.
+    from the watch: `account=<label>&calendar=<id>&exp=<channel end>&sig=<HMAC>`
+    (`lib/calendar-push.ts`, the only file that knows the X-Goog headers), the HMAC over the
+    channel id, account, calendar and end under a key derived with HKDF from
+    `QSTASH_CURRENT_SIGNING_KEY` (the `secretCache` root, so no new secret; rotating it also resets
+    that cache, and the next renewal opens channels with fresh tokens). A token copied to another
+    channel fails, and one replayed after its channel ended cannot spend the daily run cap; anything
+    else is 401. The `sync` message that opens each channel is acknowledged and ignored. The route
+    makes no Google call; a failed QStash publish is a 500, which Google retries with backoff.
   - **Coalescing.** Google pushes on every change, the owner's own included. Pushes for one
     calendar in a five-minute window share a QStash deduplication id and one run just after it
     (`coalescedCalendarRun` over `coalescedRun` in `lib/coalesce.ts`, the primitive mail's
@@ -537,31 +538,50 @@ stub the route).
     mail).
   - **Who changed it.** The Calendar API never says who made a change, so `changeOf` reads it off
     what changed, against a fingerprint of each event Adam last saw (start, end, a hash of the
-    place, the owner's response, hashes of the guests who had declined). On an event the owner
-    organises only a guest newly declining counts (`declined`); their own moves, edits and
-    cancellations, Adam's `create_event` and `update_event` included, never do. On an event they
-    were invited to, a reply is their own doing and never counts; the organiser cancelling it
-    (`cancelled`) or moving its time or place (`changed`, with the old time) does, unless the owner
-    had declined it. An event Adam never saw counts only as an `invited` it is still `needsAction`
-    on, or as a `changed` when it is a series instance moved off its original start. Past events
-    (a day of grace) and non-default event types (birthdays, focus time, out of office, working
-    location, events from Gmail) never count. The soonest ten become one `<calendar_change>`
-    trigger (`calendarChangeMessage`; titles, places, organisers, guests and decliners inside
-    `untrusted("calendar_content", …, ["calendar_change"])`; descriptions are never fetched)
-    delivered to the home thread as the owner (`calendarAuth`, authenticator `calendar`,
-    `turnPolicy: "queue"`), where root texts or calls `stay_silent`.
+    place, the owner's response, hashes of the lowercased addresses of guests who had declined,
+    whether it is a series).
+    - On an event this account organises (`organizer.self`) only a guest newly declining counts
+      (`declined`); the owner's own moves, edits and cancellations never do.
+    - `organizer.self` only means "this calendar", so an event whose organiser is the address of
+      any connected account (`accountAddresses`, from the cached userinfo addresses) is the
+      owner's too and never counts on another account's calendar: an event on `personal` that
+      invites the owner's `work` address is not a new invitation on `work`, and its guests'
+      replies are told once, by `personal`.
+    - On an event they were invited to, a reply is their own doing and never counts; the organiser
+      cancelling an event Adam knew (`cancelled`; an unseen one cancelled is not told) or moving its
+      time or place (`changed`, with the old time) does, unless the owner had declined it.
+    - An event Adam never saw counts only as an `invited` it is still `needsAction` on, or as a
+      `changed` when it is a series instance moved off its original start. One occurrence of a
+      series is never an invitation, and is judged against the series' fingerprint when Adam knows
+      the series (so one cancelled occurrence of a known series is told).
+    - `update_event` leaves a 30-minute `secretCache` marker on the event (`noteOwnCalendarEdit`),
+      which a run skips like a told marker, so Adam's edit to an invitation whose guests may modify
+      it never reads as the organiser's.
+    - Past events, series whose `UNTIL` has passed and non-default event types (birthdays, focus
+      time, out of office, working location, events from Gmail) never count.
+    - A whole series' times are its first occurrence, so a series change reads as "a recurring
+      event, each time 10:00 am to 10:30 am", with the old time of day (and "on other days" when
+      its days moved), never the date it began, and sorts as if it met today.
+    The ten most urgent become one `<calendar_change>` trigger (`calendarChangeMessage`; titles,
+    places, organisers, guests and decliners inside `untrusted("calendar_content", …,
+    ["calendar_change"])`; descriptions are never fetched) delivered to the home thread as the owner
+    (`calendarAuth`, authenticator `calendar`, `turnPolicy: "queue"`), where root texts or calls
+    `stay_silent`. An unanswered invitation for today can reach the owner twice, as a
+    `<calendar_change>` and again in the next morning's briefing; both land in the same thread.
   - **State, and the Blob budget.** Calendar state never touches Blob. The cursor, per account and
     calendar, is one `secretCache` entry: the sync token and the fingerprints of up to 400 tracked
-    events (upcoming ones and series, the most recently updated kept), about 60 KB at most, kept 30
-    days and rewritten every run. A missing cursor (the first run, an eviction, a disconnect) or a
-    410 re-syncs the whole calendar and tells nothing; so does a run whose changes run past five
-    pages. The trade-off: an eviction costs at most the heads-up for the change whose push found
-    the cursor gone.
+    events (live series first, then the soonest upcoming events, so the cap drops what lies
+    furthest out), about 60 KB at most, kept 30 days and rewritten every run. A missing cursor (the
+    first run, an eviction, a disconnect) or a 410 re-syncs the whole calendar and tells nothing; so
+    does a run whose changes run past five pages. The trade-off: an eviction costs at most the
+    heads-up for the change whose push found the cursor gone.
   - **Exactly once, best effort.** A run tells each change once per version of its event: a
     `secretCache` marker (event id and `updated`) goes down before delivery and comes off if
     delivery fails, so the QStash retry resends it; the cursor moves only after delivery, and a
     lost cursor write replays changes the markers then skip. Two runs for one calendar overlap only
-    across windows, so a double text needs that and a cache miss together.
+    across windows, so a double text needs that and a cache miss together. A failure no retry can
+    fix (a calendar with more events than ten pages, a Google 4xx other than 429) is logged and
+    acknowledged, so it never spends QStash retries.
   - **Watches.** `renewCalendarWatches` (through `watchCalendars` in `lib/calendar-watch.ts`) syncs
     a calendar before its first channel opens, so the first push has something to compare with. A
     channel lasts seven days and Google never renews one, so a new channel (a fresh UUID) opens
@@ -570,8 +590,8 @@ stub the route).
     calendar access, or needing connecting, is `needs_connecting` and skipped. A run for an account
     no longer listed marks its channel stale for a week, and the push route then acknowledges that
     channel without publishing, so a channel that outlived its account (a failed stop) costs one
-    QStash message. Known limit: a cancelled meeting of a series that Google reports by id only is
-    not told, since Adam keeps no titles.
+    QStash message. Known limit: a cancelled occurrence of a series that Google reports by id only
+    is not told, since Adam keeps no titles.
 - **Calls** (`agent/channels/calls.ts`, `agent/lib/calls.ts`, `agent/lib/voice.ts`): the owner
   phones Adam's own number (a Twilio local number imported into ElevenLabs), which reaches one
   ElevenLabs Agents voice agent. The voice agent is a thin front end that holds the conversation
@@ -1112,8 +1132,11 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
 - QStash's free tier is 1,000 messages a day, and every retry counts as another message. Mail
   costs one per three-minute window with inbox activity per mailbox, capped at 120 a day per
   mailbox: 240 a day with two accounts at the very worst, a realistic 30 to 100. Calendar costs one
-  per five-minute window with changes per primary calendar, capped at 60 a day each: 120 with two
-  accounts at worst, a realistic 5 to 20. Coding watches
+  per five-minute window with changes per primary calendar, capped at 60 runs a day each: 120 with
+  two accounts, a realistic 5 to 20. Each run that fails transiently is retried up to three times
+  by QStash, so a calendar whose runs all fail costs up to 240 messages a day; failures retrying
+  cannot fix are acknowledged instead, so only an outage of Google, Photon or the home pointer
+  reaches that. Coding watches
   spend up to one a minute while Devin is busy (about 250 for a long session), reminders one each,
   workouts two each. The cap keeps mail under a quarter of the budget, so reminders always fit.
 - Vercel Blob on Hobby includes 2,000 advanced operations (put, copy, list) and 10,000 simple ones

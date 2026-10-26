@@ -1,6 +1,7 @@
 import type { SessionAuthContext } from "eve/context";
 
 import {
+  CalendarTooLargeError,
   calendarAuth,
   calendarChangeMessage,
   calendarRunSchema,
@@ -12,7 +13,7 @@ import {
   type CalendarReader,
 } from "#lib/calendar-changes.js";
 import { parseCalendarNotification, type CalendarChannelTokens } from "#lib/calendar-push.js";
-import { GoogleNeedsConnectingError, type GoogleOwner } from "#lib/google.js";
+import { GoogleApiError, GoogleNeedsConnectingError, type GoogleOwner } from "#lib/google.js";
 import { parseJson } from "#lib/qstash.js";
 import type { SharedCache } from "#lib/shared-cache.js";
 
@@ -29,7 +30,7 @@ export interface CalendarPushDeps {
 // Google retries only a 5xx, so anything Adam will never act on is answered 2xx.
 export function calendarPushHandler(deps: CalendarPushDeps) {
   return async (request: Request): Promise<Response> => {
-    const notification = parseCalendarNotification(request.headers, deps.tokens);
+    const notification = parseCalendarNotification(request.headers, deps.tokens, deps.now?.() ?? new Date());
     if (!notification) {
       console.warn("[calendar] rejected a push without a channel token Adam signed");
       return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
@@ -61,6 +62,12 @@ export function calendarPushHandler(deps: CalendarPushDeps) {
   };
 }
 
+// A QStash retry costs a message; only a failure that may pass is worth one.
+function isPermanent(error: unknown): boolean {
+  if (error instanceof CalendarTooLargeError) return true;
+  return error instanceof GoogleApiError && error.status >= 400 && error.status < 500 && error.status !== 429;
+}
+
 export interface CalendarHome {
   readonly owner: GoogleOwner;
   deliver(message: string, auth: SessionAuthContext): Promise<void>;
@@ -72,6 +79,7 @@ export interface CalendarRunRouteDeps {
   readonly now?: () => number;
   verify(request: Request, body: string): Promise<boolean>;
   isListed(owner: GoogleOwner, account: string): Promise<boolean>;
+  ownerAddresses(owner: GoogleOwner): Promise<readonly string[]>;
   reader(owner: GoogleOwner, account: string, calendarId: string): CalendarReader;
 }
 
@@ -108,6 +116,7 @@ export function calendarRunHandler(deps: CalendarRunRouteDeps) {
         cache: deps.cache,
         reader: deps.reader(owner, run.account, run.calendarId),
         ...(deps.now ? { now: deps.now } : {}),
+        ownerAddresses: () => deps.ownerAddresses(owner),
         deliver: (changes) =>
           target.deliver(calendarChangeMessage(run.account, changes, deps.timeContext()), calendarAuth(owner, run.account)),
       });
@@ -117,6 +126,10 @@ export function calendarRunHandler(deps: CalendarRunRouteDeps) {
       if (error instanceof GoogleNeedsConnectingError) {
         console.warn(`[calendar] skipping a change on ${run.account}; it needs connecting`);
         return Response.json({ ok: true, ignored: "needs_connecting" });
+      }
+      if (isPermanent(error)) {
+        console.error(`[calendar] giving up on a change on ${run.account}; retrying cannot help`, error);
+        return Response.json({ ok: true, ignored: "permanent_failure" });
       }
       console.error(`[calendar] failed to process a change on ${run.account}`, error);
       return Response.json({ ok: false, error: "processing_failed" }, { status: 500 });

@@ -3,17 +3,23 @@ import { test } from "node:test";
 
 import type { SessionAuthContext } from "eve/context";
 
-import type { CalendarReader } from "#lib/calendar-changes.js";
+import { CalendarTooLargeError, type CalendarReader } from "#lib/calendar-changes.js";
 import { calendarChannelTokens } from "#lib/calendar-push.js";
 import { calendarPushHandler, calendarRunHandler, type CalendarPushDeps } from "#lib/calendar-routes.js";
-import { GoogleNeedsConnectingError } from "#lib/google.js";
+import { GoogleApiError, GoogleNeedsConnectingError } from "#lib/google.js";
 import { memoryCache, type SharedCache } from "#lib/shared-cache.js";
 
 const tokens = calendarChannelTokens("secret");
 const pushUrl = "https://adam.test/eve/v1/calendar/push";
 const owner = { issuer: "photon-imessage", principalId: "+61400000000" };
 
-function notification(state = "exists", channelId = "c1", token = tokens.sign("c1", { account: "work", calendarId: "primary" })) {
+const channelEnds = new Date("2026-11-02T00:00:00Z");
+
+function notification(
+  state = "exists",
+  channelId = "c1",
+  token = tokens.sign("c1", { account: "work", calendarId: "primary" }, channelEnds),
+) {
   return new Request(pushUrl, {
     method: "POST",
     headers: {
@@ -45,6 +51,12 @@ test("a push without Adam's channel token is refused", async () => {
   assert.equal((await handler(new Request(pushUrl, { method: "POST" }))).status, 401);
   assert.equal((await handler(notification("exists", "c2"))).status, 401);
   assert.equal((await handler(notification("exists", "c1", "account=work&calendar=primary&sig=forged"))).status, 401);
+  assert.equal(published.length, 0);
+});
+
+test("a replayed token from a channel that has ended is refused", async () => {
+  const { handler, published } = pushHandler({ now: () => new Date("2026-11-02T00:00:05Z") });
+  assert.equal((await handler(notification())).status, 401);
   assert.equal(published.length, 0);
 });
 
@@ -93,6 +105,7 @@ function runHandler(options: { cache?: SharedCache; listed?: boolean; reader?: C
     timeContext: () => "<current_time>now</current_time>",
     verify: async () => options.signed ?? true,
     isListed: async () => options.listed ?? true,
+    ownerAddresses: async () => ["me@work.example"],
     reader: () =>
       options.reader ?? {
         changes: async () => ({ revisions: [], nextSyncToken: "s1", nextPageToken: null }),
@@ -133,6 +146,22 @@ test("an account that needs connecting is acknowledged and never signed in", asy
   assert.deepEqual(await response.json(), { ok: true, ignored: "needs_connecting" });
 });
 
+test("a failure that every retry would repeat is acknowledged, a passing one is retried", async () => {
+  const failing = (error: Error): CalendarReader => ({
+    changes: async () => {
+      throw error;
+    },
+  });
+  const tooBig = await runHandler({ reader: failing(new CalendarTooLargeError("too many")) }).handler(runRequest(body));
+  assert.deepEqual(await tooBig.json(), { ok: true, ignored: "permanent_failure" });
+  const notFound = await runHandler({ reader: failing(new GoogleApiError("gone", 404)) }).handler(runRequest(body));
+  assert.equal(notFound.status, 200);
+  const limited = await runHandler({ reader: failing(new GoogleApiError("slow down", 429)) }).handler(runRequest(body));
+  assert.equal(limited.status, 500);
+  const outage = await runHandler({ reader: failing(new Error("socket hang up")) }).handler(runRequest(body));
+  assert.equal(outage.status, 500);
+});
+
 test("a change someone else made reaches the home thread as the owner, under the calendar authenticator", async () => {
   const cache = memoryCache();
   let syncs = 0;
@@ -151,7 +180,9 @@ test("a change someone else made reaches the home thread as the owner, under the
             cancelled: false,
             ordinary: true,
             organizedByOwner: false,
+            organizer: "sam@corp.example",
             recurring: false,
+            seriesUntil: null,
             instanceOf: null,
             originalStart: null,
             declinedBy: [],

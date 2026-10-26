@@ -1,6 +1,7 @@
 import { defineWorkflowTool, type WorkflowStepToolContext } from "eve/tools";
 import { z } from "zod";
 
+import { noteOwnCalendarEdit } from "#lib/calendar-watch.js";
 import { ownerChatRefusal } from "#lib/delivery.js";
 import { eventTimeInput, parseEventTime } from "#lib/event-input.js";
 import { type EventChanges, google, type GoogleOwner } from "#lib/google.js";
@@ -76,7 +77,9 @@ async function prepare(ctx: WorkflowStepToolContext, request: Request): Promise<
 
 async function update(owner: GoogleOwner, request: Request) {
   "use step";
-  return describeEvent(await google.updateEvent(owner, request.account, request, changesOf(request)));
+  const event = await google.updateEvent(owner, request.account, request, changesOf(request));
+  await noteOwnCalendarEdit(event.account, event.id);
+  return describeEvent(event);
 }
 
 export default defineWorkflowTool({

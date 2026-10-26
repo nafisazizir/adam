@@ -23,6 +23,7 @@ const processRun = calendarRunHandler({
   timeContext: () => currentTimeContext(),
   verify: (request, body) => hasValidCallbackSignature(request, body, env.calendarProcessUrl),
   isListed: async (owner, account) => (await google.accountNames(owner)).includes(account),
+  ownerAddresses: (owner) => google.accountAddresses(owner),
   reader: calendarReader,
 });
 

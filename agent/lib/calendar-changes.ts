@@ -20,6 +20,7 @@ import { describeSpan, describeTime } from "#lib/inbox-view.js";
 import type { WatchOutcome } from "#lib/new-mail.js";
 import { ownerAuth } from "#lib/owner.js";
 import type { SharedCache } from "#lib/shared-cache.js";
+import { formatUserTime, userLocalDate } from "#lib/time.js";
 import { untrusted } from "#lib/untrusted.js";
 
 export const calendarAuthenticator = "calendar";
@@ -62,13 +63,12 @@ export function takeDailyCalendarRun(cache: SharedCache, run: CalendarRun, day: 
 // What Adam last saw of an event, enough to tell what changed and so who changed it. Places and
 // guests are hashed: they only need comparing.
 const fingerprintSchema = z.object({
-  own: z.boolean(),
+  series: z.boolean().default(false),
   start: z.string(),
   end: z.string(),
   place: z.string(),
   response: z.string().nullable(),
   declined: z.array(z.string()),
-  updated: z.string(),
 });
 
 type Fingerprint = z.infer<typeof fingerprintSchema>;
@@ -83,14 +83,17 @@ function timeFromKey(key: string): EventTime {
   return /^\d{4}-\d{2}-\d{2}$/u.test(key) ? { allDay: true, date: key } : { allDay: false, at: new Date(key) };
 }
 
-function digest(text: string): string {
-  return createHash("sha256").update(text.trim().toLowerCase()).digest("base64url").slice(0, 12);
+function startsAt(time: EventTime): number {
+  return time.allDay ? Date.parse(`${time.date}T00:00:00Z`) : time.at.getTime();
 }
 
-// An all-day end is its last day; the grace absorbs the time zone it ends in.
-function isOver(event: CalendarEvent, now: number): boolean {
-  const end = event.end.allDay ? Date.parse(`${event.end.date}T23:59:59Z`) : event.end.at.getTime();
-  return end < now - pastGraceMs;
+// An all-day end is its last day, taken as ending at UTC midnight after it.
+function endsAt(time: EventTime): number {
+  return time.allDay ? Date.parse(`${time.date}T23:59:59Z`) : time.at.getTime();
+}
+
+function digest(text: string): string {
+  return createHash("sha256").update(text.trim().toLowerCase()).digest("base64url").slice(0, 12);
 }
 
 type Seen = EventRevision & { readonly event: CalendarEvent };
@@ -99,22 +102,31 @@ function seen(revision: EventRevision): revision is Seen {
   return revision.event !== null;
 }
 
+// A series' own times are its first occurrence, so only its rules say whether it has ended.
+function isLive(revision: Seen, now: number, graceMs: number): boolean {
+  if (revision.recurring) return !revision.seriesUntil || revision.seriesUntil.getTime() >= now - graceMs;
+  return endsAt(revision.event.end) >= now - graceMs;
+}
+
 function fingerprintOf(revision: Seen): Fingerprint {
   const { event } = revision;
   return {
-    own: revision.organizedByOwner,
+    series: revision.recurring,
     start: timeKey(event.start),
     end: timeKey(event.end),
     place: digest(event.location),
     response: event.myResponse,
-    declined: revision.declinedBy.map(digest),
-    updated: revision.updated,
+    declined: revision.declinedBy.map((guest) => digest(guest.address)),
   };
 }
 
-// A recurring series' own times are its first occurrence, so it stays tracked however old.
 function tracked(revision: EventRevision, now: number): revision is Seen {
-  return seen(revision) && !revision.cancelled && revision.ordinary && (revision.recurring || !isOver(revision.event, now));
+  return seen(revision) && !revision.cancelled && revision.ordinary && isLive(revision, now, pastGraceMs);
+}
+
+// Live series first, then the soonest events, so the cap drops what lies furthest out.
+function relevance(fingerprint: Fingerprint): number {
+  return fingerprint.series ? Number.NEGATIVE_INFINITY : startsAt(timeFromKey(fingerprint.start));
 }
 
 export function applyRevisions(
@@ -127,7 +139,7 @@ export function applyRevisions(
     delete next[revision.id];
     if (tracked(revision, now)) next[revision.id] = fingerprintOf(revision);
   }
-  const kept = Object.entries(next).sort(([, a], [, b]) => b.updated.localeCompare(a.updated));
+  const kept = Object.entries(next).sort(([, a], [, b]) => relevance(a) - relevance(b));
   return Object.fromEntries(kept.slice(0, maxTrackedEvents));
 }
 
@@ -139,6 +151,8 @@ export interface EventSpan {
 interface ChangeBase {
   readonly event: CalendarEvent;
   readonly updated: string;
+  // The event is a whole recurring series, whose times are its first occurrence.
+  readonly series: boolean;
 }
 
 export type CalendarChange =
@@ -147,62 +161,90 @@ export type CalendarChange =
   | (ChangeBase & { readonly kind: "cancelled" })
   | (ChangeBase & { readonly kind: "declined"; readonly declinedBy: readonly string[] });
 
-// The Calendar API never says who made a change, so it is read off what changed. On an event the
-// owner organises, only a guest's reply is someone else's doing; their own edits, Adam's included,
-// never count. On one they were invited to, only the organiser moves or cancels it, while a reply
-// is the owner's own. An event Adam never saw is new: an invitation if it is still unanswered.
-export function changeOf(revision: EventRevision, previous: Fingerprint | undefined, now: number): CalendarChange | null {
-  if (!revision.ordinary || !seen(revision)) return null;
+export interface ChangeContext {
+  readonly snapshot: CalendarSnapshot;
+  readonly now: number;
+  // Every connected account's address, lowercased: an event any of them organises is the owner's.
+  readonly ownerAddresses: ReadonlySet<string>;
+}
+
+// The Calendar API never says who made a change, so it is read off what changed. On an event this
+// account organises, only a guest's reply is someone else's doing; the owner's edits, Adam's
+// included, never count. One organised from another of the owner's accounts never counts here:
+// that account's copy tells of its guests. On one they were invited to, only the organiser moves
+// or cancels it, while a reply is the owner's own. An event Adam never saw is new: an invitation if
+// it is still unanswered, unless it is one occurrence of a series.
+export function changeOf(revision: EventRevision, context: ChangeContext): CalendarChange | null {
+  if (!revision.ordinary || !seen(revision) || !isLive(revision, context.now, 0)) return null;
   const { event, updated } = revision;
-  if (!revision.recurring && isOver(event, now)) return null;
+  const base = { event, updated, series: revision.recurring };
+  const previous = context.snapshot[revision.id];
 
   if (revision.organizedByOwner) {
     if (revision.cancelled || !previous) return null;
     const before = new Set(previous.declined);
-    const declinedBy = revision.declinedBy.filter((guest) => !before.has(digest(guest)));
-    return declinedBy.length ? { kind: "declined", event, updated, declinedBy } : null;
+    const declinedBy = revision.declinedBy.filter((guest) => !before.has(digest(guest.address)));
+    return declinedBy.length ? { ...base, kind: "declined", declinedBy: declinedBy.map((guest) => guest.label) } : null;
   }
+  if (revision.organizer && context.ownerAddresses.has(revision.organizer)) return null;
 
-  if (event.myResponse === "declined" || previous?.response === "declined") return null;
-  if (revision.cancelled) return { kind: "cancelled", event, updated };
+  const known = previous ?? (revision.instanceOf ? context.snapshot[revision.instanceOf] : undefined);
+  if (event.myResponse === "declined" || known?.response === "declined") return null;
+  if (revision.cancelled) return known ? { ...base, kind: "cancelled" } : null;
 
   if (!previous) {
     const original = revision.originalStart;
     if (original && timeKey(original) !== timeKey(event.start)) {
-      return { kind: "changed", event, updated, time: true, place: false, was: { start: original, end: null } };
+      return { ...base, kind: "changed", time: true, place: false, was: { start: original, end: null } };
     }
-    return event.myResponse === "needsAction" ? { kind: "invited", event, updated } : null;
+    return !revision.instanceOf && event.myResponse === "needsAction" ? { ...base, kind: "invited" } : null;
   }
 
   const time = previous.start !== timeKey(event.start) || previous.end !== timeKey(event.end);
   const place = previous.place !== digest(event.location);
   if (!time && !place) return null;
   const was = time ? { start: timeFromKey(previous.start), end: timeFromKey(previous.end) } : null;
-  return { kind: "changed", event, updated, time, place, was };
+  return { ...base, kind: "changed", time, place, was };
 }
 
-function startsAt(time: EventTime): number {
-  return time.allDay ? Date.parse(`${time.date}T00:00:00Z`) : time.at.getTime();
+// A series may meet today whenever it began.
+function urgency(change: CalendarChange, now: number): number {
+  const start = startsAt(change.event.start);
+  return change.series ? Math.max(start, now) : start;
 }
 
-export function noteworthyChanges(
-  revisions: readonly EventRevision[],
-  snapshot: CalendarSnapshot,
-  now: number,
-): CalendarChange[] {
+export function noteworthyChanges(revisions: readonly EventRevision[], context: ChangeContext): CalendarChange[] {
   return revisions
-    .map((revision) => changeOf(revision, snapshot[revision.id], now))
+    .map((revision) => changeOf(revision, context))
     .filter((change) => change !== null)
-    .sort((a, b) => startsAt(a.event.start) - startsAt(b.event.start))
+    .sort((a, b) => urgency(a, context.now) - urgency(b, context.now))
     .slice(0, maxChangesPerTrigger);
 }
 
-function describeWas(was: EventSpan): string {
-  return was.end ? describeSpan(was.start, was.end) : describeTime(was.start);
+function timesOfDay(start: EventTime, end: EventTime | null): string {
+  if (start.allDay) return "all day";
+  return end && !end.allDay ? `${formatUserTime(start.at)} to ${formatUserTime(end.at)}` : formatUserTime(start.at);
 }
 
-function headline(change: CalendarChange): string {
-  const when = describeSpan(change.event.start, change.event.end);
+function describeWhen(change: CalendarChange, now: number): string {
+  const { start, end } = change.event;
+  if (!change.series) return describeSpan(start, end);
+  const from = startsAt(start) > now ? `, from ${describeTime(start)}` : "";
+  return `a recurring event, each time ${timesOfDay(start, end)}${from}`;
+}
+
+function describeWas(change: CalendarChange & { kind: "changed" }, was: EventSpan): string {
+  if (!change.series) return was.end ? describeSpan(was.start, was.end) : describeTime(was.start);
+  const days = userLocalDayOf(was.start) !== userLocalDayOf(change.event.start) ? ", on other days" : "";
+  return `${timesOfDay(was.start, was.end)}${days}`;
+}
+
+function userLocalDayOf(time: EventTime): string {
+  return time.allDay ? time.date : userLocalDate(time.at);
+}
+
+function headline(change: CalendarChange, now: number): string {
+  const when = describeWhen(change, now);
   switch (change.kind) {
     case "invited":
       return `- New invitation, not answered yet: ${when}`;
@@ -212,7 +254,7 @@ function headline(change: CalendarChange): string {
       return `- A guest declined an event the user organises: ${when}`;
     case "changed": {
       const what = [change.time ? "time" : null, change.place ? "place" : null].filter(Boolean).join(" and ");
-      return `- The organiser changed its ${what}: now ${when}${change.was ? `, was ${describeWas(change.was)}` : ""}`;
+      return `- The organiser changed its ${what}: now ${when}${change.was ? `, was ${describeWas(change, change.was)}` : ""}`;
     }
   }
 }
@@ -224,7 +266,7 @@ function attendeesLine(attendees: readonly string[]): string | null {
   return `Attendees: ${shown}${more > 0 ? ` and ${more} more` : ""}`;
 }
 
-function changeEntry(change: CalendarChange): string {
+function changeEntry(change: CalendarChange, now: number): string {
   const { event } = change;
   const content = untrusted(
     "calendar_content",
@@ -238,18 +280,23 @@ function changeEntry(change: CalendarChange): string {
     ],
     ["calendar_change"],
   );
-  return [headline(change), content].join("\n");
+  return [headline(change, now), content].join("\n");
 }
 
 // The account is a label, which normalizeAccountLabel limits to [a-z0-9-].
-export function calendarChangeMessage(account: string, changes: readonly CalendarChange[], timeContext: string): string {
+export function calendarChangeMessage(
+  account: string,
+  changes: readonly CalendarChange[],
+  timeContext: string,
+  now: number = Date.now(),
+): string {
   return [
     timeContext,
     "",
     `<calendar_change account="${account}">`,
     "Events on the user's calendar changed because of someone else. Nobody asked for this message; decide whether any of it is worth a text.",
     "",
-    changes.map(changeEntry).join("\n\n"),
+    changes.map((change) => changeEntry(change, now)).join("\n\n"),
     "</calendar_change>",
     "",
     "Follow your calendar change rules: if a change here upsets the user's plans soon, text them in one short message; if nothing does, call the stay_silent tool.",
@@ -283,6 +330,15 @@ const channelKey = (account: string, calendarId: string) => `calendar-channel:${
 const toldKey = (account: string, calendarId: string, change: CalendarChange) =>
   `calendar-told:${account}:${calendarId}:${change.event.id}:${change.updated}`;
 export const staleChannelKey = (channelId: string) => `calendar-stale:${channelId}`;
+// Adam's own writes are not tied to a version of the event, so the marker covers the event briefly.
+const ownEditKey = (account: string, eventId: string) => `calendar-own-edit:${account}:${eventId}`;
+const ownEditTtlSeconds = 30 * 60;
+
+// For an event Adam itself just changed: a run in the next half hour takes it as the owner's doing,
+// which covers an invitation whose guests may edit it, where the change looks like the organiser's.
+export async function noteOwnEdit(cache: SharedCache, account: string, eventId: string): Promise<void> {
+  await cache.set(ownEditKey(account, eventId), true, ownEditTtlSeconds);
+}
 
 export interface CalendarReader {
   changes(cursor: { readonly syncToken: string | null; readonly pageToken?: string }): Promise<CalendarChangesPage>;
@@ -323,10 +379,13 @@ async function writeCursor(target: CalendarTarget, cursor: Cursor): Promise<void
   await target.cache.set(cursorKey(target.account, target.calendarId), cursor, cursorTtlSeconds);
 }
 
+// Retrying cannot help, so a run acknowledges it rather than spending QStash retries on it.
+export class CalendarTooLargeError extends Error {}
+
 // Everything already on the calendar is taken as known, so it never triggers.
 async function resync(target: CalendarTarget, now: number): Promise<void> {
   const all = await readAll(target.reader, null, maxBaselinePages);
-  if (!all) throw new Error(`the ${target.account} calendar has more events than Adam can sync`);
+  if (!all) throw new CalendarTooLargeError(`the ${target.account} calendar has more events than Adam can sync`);
   await writeCursor(target, { syncToken: all.syncToken, events: applyRevisions({}, all.revisions, now), syncedAt: now });
 }
 
@@ -344,6 +403,7 @@ export interface CalendarRunDeps {
   readonly cache: SharedCache;
   readonly reader: CalendarReader;
   readonly now?: () => number;
+  ownerAddresses(): Promise<readonly string[]>;
   deliver(changes: readonly CalendarChange[]): Promise<void>;
 }
 
@@ -374,9 +434,16 @@ export async function processCalendar(run: CalendarRun, deps: CalendarRunDeps): 
     return { kind: "reset" };
   }
 
-  const found = noteworthyChanges(read.revisions, cursor.events, now);
-  const told = await Promise.all(found.map((change) => cache.get(toldKey(run.account, run.calendarId, change))));
-  const fresh = found.filter((_, index) => !told[index]);
+  const ownerAddresses = new Set(read.revisions.length ? await deps.ownerAddresses() : []);
+  const found = noteworthyChanges(read.revisions, { snapshot: cursor.events, now, ownerAddresses });
+  const skipped = await Promise.all(
+    found.map(
+      async (change) =>
+        Boolean(await cache.get(toldKey(run.account, run.calendarId, change))) ||
+        Boolean(await cache.get(ownEditKey(run.account, change.event.id))),
+    ),
+  );
+  const fresh = found.filter((_, index) => !skipped[index]);
 
   if (fresh.length) {
     const keys = fresh.map((change) => toldKey(run.account, run.calendarId, change));
@@ -435,7 +502,7 @@ export async function renewCalendarWatches(
         calendarId,
         channelId,
         address: deps.address,
-        token: deps.tokens.sign(channelId, { account, calendarId }),
+        token: deps.tokens.sign(channelId, { account, calendarId }, new Date(now + channelTtlSeconds * 1000)),
         ttlSeconds: channelTtlSeconds,
       });
       const record: ChannelRecord = {

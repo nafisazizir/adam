@@ -1096,6 +1096,14 @@ test("calendar changes pass the sync token and describe who organises each event
               end: { date: "2026-11-03" },
               recurrence: ["RRULE:FREQ=YEARLY"],
             },
+            {
+              id: "old-series",
+              summary: "Standup",
+              start: { dateTime: "2024-01-03T09:00:00+10:00" },
+              end: { dateTime: "2024-01-03T09:15:00+10:00" },
+              organizer: { email: "Lead@Corp.example" },
+              recurrence: ["EXDATE:20240110T090000", "RRULE:FREQ=WEEKLY;UNTIL=20240301T000000Z", "RRULE:FREQ=DAILY;UNTIL=20240302"],
+            },
           ],
         })
       : undefined,
@@ -1107,9 +1115,10 @@ test("calendar changes pass the sync token and describe who organises each event
   assert.equal(changes.nextSyncToken, "s2");
   assert.equal(changes.nextPageToken, null);
 
-  const [mine, cancelled, birthday] = changes.revisions;
+  const [mine, cancelled, birthday, oldSeries] = changes.revisions;
   assert.equal(mine?.organizedByOwner, true);
-  assert.deepEqual(mine?.declinedBy, ["Mia <mia@gmail.example>"]);
+  assert.equal(mine?.organizer, "me@gmail.example");
+  assert.deepEqual(mine?.declinedBy, [{ address: "mia@gmail.example", label: "Mia <mia@gmail.example>" }]);
   assert.equal(mine?.event?.title, "Dinner");
   assert.equal(cancelled?.cancelled, true);
   assert.equal(cancelled?.event, null);
@@ -1117,6 +1126,10 @@ test("calendar changes pass the sync token and describe who organises each event
   assert.deepEqual(cancelled?.originalStart, { allDay: false, at: new Date("2026-10-29T09:00:00+10:00") });
   assert.equal(birthday?.ordinary, false);
   assert.equal(birthday?.recurring, true);
+  assert.equal(birthday?.seriesUntil, null);
+  assert.equal(oldSeries?.organizer, "lead@corp.example");
+  assert.equal(oldSeries?.organizedByOwner, false);
+  assert.deepEqual(oldSeries?.seriesUntil, new Date("2024-03-02T23:59:59Z"));
 });
 
 test("a full calendar sync asks for no sync token, and an expired one fails with Google's 410", async () => {

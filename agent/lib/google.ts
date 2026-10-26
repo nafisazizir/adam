@@ -249,6 +249,12 @@ export interface MailboxHistory {
   readonly nextPageToken: string | null;
 }
 
+export interface Guest {
+  // Lowercased.
+  readonly address: string;
+  readonly label: string;
+}
+
 // One event as a calendar's sync reports it. `event` is null for a deletion Google reports by id only.
 export interface EventRevision {
   readonly id: string;
@@ -256,11 +262,15 @@ export interface EventRevision {
   readonly cancelled: boolean;
   // A plain event, not a birthday, focus time, out of office, working location or one Gmail made.
   readonly ordinary: boolean;
+  // Organised by this calendar's own account; `organizer` is the organiser's lowercased address.
   readonly organizedByOwner: boolean;
+  readonly organizer: string | null;
   readonly recurring: boolean;
+  // When a recurring series stops, if its rules say; null for one that runs on or ends by a count.
+  readonly seriesUntil: Date | null;
   readonly instanceOf: string | null;
   readonly originalStart: EventTime | null;
-  readonly declinedBy: readonly string[];
+  readonly declinedBy: readonly Guest[];
   readonly event: CalendarEvent | null;
 }
 
@@ -667,6 +677,28 @@ function hasTime(time: z.infer<typeof eventTimeSchema> | undefined): time is z.i
   return Boolean(time?.date || time?.dateTime);
 }
 
+function untilDate(value: string): Date | null {
+  const match = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2}))?/u.exec(value);
+  if (!match) return null;
+  const [, year, month, day, hour = "23", minute = "59", second = "59"] = match;
+  const parsed = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isNaN(parsed) ? null : new Date(parsed);
+}
+
+// The latest UNTIL across the series' rules, or null when any rule has none.
+function seriesUntil(recurrence: readonly string[] | undefined): Date | null {
+  const rules = (recurrence ?? []).filter((line) => /^RRULE:/iu.test(line));
+  if (!rules.length) return null;
+  let latest: Date | null = null;
+  for (const rule of rules) {
+    const until = /UNTIL=([0-9TZ]+)/iu.exec(rule)?.[1];
+    const date = until ? untilDate(until) : null;
+    if (!date) return null;
+    if (!latest || date > latest) latest = date;
+  }
+  return latest;
+}
+
 function toRevision(
   account: string,
   calendar: { id: string; name: string },
@@ -679,13 +711,14 @@ function toRevision(
     cancelled: raw.status === "cancelled",
     ordinary: raw.eventType === "default",
     organizedByOwner: raw.organizer?.self === true,
+    organizer: raw.organizer?.email?.trim().toLowerCase() || null,
     recurring: Boolean(raw.recurrence?.length),
+    seriesUntil: seriesUntil(raw.recurrence),
     instanceOf: raw.recurringEventId ?? null,
     originalStart: hasTime(raw.originalStartTime) ? toEventTime(raw.originalStartTime) : null,
     declinedBy: raw.attendees
-      .filter((attendee) => !attendee.self && attendee.responseStatus === "declined")
-      .map(person)
-      .filter(Boolean),
+      .filter((attendee) => !attendee.self && attendee.responseStatus === "declined" && attendee.email)
+      .map((attendee) => ({ address: (attendee.email ?? "").trim().toLowerCase(), label: person(attendee) })),
     event: hasTime(start) && hasTime(end) ? toEvent(account, calendar, { ...raw, start, end }) : null,
   };
 }
@@ -1201,6 +1234,12 @@ export function googleWorkspace(deps: GoogleWorkspaceDeps) {
         return { disconnected: true, account: account.label, hadGrant, warning };
       }
       return { disconnected: true, account: account.label, hadGrant };
+    },
+
+    // Every listed account's address that could be read; an account that cannot is left out.
+    async accountAddresses(owner: GoogleOwner | null): Promise<string[]> {
+      const found = await Promise.all((await accountsOf(owner)).map((account) => addressOf(account).catch(() => null)));
+      return found.filter((address) => address !== null).map((address) => address.trim().toLowerCase());
     },
 
     // Null only when every account answered or needs connecting; a transient failure throws, so a

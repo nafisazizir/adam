@@ -1,4 +1,4 @@
-import { renewCalendarWatches, stopCalendarWatch, type CalendarReader } from "#lib/calendar-changes.js";
+import { noteOwnEdit, renewCalendarWatches, stopCalendarWatch, type CalendarReader } from "#lib/calendar-changes.js";
 import { calendarChannelTokens } from "#lib/calendar-push.js";
 import { env } from "#lib/env.js";
 import { google, type GoogleOwner } from "#lib/google.js";
@@ -37,6 +37,11 @@ export async function watchCalendars(
     watch: (account, request) => google.watchCalendar(owner, account, request),
     stop: (account, channel) => google.stopCalendarWatch(owner, account, channel),
   });
+}
+
+// So a change Adam made for the owner is never told back to them as someone else's.
+export async function noteOwnCalendarEdit(account: string, eventId: string): Promise<void> {
+  if (enabled()) await noteOwnEdit(secretCache, account, eventId);
 }
 
 // Best effort and never throws: it runs before a disconnect or a reconnect, while the old token

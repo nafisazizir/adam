@@ -17,7 +17,14 @@ export default defineEval({
     const turn = await t.send(calendarChangeMessage("work", routineChanges, currentTimeContext()));
     t.succeeded();
     t.calledTool("stay_silent");
-    for (const tool of ["create_event", "update_event", "schedule_reminder", "start_coding_session", "merge_pull_request"]) {
+    for (const tool of [
+      "draft_email",
+      "create_event",
+      "update_event",
+      "schedule_reminder",
+      "start_coding_session",
+      "merge_pull_request",
+    ]) {
       t.notCalledTool(tool);
     }
     t.check(turn.message ?? "", silent);
