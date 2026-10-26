@@ -199,6 +199,11 @@ export function recordRoutineRun(
   });
 }
 
+// Through the schema, so key order (which a Blob round trip changes) cannot make equal routines differ.
+function sameRoutine(a: Routine, b: Routine): boolean {
+  return JSON.stringify(routineSchema.parse(a)) === JSON.stringify(routineSchema.parse(b));
+}
+
 // Only while the routine is still exactly what the update wrote, so a run claimed or noted since survives.
 export function restoreRoutine(
   store: DocumentStore<RoutinesDocument>,
@@ -207,7 +212,7 @@ export function restoreRoutine(
 ): Promise<void> {
   return updateDocument(store, noRoutines, (current) => {
     const stored = current.routines.find((routine) => routine.id === previous.id);
-    if (!stored || JSON.stringify(stored) !== JSON.stringify(written)) return { next: current, result: undefined };
+    if (!stored || !sameRoutine(stored, written)) return { next: current, result: undefined };
     return {
       next: { routines: current.routines.map((routine) => (routine.id === previous.id ? previous : routine)) },
       result: undefined,

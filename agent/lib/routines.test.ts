@@ -83,6 +83,25 @@ test("restoring an update only undoes it while nothing has written the routine s
   assert.equal(routines.value?.routines[0].name, "c");
 });
 
+test("restoring works for a routine read back from storage in another key order", async () => {
+  const backing = store();
+  const routines: typeof backing = {
+    ...backing,
+    async read() {
+      const stored = await backing.read();
+      return stored && { ...stored, value: routinesDocumentSchema.parse(JSON.parse(JSON.stringify(stored.value))) };
+    },
+  };
+  const previous = await addRoutine(
+    routines,
+    { name: "a", instruction: "x", schedule: daily, endsOn: "2026-12-31" },
+    at(created),
+  );
+  const written = (await changeRoutine(routines, previous.id, { schedule: fortnightly }, at(created)))!;
+  await restoreRoutine(routines, previous, written);
+  assert.deepEqual(backing.value?.routines[0].schedule, daily);
+});
+
 test("a stored routine reads even when the model-facing floor has since tightened", () => {
   const stored = {
     routines: [
