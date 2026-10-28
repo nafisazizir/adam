@@ -1,9 +1,10 @@
 import { defineWorkflowTool, type WorkflowStepToolContext } from "eve/tools";
 import { z } from "zod";
 
+import type { CodingProviderName } from "#lib/coding-agent.js";
+import { listKnownCodingSessions, sendCodingSessionMessage } from "#lib/coding-agents.js";
 import { tryWatchCodingSession } from "#lib/coding-sessions.js";
 import { isOwnerChat } from "#lib/delivery.js";
-import { listCodingSessions, sendCodingSessionMessage } from "#lib/devin.js";
 import {
   type MergeMethod,
   mergeMethodSchema,
@@ -22,6 +23,7 @@ type Found =
   | {
       readonly ok: true;
       readonly sessionId: string;
+      readonly provider: CodingProviderName;
       readonly title: string | null;
       readonly state: string | null;
     }
@@ -38,14 +40,16 @@ async function findSessionFor(url: string): Promise<Found> {
   "use step";
   let sessions;
   try {
-    sessions = await listCodingSessions(searchedSessions);
+    sessions = await listKnownCodingSessions(searchedSessions);
   } catch (error) {
     return { ok: false, reason: error instanceof Error ? error.message : String(error) };
   }
 
   for (const session of sessions) {
     const pr = session.pullRequests.find((candidate) => samePullRequest(candidate.url, url));
-    if (pr) return { ok: true, sessionId: session.id, title: session.title, state: pr.state };
+    if (pr) {
+      return { ok: true, sessionId: session.id, provider: session.provider, title: session.title, state: pr.state };
+    }
   }
   return {
     ok: false,
@@ -53,9 +57,14 @@ async function findSessionFor(url: string): Promise<Found> {
   };
 }
 
-async function askToMerge(sessionId: string, url: string, method: MergeMethod): Promise<boolean> {
+async function askToMerge(
+  sessionId: string,
+  provider: CodingProviderName,
+  url: string,
+  method: MergeMethod,
+): Promise<boolean> {
   "use step";
-  const session = await sendCodingSessionMessage(sessionId, mergeRequest(url, method));
+  const session = await sendCodingSessionMessage(sessionId, mergeRequest(url, method), provider);
   return tryWatchCodingSession(session);
 }
 
@@ -98,7 +107,7 @@ export default defineWorkflowTool({
       return { requested: false, reason: "cancelled", url };
     }
 
-    const watching = await askToMerge(found.sessionId, url, method);
+    const watching = await askToMerge(found.sessionId, found.provider, url, method);
     return { requested: true, url, sessionId: found.sessionId, watching };
   },
 });

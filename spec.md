@@ -239,15 +239,24 @@ stub the route).
   so luna acknowledges, keeps replying (new iMessages steer the turn without stopping the task),
   and relays the result. It cannot message or schedule, so right-to-silence stays with root. The
   built-in root-copy `agent` tool is disabled via `agent/tools/agent.ts`.
-- **Coding sessions** (`agent/lib/devin.ts`, `agent/lib/coding-sessions.ts`): root Adam hands
-  engineering work to Devin through the v3 REST API, so a missing capability ("block my calendar"
-  with no calendar access) or a bug becomes a pull request against Adam's own repo without the owner
-  re-briefing anyone. `lib/devin.ts` is the only file that knows Devin; the tools speak in
-  `CodingSession`s, and `lib/coding-sessions.ts` owns the brief wrapper (open a PR, never merge, ask
-  one short question when blocked, list manual steps such as env vars) and the single
-  `codingSessionState` vocabulary (`working`, `needs_input`, `finished`, `asleep`, `stopped`, …)
-  derived from Devin's `status` and `status_detail`. A finished or blocked Devin session still
-  reports `status: "running"`, so the detail is what matters. Sessions are tagged `adam`, which is
+- **Coding sessions** (`agent/lib/coding-agent.ts`, `agent/lib/coding-agents.ts`, `agent/lib/devin.ts`,
+  `agent/lib/cursor.ts`, `agent/lib/coding-sessions.ts`): root Adam hands engineering work to a cloud
+  coding agent, so a missing capability ("block my calendar" with no calendar access) or a bug becomes
+  a pull request against Adam's own repo without the owner re-briefing anyone. `lib/coding-agent.ts`
+  is the shared `CodingAgentProvider` (create, get, list, repos, messages, follow-up, stop) and the
+  session types. `lib/coding-agents.ts` is the registry: `codingAgent("devin" | "cursor")` and the
+  functions the tools call. The provider is the per-call argument, else `CODING_AGENT_PROVIDER`, else
+  Devin when Devin is configured or when neither vendor is, else Cursor when it is the only one
+  configured. A session id starting with `bc-` is Cursor's and every other id is Devin's; an explicit
+  provider wins, which is how a watch published before this field existed still polls Devin. The watch
+  tick stores the provider. Adding a third provider is one module plus a name in the registry.
+  `lib/coding-sessions.ts` owns the brief wrapper (open a PR, never merge, ask one short question when
+  blocked, list manual steps such as env vars) and the single `codingSessionState` vocabulary
+  (`working`, `needs_input`, `finished`, `asleep`, `stopped`, …) derived from `status` and
+  `status_detail`. Devin's values are passed through. Cursor's are mapped onto the same values, so
+  the vocabulary stays one function. A finished or blocked Devin session still reports
+  `status: "running"`, so the detail is what matters.
+  `lib/devin.ts` is the only file that knows Devin's v3 API. Sessions are tagged `adam`, which is
   how `list_coding_sessions` finds them without any store of our own; the tag filter's query
   encoding is undocumented, so results are also filtered client-side. Devin has no idempotency key,
   so each create also carries a tag unique to the tool call and a replayed call returns the session
@@ -257,17 +266,33 @@ stub the route).
   repos in one session with one pull request per repo. Every brief says where Adam's own code lives
   (`VERCEL_GIT_REPO_OWNER`/`VERCEL_GIT_REPO_SLUG`), so work on Adam lands in the right repo.
   `list_coding_repos` (Devin's `GET /repositories`) answers what Devin can work on. Adam holds no
-  GitHub credentials of its own. Swapping Devin for another cloud coding agent is a rewrite of
-  `lib/devin.ts` only.
-- **Coding session updates** (`agent/channels/coding-sessions.ts`): Devin has no outbound webhooks,
-  so Adam polls. Starting or messaging a session publishes a QStash watch tick to
+  GitHub credentials of its own.
+  `lib/cursor.ts` is the only file that knows Cursor's Cloud Agents API v1 (`https://api.cursor.com`,
+  `Authorization: Bearer` with `CURSOR_API_KEY`; the API also accepts Basic). Create is
+  `POST /v1/agents` with `autoCreatePR` and one GitHub URL per named repo (`owner/name` becomes
+  `https://github.com/owner/name`). With no repos named, the agent starts without one attached, so a
+  Cursor brief should name them. A replayed create sends a client `agentId` of `bc-` plus a UUID
+  hashed from the same idempotency key; a `409` means that agent already exists and the create
+  returns it. List rows carry no tags, so Adam's agents are named `adam: <title>` and the list keeps
+  only those. Status comes from the agent (`ACTIVE`, `IDLE`, `ARCHIVED`) and its latest run
+  (`CREATING`, `RUNNING`, `WAITING_FOR_BACKGROUND_WORK`, `FINISHED`, `ERROR`, `CANCELLED`,
+  `EXPIRED`). A finished run's `git.branches[]` is the pull request url (state unknown) and the
+  branch. There is no transcript endpoint and no waiting-for-user status: messages are each run's
+  final reply, and a question comes back as a finished run. Follow-up is `POST /v1/agents/{id}/runs`;
+  a `409` while a run is active is retried as a steer. Stop cancels an active run, then archives; a
+  later message unarchives and starts a run. `GET /v1/repositories` lists GitHub repos the key can
+  see (url only, filtered client-side; the endpoint is about one request a minute). `CURSOR_MODEL`
+  is an optional model id from `GET /v1/models`. The API is a public beta; this client follows the
+  published v1 docs and was not run against the live API. Cursor has no outbound webhooks yet.
+- **Coding session updates** (`agent/channels/coding-sessions.ts`): neither Devin nor Cursor sends
+  outbound webhooks yet, so Adam polls. Starting or messaging a session publishes a QStash watch tick to
   `/eve/v1/coding-sessions/watch`; each tick reads the session and its messages and publishes the
   next one. The tick carries all watch state (`notified`, the key of the last update sent, and a
   failure count), so there is no store.
   - **Pacing.** The interval follows the session's own idleness: 1 minute while it is busy, then 2,
     4 and 8 minutes. Watching ends when the session is asleep, stopped, halted, failed or ended,
-    after 24 idle hours, after thirty failed checks in a row (about an hour of Devin outage), or on
-    a permanent Devin API error. An update that failed to publish keeps the watch alive until it
+    after 24 idle hours, after thirty failed checks in a row (about an hour of vendor outage), or on
+    a permanent vendor API error (`CodingAgentError.isPermanent`). An update that failed to publish keeps the watch alive until it
     goes out.
   - **One watch per session.** Each tick lands on a wall-clock slot named in its QStash
     deduplication id, and the steps nest. A second watch on the same session, such as a restart
@@ -297,7 +322,8 @@ stub the route).
     function per execution step from the current caller. `signInFromOwnerDirectChat` returns the
     interactive provider only in the owner's direct chat, so no other turn can open one, whichever
     trigger started it. Every user-scoped connection goes through it.
-- **Merging** goes through Devin, whose own GitHub access opens the pull requests, so Adam holds no
+- **Merging** goes through the coding agent that opened the pull request (every configured provider
+  is searched), whose own GitHub access opens the pull requests, so Adam holds no
   GitHub credentials. `merge_pull_request` is a workflow tool (`defineWorkflowTool`). A step
   refuses unless the current turn is the owner chatting (`isOwnerChat`). Another finds the coding session that opened the PR among Adam's tagged sessions; a PR no
   session of Adam's opened is refused, and a merged or closed one is reported, all without
@@ -310,7 +336,7 @@ stub the route).
   approval prompt on iMessage only reads `Approve <tool>?`, never the PR, and can only be answered
   by the exact requesting principal; a prompt parked in a background turn (debrief, coding update,
   reminder) could deadlock the thread, hence the owner-chat gate. The trade-off of merging through
-  Devin is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
+  the coding agent is that nothing pins the exact commits the owner saw, and it wakes the session briefly.
 - **Google Workspace** (`agent/lib/google.ts`): Gmail and Calendar across the owner's several Google
   accounts: reads, email drafts (never sending) and confirmed event writes, on root Adam (no `inbox` subagent yet). Vercel Connect owns Google sign-in,
   the refresh token and refresh; small typed tools call the Gmail and Calendar REST APIs with `fetch`
@@ -749,7 +775,7 @@ stub the route).
     and Australia has no STIR/SHAKEN, so the owner's number is the only gate; the owner chose that
     trade-off over a spoken passcode.
     - **Refused on every call turn** (`isCallTurn`): `start_coding_session`,
-      `message_coding_session` and `stop_coding_session` (Devin works in the owner's GitHub org)
+      `message_coding_session` and `stop_coding_session` (the coding agent works in the owner's GitHub org)
       and `cancel_reminder`; `merge_pull_request`, `disconnect_google_account` and memory writes,
       through the owner-chat gate (`isOwnerChat` is false for a `calls` auth); and
       `connect_google_account`, through the direct-chat gate. These stay refused even from the
@@ -782,7 +808,7 @@ stub the route).
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
   `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
-  (confirmed in chat, merged by Devin), `connect_google_account`, `disconnect_google_account` (confirmed
+  (confirmed in chat, merged by the coding agent that opened it), `connect_google_account`, `disconnect_google_account` (confirmed
   in chat), `list_google_accounts`,
   `search_email`, `read_email`, `list_events`, `draft_email`, `create_event` and `update_event`
   (confirmed in chat), `reply_to_call` (speak on the live call), `read_call_transcript` and
@@ -901,7 +927,7 @@ adam/
 │   ├── channels/
 │   │   ├── photon.ts          # photonIMessageChannel: iMessage via Photon (Spectrum Cloud)
 │   │   ├── reminders.ts       # defineChannel: POST /deliver → verify sig → receive(<delivery channel>,…)
-│   │   ├── coding-sessions.ts # QStash watch ticks poll Devin; notable news goes to the home thread
+│   │   ├── coding-sessions.ts # QStash watch ticks poll the coding agent; notable news goes to the home thread
 │   │   ├── calls.ts           # voice agent webhooks: call start briefing, ask_adam, post-call summary
 │   │   ├── workouts.ts        # Strava/Hevy webhooks and signed QStash callbacks
 │   │   ├── mail.ts            # Gmail push via Pub/Sub, coalesced through QStash into one <new_email>
@@ -946,9 +972,12 @@ adam/
 │   │   ├── transcription.ts   # audio → transcript (AI Gateway transcription model)
 │   │   ├── transcribable-audio.ts # normalize audio formats with ffmpeg
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
-│   │   ├── devin.ts           # Devin v3 REST client: create/get/list/message/archive sessions
+│   │   ├── coding-agent.ts    # CodingAgentProvider, shared session types, CodingAgentError
+│   │   ├── coding-agents.ts   # registry: codingAgent("devin" | "cursor") and the calls the tools make
+│   │   ├── devin.ts           # Devin v3 REST provider: create/get/list/message/archive sessions
+│   │   ├── cursor.ts          # Cursor Cloud Agents v1 REST provider
 │   │   ├── coding-sessions.ts # brief wrapper, state vocabulary, watch ticks, update messages
-│   │   ├── pull-requests.ts   # PR url identity and the merge request to Devin (no deps: workflow-safe)
+│   │   ├── pull-requests.ts   # PR url identity and the merge request to the coding agent (no deps: workflow-safe)
 │   │   ├── briefing.ts        # morning briefing message from a list of section providers
 │   │   ├── google-briefing.ts # the briefing's Google section: today's events, unread mail no trigger sent
 │   │   ├── cron.ts            # dailyCron: a local time in a zone → a UTC cron expression
@@ -991,13 +1020,13 @@ adam/
 │   │   ├── list_reminders.ts
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
 │   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
-│   │   ├── start_coding_session.ts # brief Devin; it opens a PR per repo it changes
+│   │   ├── start_coding_session.ts # brief the chosen coding agent; it opens a PR per repo it changes
 │   │   ├── list_coding_sessions.ts
 │   │   ├── get_coding_session.ts # state, PRs, and the latest messages
 │   │   ├── message_coding_session.ts # answer its question or pass on feedback
 │   │   ├── stop_coding_session.ts # archive (sleep), still resumable
-│   │   ├── list_coding_repos.ts # what Devin can work on (starting a session does not need it)
-│   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then Devin merges
+│   │   ├── list_coding_repos.ts # what the chosen coding agent can work on (starting a session does not need it)
+│   │   ├── merge_pull_request.ts # workflow tool: confirm in chat, then the coding agent merges
 │   │   ├── reply_to_call.ts   # what the caller hears; only in a live call turn
 │   │   ├── read_call_transcript.ts # a past call's whole transcript, paged
 │   │   ├── list_calls.ts      # recent calls with a saved transcript, newest first
@@ -1046,7 +1075,7 @@ morning `briefing` cron into the home thread that stays silent unless something 
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
-with `transcribe_audio` · Devin coding sessions started, checked, messaged and stopped from chat,
+with `transcribe_audio` · Devin or Cursor coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
 remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar
@@ -1093,9 +1122,12 @@ STRAVA_WEBHOOK_SUBSCRIPTION_ID=...  # optional; unset fails closed and ignores e
 HEVY_WEBHOOK_SECRET=...             # Hevy Authorization header
 NOTION_PLANS_DATA_SOURCE_ID=...     # coach's training plan data source
 NOTION_WORKOUTS_DATA_SOURCE_ID=...  # coach's workout analyses data source
+CODING_AGENT_PROVIDER=...          # optional; devin or cursor. Unset keeps Devin unless only Cursor is configured
 DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service user or personal access token
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
+CURSOR_API_KEY=...                  # optional; Cursor Cloud Agents key (Dashboard → API Keys)
+CURSOR_MODEL=...                    # optional; model id from GET /v1/models. Unset uses Cursor's default
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
 ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it; call_owner places calls with it
 ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
@@ -1138,13 +1170,19 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
 - The coach is billed per token through AI Gateway.
 - Refresh and verify the vendored coaching skill with `pnpm sync:riz-mcp-skill --from …` and
   `pnpm sync:riz-mcp-skill --check`.
-- Coding sessions need `DEVIN_API_KEY` and `DEVIN_ORG_ID`. A service user needs permission to
+- Coding sessions use `CODING_AGENT_PROVIDER` (`devin` or `cursor`). Unset keeps Devin when Devin
+  is configured, and uses Cursor only when Cursor is the one configured vendor. Devin needs
+  `DEVIN_API_KEY` and `DEVIN_ORG_ID`. A service user needs permission to
   use, view and manage org sessions (`UseDevinSessions`, `ViewOrgSessions`, `ManageOrgSessions`);
   a personal access token acts as the owner and has them already. Without both, Adam still boots
-  and only the coding tools fail. Briefs name Adam's own repo from Vercel's Git system env; without a Git
+  and only Devin calls fail. Briefs name Adam's own repo from Vercel's Git system env; without a Git
   connection that line is left out and Devin infers it. An org that restricts session
-  tags must allow `adam` and the `adam-request-*` tags.
-- A watched coding session costs one QStash message a minute while Devin is busy, backing off to
+  tags must allow `adam` and the `adam-request-*` tags. Cursor needs `CURSOR_API_KEY`
+  (Dashboard → API Keys). Without it Adam still boots and only Cursor calls fail. The key should be
+  Adam's: list returns every agent that key can see, and Adam keeps the ones it named `adam: …`.
+  `GET /v1/repositories` is about one request a user a minute, so listing Cursor repos is not
+  something to repeat. `CURSOR_MODEL` is optional.
+- A watched coding session costs one QStash message a minute while the coding agent is busy, backing off to
   one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
   24 idle hours, about 250 messages; two such sessions would use most of the free tier.
 - The `briefing` cron fires once a day at 7am in `USER_TIMEZONE` (`0 21 * * *` for the default
@@ -1206,7 +1244,7 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   by QStash, so a calendar whose runs all fail costs up to 240 messages a day; failures retrying
   cannot fix are acknowledged instead, so only an outage of Google, Photon or the home pointer
   reaches that. Coding watches
-  spend up to one a minute while Devin is busy (about 250 for a long session), reminders one each,
+  spend up to one a minute while the coding agent is busy (about 250 for a long session), reminders one each,
   workouts two each. The cap keeps mail under a quarter of the budget, so reminders always fit.
 - Vercel Blob on Hobby includes 2,000 advanced operations (put, copy, list) and 10,000 simple ones
   (a read that misses the cache, a head) a month; deletes are free. Going over locks Blob for 30

@@ -1,7 +1,8 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { listCodingRepos } from "#lib/devin.js";
+import { codingProviderNames } from "#lib/coding-agent.js";
+import { listCodingRepos } from "#lib/coding-agents.js";
 import { env } from "#lib/env.js";
 
 export default defineTool({
@@ -15,8 +16,12 @@ export default defineTool({
       .optional()
       .describe("Part of the repo name to match. Omit it to list them all."),
     limit: z.number().int().min(1).max(100).default(50).describe("How many repos to return."),
+    provider: z
+      .enum(codingProviderNames)
+      .optional()
+      .describe("Which provider's repos to list. Omit it for the configured default."),
   }),
-  async execute({ filter, limit }) {
-    return { yours: env.selfRepo ?? null, repos: await listCodingRepos(filter, limit) };
+  async execute({ filter, limit, provider }) {
+    return { yours: env.selfRepo ?? null, repos: await listCodingRepos(filter, limit, provider) };
   },
 });

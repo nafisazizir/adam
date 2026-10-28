@@ -2,8 +2,9 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
+import { codingProviderNames } from "#lib/coding-agent.js";
+import { sendCodingSessionMessage } from "#lib/coding-agents.js";
 import { describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
-import { sendCodingSessionMessage } from "#lib/devin.js";
 
 export default defineTool({
   description:
@@ -13,11 +14,15 @@ export default defineTool({
   inputSchema: z.object({
     sessionId: z.string().min(1).describe("The session id."),
     message: z.string().min(1).describe("The message for the coding agent."),
+    provider: z
+      .enum(codingProviderNames)
+      .optional()
+      .describe("The session's provider, when you have it. A Cursor id starts with bc- and needs nothing else."),
   }),
   label: { start: () => "Message coding session" },
-  async execute({ sessionId, message }, ctx) {
+  async execute({ sessionId, message, provider }, ctx) {
     if (isCallTurn(ctx.session.auth.current)) return { sent: false, reason: notFromOwnerChat };
-    const session = await sendCodingSessionMessage(sessionId, message);
+    const session = await sendCodingSessionMessage(sessionId, message, provider);
     return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },
 });
