@@ -2,8 +2,9 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
+import { codingProviderNames } from "#lib/coding-agent.js";
+import { createCodingSession } from "#lib/coding-agents.js";
 import { codingBrief, describeCodingSession, tryWatchCodingSession } from "#lib/coding-sessions.js";
-import { createCodingSession } from "#lib/devin.js";
 import { replayStableKey } from "#lib/replay-key.js";
 
 export default defineTool({
@@ -26,19 +27,26 @@ export default defineTool({
       .optional()
       .describe(
         "Repos as owner/name, only when the user named them; a hint, not a limit. Omit it to " +
-          "let the coding agent pick from the brief.",
+          "let the coding agent pick from the brief. Cursor needs them named, since it starts on the repos you pass.",
       ),
+    provider: z
+      .enum(codingProviderNames)
+      .optional()
+      .describe("Which cloud coding agent to use, devin or cursor. Omit it for the configured default."),
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
-  async execute({ brief, title, repos }, ctx) {
+  async execute({ brief, title, repos, provider }, ctx) {
     if (isCallTurn(ctx.session.auth.current)) return { started: false, reason: notFromOwnerChat };
     const hinted = [...new Set(repos ?? [])];
-    const session = await createCodingSession({
-      prompt: codingBrief(brief, hinted),
-      title,
-      repos: hinted,
-      idempotencyKey: replayStableKey(ctx, title, brief, ...hinted),
-    });
+    const session = await createCodingSession(
+      {
+        prompt: codingBrief(brief, hinted),
+        title,
+        repos: hinted,
+        idempotencyKey: replayStableKey(ctx, title, brief, ...(provider ? [provider] : []), ...hinted),
+      },
+      provider,
+    );
 
     return { ...describeCodingSession(session), watching: await tryWatchCodingSession(session) };
   },

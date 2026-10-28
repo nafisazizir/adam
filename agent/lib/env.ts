@@ -79,10 +79,13 @@ const schema = z.object({
     .min(1)
     .transform((value) => value.replace(/\/+$/, "")),
   RIZ_MCP_JWT_SECRET: z.string().min(1),
-  // Optional so a deploy without Devin credentials still boots; only the coding tools fail.
+  // Optional. Unset keeps Devin when Devin is configured (or when neither vendor is), and uses Cursor only when it is the one configured vendor.
+  CODING_AGENT_PROVIDER: blankAsUnset(z.enum(["devin", "cursor"]).optional()),
   DEVIN_API_KEY: blankAsUnset(z.string().min(1).optional()),
   DEVIN_ORG_ID: blankAsUnset(z.string().min(1).optional()),
   DEVIN_MAX_ACU_LIMIT: blankAsUnset(z.coerce.number().int().positive().optional()),
+  CURSOR_API_KEY: blankAsUnset(z.string().min(1).optional()),
+  CURSOR_MODEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),
