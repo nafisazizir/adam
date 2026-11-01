@@ -44,6 +44,8 @@ export interface CreateCodingSession {
   readonly title: string;
   readonly repos: readonly string[];
   readonly idempotencyKey: string;
+  // Cursor model id. Omitted, Cursor uses the caller's default. Devin ignores it.
+  readonly model?: string;
 }
 
 // One vendor's HTTP failure. A 4xx other than timeout or rate limit will not start working on retry,

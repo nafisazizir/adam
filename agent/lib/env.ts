@@ -85,7 +85,6 @@ const schema = z.object({
   DEVIN_ORG_ID: blankAsUnset(z.string().min(1).optional()),
   DEVIN_MAX_ACU_LIMIT: blankAsUnset(z.coerce.number().int().positive().optional()),
   CURSOR_API_KEY: blankAsUnset(z.string().min(1).optional()),
-  CURSOR_MODEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL: blankAsUnset(z.string().min(1).optional()),
   VERCEL_ENV: blankAsUnset(z.string().min(1).optional()),
   VERCEL_TARGET_ENV: blankAsUnset(z.string().min(1).optional()),

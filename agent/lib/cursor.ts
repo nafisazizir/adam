@@ -73,7 +73,6 @@ function listSchema<T extends z.ZodType>(item: T) {
 export interface CursorClientOptions {
   readonly fetch?: typeof fetch;
   readonly apiKey?: string | null;
-  readonly model?: string | null;
 }
 
 // Cursor's idempotent create is a client-supplied agent id. The same key must mint the same id, and
@@ -198,11 +197,6 @@ export function createCursorCodingAgent(options: CursorClientOptions = {}): Codi
     return key;
   }
 
-  function modelId(): string | undefined {
-    const model = options.model === undefined ? env.CURSOR_MODEL : options.model;
-    return model ?? undefined;
-  }
-
   async function cursorRequest<T extends z.ZodType>(
     path: string,
     schema: T,
@@ -267,7 +261,6 @@ export function createCursorCodingAgent(options: CursorClientOptions = {}): Codi
       const existing = await getAgent(id);
       if (existing) return toSession(existing, await loadRun(id, existing.latestRunId));
 
-      const model = modelId();
       try {
         const created = await cursorRequest("/agents", createdSchema, {
           method: "POST",
@@ -276,7 +269,7 @@ export function createCursorCodingAgent(options: CursorClientOptions = {}): Codi
             prompt: { text: input.prompt },
             name: cursorName(input.title),
             autoCreatePR: true,
-            ...(model ? { model: { id: model } } : {}),
+            ...(input.model ? { model: { id: input.model } } : {}),
             ...(input.repos.length
               ? { repos: input.repos.map((repo) => ({ url: githubRepoUrl(repo) })) }
               : {}),

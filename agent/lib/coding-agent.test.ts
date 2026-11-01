@@ -284,9 +284,9 @@ function cursorRun(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function cursorClient(routes: (hit: Hit) => { status?: number; json: unknown }, model?: string | null) {
+function cursorClient(routes: (hit: Hit) => { status?: number; json: unknown }) {
   const seen = recordedFetch(routes);
-  const agent = createCursorCodingAgent({ fetch: seen.fetchImpl, apiKey: "cursor_test", model });
+  const agent = createCursorCodingAgent({ fetch: seen.fetchImpl, apiKey: "cursor_test" });
   return { seen, agent };
 }
 
@@ -340,7 +340,7 @@ test("cursor create returns an agent that already exists, and can pin a model", 
   const { seen, agent } = cursorClient((hit) => {
     if (hit.path.endsWith("/runs/run-1")) return { json: cursorRun({ status: "RUNNING", result: null, git: null }) };
     return { json: cursorAgent({ id, status: "ACTIVE" }) };
-  }, "composer-2");
+  });
 
   const session = await agent.createSession({ ...devinInput, idempotencyKey: "same", repos: [] });
   assert.equal(session.id, id);
@@ -357,8 +357,13 @@ test("cursor create returns an agent that already exists, and can pin a model", 
       };
     }
     return { status: 404, json: { error: "missing" } };
-  }, "composer-2");
-  await launched.agent.createSession({ ...devinInput, idempotencyKey: "fresh", repos: [] });
+  });
+  await launched.agent.createSession({
+    ...devinInput,
+    idempotencyKey: "fresh",
+    repos: [],
+    model: "composer-2",
+  });
   const body = launched.seen.hits.find((hit) => hit.method === "POST")?.body as {
     model?: { id: string };
     repos?: unknown;

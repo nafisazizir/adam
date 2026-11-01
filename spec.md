@@ -281,8 +281,9 @@ stub the route).
   final reply, and a question comes back as a finished run. Follow-up is `POST /v1/agents/{id}/runs`;
   a `409` while a run is active is retried as a steer. Stop cancels an active run, then archives; a
   later message unarchives and starts a run. `GET /v1/repositories` lists GitHub repos the key can
-  see (url only, filtered client-side; the endpoint is about one request a minute). `CURSOR_MODEL`
-  is an optional model id from `GET /v1/models`. The API is a public beta; this client follows the
+  see (url only, filtered client-side; the endpoint is about one request a minute). Create omits
+  `model`, so Cursor uses the caller's default; `start_coding_session` can pass a model id when Adam
+  chooses one. The API is a public beta; this client follows the
   published v1 docs and was not run against the live API. Cursor has no outbound webhooks yet.
 - **Coding session updates** (`agent/channels/coding-sessions.ts`): neither Devin nor Cursor sends
   outbound webhooks yet, so Adam polls. Starting or messaging a session publishes a QStash watch tick to
@@ -1127,7 +1128,6 @@ DEVIN_API_KEY=...                   # optional; Devin v3 key (cog_…), service 
 DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → Devin API
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 CURSOR_API_KEY=...                  # optional; Cursor Cloud Agents key (Dashboard → API Keys)
-CURSOR_MODEL=...                    # optional; model id from GET /v1/models. Unset uses Cursor's default
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
 ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it; call_owner places calls with it
 ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
@@ -1181,7 +1181,7 @@ GOOGLE_PUSH_SERVICE_ACCOUNT=...     # optional; the push subscription's service 
   (Dashboard → API Keys). Without it Adam still boots and only Cursor calls fail. The key should be
   Adam's: list returns every agent that key can see, and Adam keeps the ones it named `adam: …`.
   `GET /v1/repositories` is about one request a user a minute, so listing Cursor repos is not
-  something to repeat. `CURSOR_MODEL` is optional.
+  something to repeat. The model is Cursor's own default unless Adam passes one when it starts the session.
 - A watched coding session costs one QStash message a minute while the coding agent is busy, backing off to
   one every eight minutes when idle, plus one per update. A session that never sleeps is capped at
   24 idle hours, about 250 messages; two such sessions would use most of the free tier.

@@ -33,9 +33,16 @@ export default defineTool({
       .enum(codingProviderNames)
       .optional()
       .describe("Which cloud coding agent to use, devin or cursor. Omit it for the configured default."),
+    model: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "A Cursor model id, only when the user asked for one. Omit it so Cursor uses its default. Devin ignores it.",
+      ),
   }),
   label: { start: ({ title }) => `Start coding session: ${title}` },
-  async execute({ brief, title, repos, provider }, ctx) {
+  async execute({ brief, title, repos, provider, model }, ctx) {
     if (isCallTurn(ctx.session.auth.current)) return { started: false, reason: notFromOwnerChat };
     const hinted = [...new Set(repos ?? [])];
     const session = await createCodingSession(
@@ -43,7 +50,15 @@ export default defineTool({
         prompt: codingBrief(brief, hinted),
         title,
         repos: hinted,
-        idempotencyKey: replayStableKey(ctx, title, brief, ...(provider ? [provider] : []), ...hinted),
+        ...(model ? { model } : {}),
+        idempotencyKey: replayStableKey(
+          ctx,
+          title,
+          brief,
+          ...(provider ? [provider] : []),
+          ...(model ? [model] : []),
+          ...hinted,
+        ),
       },
       provider,
     );
