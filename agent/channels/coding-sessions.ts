@@ -12,14 +12,14 @@ import {
   type WatchTick,
 } from "#lib/coding-sessions.js";
 import { homeDelivery } from "#lib/delivery.js";
-import { DevinApiError, getCodingSession, listCodingSessionMessages } from "#lib/devin.js";
+import { CodingAgentError, getCodingSession, listCodingSessionMessages } from "#lib/coding-agents.js";
 import { codingSessionsNotifyPath, codingSessionsWatchPath, env } from "#lib/env.js";
 import { hasValidCallbackSignature, parseJson } from "#lib/qstash.js";
 
 async function checkSession(tick: WatchTick) {
   const [session, messages] = await Promise.all([
-    getCodingSession(tick.sessionId),
-    listCodingSessionMessages(tick.sessionId),
+    getCodingSession(tick.sessionId, tick.provider),
+    listCodingSessionMessages(tick.sessionId, tick.provider),
   ]);
 
   const found = codingUpdateFor(session, messages);
@@ -56,7 +56,7 @@ export default defineChannel({
         check = await checkSession(tick);
       } catch (error) {
         console.error(`[coding-sessions] failed to check ${tick.sessionId}`, error);
-        if (error instanceof DevinApiError && error.isPermanent) {
+        if (error instanceof CodingAgentError && error.isPermanent) {
           return Response.json({ ok: true, watching: false });
         }
       }

@@ -84,7 +84,7 @@ env the local `.env` may lack. Unit tests are `node:test` files next to the modu
 (`agent/lib/<module>.test.ts`, run by `pnpm test` with no extra dependencies); keep them under
 `lib/`, since a file under `tools/` or `channels/` would be mounted as one. `pnpm verify <evalId...>` (e.g. `pnpm verify coding`) also runs those eval groups,
 which call live models and cost tokens. A new vendor's env vars stay optional so Adam still boots
-without them and only that vendor's tools fail, as with Devin.
+without them and only that vendor's tools fail, as with Devin and Cursor.
 
 ## Conventions
 
