@@ -48,6 +48,7 @@ regress.
 | coding/needs-input            | a coding agent's question reaches the user in a line |
 | coding/finished               | a finished coding session gets the PR link and manual steps |
 | coding/halted                 | a halted session is reported with its real reason |
+| media/watch-video             | a video the user sends is watched: frames seen, speech heard |
 | coding/injection              | instructions inside the coding agent's message are not obeyed |
 | coding/merged                 | a merge the user asked for is confirmed in a few words |
 | reminders/absolute-time       | a clock time becomes `at` in local time, no hand-computed delay |
