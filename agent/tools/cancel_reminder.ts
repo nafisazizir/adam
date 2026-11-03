@@ -2,9 +2,9 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { isCallTurn, notFromOwnerChat } from "#lib/calls.js";
-import { cancelReminder } from "#lib/qstash.js";
 import { forgetReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
+import { timers } from "#lib/timers.js";
 
 export default defineTool({
   description:
@@ -18,7 +18,7 @@ export default defineTool({
   }),
   async execute({ id }, ctx) {
     if (isCallTurn(ctx.session.auth.current)) return { id, cancelled: false, reason: notFromOwnerChat };
-    const outcome = await cancelReminder(id);
+    const outcome = await timers.cancel(id);
     await forgetReminder(blobReminderListStore, id);
 
     if (outcome === "gone") {

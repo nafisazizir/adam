@@ -4,6 +4,9 @@ import { env } from "#lib/env.js";
 
 const client = new Client({ baseUrl: env.QSTASH_URL, token: env.QSTASH_TOKEN });
 
+// The free plan's ceiling; a later instant goes through lib/timer.ts, which hops toward it.
+export const maxDelaySeconds = 7 * 24 * 60 * 60;
+
 const receiver = new Receiver({
   currentSigningKey: env.QSTASH_CURRENT_SIGNING_KEY,
   nextSigningKey: env.QSTASH_NEXT_SIGNING_KEY,
@@ -55,28 +58,7 @@ export async function hasValidCallbackSignature(request: Request, body: string, 
   }
 }
 
-export async function publishReminder(input: {
-  message: string;
-  channel: string;
-  target: Record<string, unknown>;
-  delaySeconds: number;
-  idempotencyKey: string;
-  ring?: boolean;
-}): Promise<string> {
-  return publishCallback({
-    url: env.remindersDeliverUrl,
-    body: {
-      message: input.message,
-      channel: input.channel,
-      target: input.target,
-      ...(input.ring && { ring: true }),
-    },
-    delaySeconds: input.delaySeconds,
-    deduplicationId: `reminder-${input.idempotencyKey}`.replace(/[^\w-]/gu, "_"),
-  });
-}
-
-export async function cancelReminder(messageId: string): Promise<"cancelled" | "gone"> {
+export async function cancelCallback(messageId: string): Promise<"cancelled" | "gone"> {
   try {
     await client.messages.cancel(messageId);
     return "cancelled";

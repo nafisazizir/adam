@@ -35,6 +35,20 @@ export function dueReminderMessage(message: string, ring: boolean): string {
   return `${due}\n\nThey asked you to ring them for this one: call ${callOwnerTool} with what to say when they pick up.`;
 }
 
+export function reminderPayload(input: {
+  message: string;
+  channel: string;
+  target: Record<string, unknown>;
+  ring: boolean;
+}): Record<string, unknown> {
+  return {
+    message: input.message,
+    channel: input.channel,
+    target: input.target,
+    ...(input.ring && { ring: true }),
+  };
+}
+
 export interface ReminderDestination {
   readonly channel: string;
   readonly target: Record<string, unknown>;
