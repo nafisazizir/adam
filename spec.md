@@ -807,7 +807,7 @@ stub the route).
   `call_owner` admit) in `lib/known-owner.ts`; `briefingMessage` and `briefingSections` in `lib/briefing.ts`; `googleBriefingSection` in `lib/google-briefing.ts`; `sharedCache`, `sealedCache` and `secretCache` (Vercel Runtime Cache, best effort; sealed and HMAC-named for anything another project must not read) in `lib/shared-cache.ts`; `watchGoogleAccounts` and `stopWatchingGoogleAccount` in `lib/google-watch.ts` (over `watchMailboxes` in `lib/mail-watch.ts` and `watchCalendars` in `lib/calendar-watch.ts`); `coalescedRun` and `takeDailyRun` in `lib/coalesce.ts`; `notionConnection` in `lib/notion.ts`; and workout auth,
   message builders, sport skips, and the shared workout reference schema in `lib/workouts.ts`.
 - **Tools** (`agent/tools/`): `schedule_reminder`, `cancel_reminder`, `list_reminders`, `generate_speech`,
-  `transcribe_audio`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
+  `transcribe_audio`, `watch_video`, `start_coding_session`, `list_coding_sessions`, `get_coding_session`,
   `message_coding_session`, `stop_coding_session`, `list_coding_repos`, `merge_pull_request`
   (confirmed in chat, merged by the coding agent that opened it), `connect_google_account`, `disconnect_google_account` (confirmed
   in chat), `list_google_accounts`,
@@ -835,17 +835,27 @@ stub the route).
   fetched plainly and never deleted.
 - **Inbound media** (`agent/lib/inbound-media.ts`): one primitive that normalises every attachment
   the channel fetches, wrapped onto the Photon adapter's `fetchFile` by
-  `withInboundMediaNormalization`. Providers reject iPhone `image/heic*` and Eve only inlines
-  inbound images up to 3 MiB, so anything that isn't already a provider-safe type under that limit
-  is decoded (HEIC via `heic-decode`), EXIF-rotated, resized inside 2048px, and re-encoded as JPEG.
-  An undecodable fetched file throws, which Eve degrades to a model-visible note. `provider-safe-model.ts`
-  repeats this check at the model boundary because durable history replays staged image bytes on every
-  call; a raw image already staged before normalization shipped could otherwise wedge the session.
-- **Inbound voice notes**: Photon's webhook omits the voice note's attachment GUID, so the photon
-  channel resolves it with Spectrum's `getMessage` before Eve wires the download
-  (`lib/photon-inbound.ts`). `transcribe_audio` reads the staged audio file from the sandbox and calls
-  `lib/transcription.ts`, the STT seam. `lib/transcribable-audio.ts` uses ffmpeg to convert CAF and
-  other unsupported types to 16 kHz mono WAV before sending audio through the AI Gateway.
+  `withInboundMediaNormalization`. Eve sends the model an image's bytes only for PNG, JPEG, GIF or
+  WebP up to 3 MiB and 8000px a side; anything else reaches the model as a label it cannot see.
+  Whether a file is an image is decided by its bytes as well as its declared type, because Photon
+  labels a file it has no type for `application/octet-stream`. An image passes through untouched
+  only when it is a safe type inside those limits with no EXIF rotation; everything else is decoded
+  (HEIC via `heic-decode`), rotated upright, resized inside 2048px and re-encoded as JPEG. An
+  undecodable image throws `attachmentError`, which Eve turns into a note the model can relay
+  ("ask for a screenshot"). `provider-safe-model.ts` repeats this check at the model boundary
+  because durable history replays staged image bytes on every call; a raw image already staged
+  before normalization shipped could otherwise wedge the session.
+- **Inbound voice notes and videos**: Eve resolves the voice note's missing attachment GUID itself.
+  `transcribe_audio` reads the staged audio file from the sandbox and calls `lib/transcription.ts`,
+  the STT seam; `lib/transcribable-audio.ts` converts CAF and any other type ffmpeg can demux
+  (including a video's sound track) to 16 kHz mono WAV. `watch_video` composes `lib/video-frames.ts`
+  (six evenly spaced stills inside 768px) with the same transcription, so the model sees a video
+  it would otherwise get only as a label. Both media seams run ffmpeg through `lib/ffmpeg.ts`.
+- **Inbound content Eve can't carry**: Eve builds a turn from a message's text and files only, so a
+  contact card or shared location (a vCard, parsed by Spectrum as `contact` content) would be
+  dropped with no reply. `fillInboundWithoutContent` (`lib/photon-inbound.ts`) writes the card in
+  as text before Eve reads the message, and logs any other content it can't carry as
+  `[photon:inbound.unreadable]`.
 - **Schedules** (`agent/schedules/`): periodic only — _never_ the reminder timer. A schedule has no
   inbound auth and no thread of its own, so it reaches the owner the way the channels do: resolve
   `homeDelivery()`, then deliver into the home thread with `turnPolicy: "queue"`, acting as the owner
@@ -967,11 +977,14 @@ adam/
 │   │   ├── workouts.ts        # workout auth, messages, address, and shared ref schema
 │   │   ├── riz-mcp.ts         # shared connection config and callRizMcpTool
 │   │   ├── outbound.ts        # bubble splitting + `![](url)` → real attachments (image/* and audio)
-│   │   ├── inbound-media.ts   # fetchFile wrapper: provider-safe JPEGs from HEIC/oversized images
+│   │   ├── inbound-media.ts   # fetchFile wrapper: provider-safe JPEGs from HEIC/oversized/rotated images
+│   │   ├── photon-inbound.ts  # contact cards as text, sender service check
 │   │   ├── provider-safe-model.ts # model-boundary normalization for replayed inline images
 │   │   ├── speech.ts          # text → audio bytes (AI Gateway speech model)
 │   │   ├── transcription.ts   # audio → transcript (AI Gateway transcription model)
-│   │   ├── transcribable-audio.ts # normalize audio formats with ffmpeg
+│   │   ├── transcribable-audio.ts # normalize audio (or a video's sound track) with ffmpeg
+│   │   ├── video-frames.ts    # video → evenly spaced JPEG stills
+│   │   ├── ffmpeg.ts          # run ffmpeg in a scratch dir
 │   │   ├── assets.ts          # bytes ↔ url (private Vercel Blob), dropped after delivery
 │   │   ├── coding-agent.ts    # CodingAgentProvider, shared session types, CodingAgentError
 │   │   ├── coding-agents.ts   # registry: codingAgent("devin" | "cursor") and the calls the tools make
@@ -1021,6 +1034,7 @@ adam/
 │   │   ├── list_reminders.ts
 │   │   ├── generate_speech.ts # speak text, upload, return the url the model embeds
 │   │   ├── transcribe_audio.ts # transcribe a sandbox audio attachment
+│   │   ├── watch_video.ts     # stills + transcript of a sandbox video attachment
 │   │   ├── start_coding_session.ts # brief the chosen coding agent; it opens a PR per repo it changes
 │   │   ├── list_coding_sessions.ts
 │   │   ├── get_coding_session.ts # state, PRs, and the latest messages
@@ -1076,7 +1090,7 @@ morning `briefing` cron into the home thread that stays silent unless something 
 to the `deep` subagent · right-to-silence
 instructions · outbound image and audio attachments, with `generate_speech` for the occasional
 voice note (text stays the default; see `agent/instructions.md`) · inbound voice-note transcription
-with `transcribe_audio` · Devin or Cursor coding sessions started, checked, messaged and stopped from chat,
+with `transcribe_audio` · videos watched with `watch_video` · Devin or Cursor coding sessions started, checked, messaged and stopped from chat,
 with their questions, finished pull requests and failures texted back as they happen, and their
 pull requests merged on the owner's say-so after a confirmation naming the PR · durable owner facts
 remembered across sessions with the `owner` memory slot · read-only Gmail and Google Calendar

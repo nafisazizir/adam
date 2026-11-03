@@ -1,6 +1,6 @@
 import { gateway, wrapLanguageModel } from "ai";
 import type { LanguageModelMiddleware } from "ai";
-import { toProviderSafeImage } from "./inbound-media.js";
+import { jpegFilename, toProviderSafeImage } from "./inbound-media.js";
 
 type InlineImageFilePart = {
   type: "file";
@@ -99,17 +99,10 @@ async function normalizeImagePart(
     ...part,
     data: { type: "data", data: image.bytes },
     mediaType: image.mediaType,
-    ...(image.mediaType === "image/jpeg"
-      ? { filename: jpegFilename(part.filename) }
-      : {}),
+    ...(image.reencoded ? { filename: jpegFilename(part.filename) } : {}),
   };
 }
 
 function isImageMediaType(mediaType: string): boolean {
   return mediaType === "image" || mediaType.startsWith("image/");
-}
-
-function jpegFilename(filename: string | undefined): string {
-  const stem = filename?.replace(/\.[^.]*$/, "").trim();
-  return `${stem && stem.length > 0 ? stem : "image"}.jpg`;
 }
