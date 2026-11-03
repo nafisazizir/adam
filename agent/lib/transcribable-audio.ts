@@ -1,12 +1,7 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
-import ffmpeg from "@ffmpeg-installer/ffmpeg";
-
-const execFileAsync = promisify(execFile);
+import { inScratchDir, runFfmpeg } from "#lib/ffmpeg.js";
 
 const transcribableMediaTypes = new Set([
   "audio/mpeg",
@@ -23,6 +18,7 @@ const transcribableMediaTypes = new Set([
   "audio/x-flac",
 ]);
 
+// Anything ffmpeg can demux works here, including a video, whose sound track is what gets kept.
 export async function toTranscribableAudio(
   bytes: Uint8Array,
   mediaType: string,
@@ -33,39 +29,11 @@ export async function toTranscribableAudio(
     return { bytes, mediaType };
   }
 
-  const directory = await mkdtemp(join(tmpdir(), "adam-transcribable-audio-"));
-  const inputPath = join(directory, "input.caf");
-  const outputPath = join(directory, "output.wav");
-
-  try {
+  return inScratchDir(async (dir) => {
+    const inputPath = join(dir, "input");
+    const outputPath = join(dir, "output.wav");
     await writeFile(inputPath, bytes);
-    await execFileAsync(
-      ffmpeg.path,
-      [
-        "-nostdin",
-        "-y",
-        "-i",
-        inputPath,
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-f",
-        "wav",
-        outputPath,
-      ],
-      { timeout: 30_000 },
-    );
-
+    await runFfmpeg(["-i", inputPath, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", outputPath]);
     return { bytes: await readFile(outputPath), mediaType: "audio/wav" };
-  } catch (error) {
-    const stderr =
-      error && typeof error === "object" && "stderr" in error
-        ? String(error.stderr).trim().slice(-4000)
-        : "";
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`ffmpeg failed: ${message}\nffmpeg stderr: ${stderr}`, { cause: error });
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  });
 }

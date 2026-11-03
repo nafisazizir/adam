@@ -18,3 +18,6 @@ const requiredEnv = [
 for (const name of requiredEnv) process.env[name] ||= "test";
 process.env.BASE_URL ||= "https://adam.test";
 process.env.RIZ_MCP_URL ||= "https://riz-mcp.test";
+process.env.DEVIN_API_KEY ||= "test-devin-key";
+process.env.DEVIN_ORG_ID ||= "org-test";
+process.env.CURSOR_API_KEY ||= "test-cursor-key";

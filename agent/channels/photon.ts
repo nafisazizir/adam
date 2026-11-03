@@ -9,7 +9,7 @@ import {
   rememberHomeTarget,
 } from "#lib/home-target.js";
 import { withInboundMediaNormalization } from "#lib/inbound-media.js";
-import { resolveAttachmentIds, sentOverAnotherService, unreadableInbound } from "#lib/photon-inbound.js";
+import { fillInboundWithoutContent, sentOverAnotherService } from "#lib/photon-inbound.js";
 import { renderOutbound, splitBubbles } from "#lib/outbound.js";
 import {
   admitSender,
@@ -154,13 +154,7 @@ export default withInboundMediaNormalization(photonIMessageChannel({
     };
     if (admission.claimed && !(await claim(home))) return null;
 
-    try {
-      await resolveAttachmentIds(message.raw, (ctx.thread.adapter as { app?: unknown }).app);
-    } catch (error) {
-      console.warn("[photon] failed to resolve attachment ids", error);
-    }
-
-    const unreadable = unreadableInbound(message);
+    const unreadable = fillInboundWithoutContent(message);
     if (unreadable) console.warn("[photon:inbound.unreadable]", unreadable);
 
     if (admission.updatesHome && !admission.claimed) {

@@ -1,13 +1,23 @@
 import heicDecode from "heic-decode";
 import sharp from "sharp";
-import type { ChannelDefinition } from "eve/channels";
+import { attachmentError, type ChannelDefinition } from "eve/channels";
 
 export type FetchFileResult = Exclude<
   Awaited<ReturnType<NonNullable<ChannelDefinition["fetchFile"]>>>,
   null | Buffer
 >;
 
+export interface ProviderSafeImage {
+  readonly bytes: Buffer;
+  readonly mediaType: string;
+  readonly reencoded: boolean;
+}
+
+// Eve sends an image's bytes to the model only within these limits; past them the model gets a
+// label it cannot look at.
 const INLINE_IMAGE_LIMIT_BYTES = 3 * 1024 * 1024;
+const INLINE_IMAGE_MAX_SIDE = 8000;
+
 const HEIC_TYPES = new Set([
   "image/heic",
   "image/heif",
@@ -20,67 +30,69 @@ const MAX_DIMENSION = 2048;
 export async function toProviderSafeImage(
   bytes: Uint8Array,
   mediaType: string,
-): Promise<{ bytes: Buffer; mediaType: string } | null> {
+): Promise<ProviderSafeImage | null> {
+  const input = Buffer.from(bytes);
   const sniffedMediaType = sniffProviderSafeImageType(bytes);
-  if (
-    sniffedMediaType !== undefined &&
-    bytes.byteLength <= INLINE_IMAGE_LIMIT_BYTES
-  ) {
-    return { bytes: Buffer.from(bytes), mediaType: sniffedMediaType };
+  if (sniffedMediaType !== undefined && (await inlinesAsIs(input))) {
+    return { bytes: input, mediaType: sniffedMediaType, reencoded: false };
   }
 
-  const input = Buffer.from(bytes);
   const useHeicDecoder = HEIC_TYPES.has(mediaType);
   try {
-    return {
-      bytes: await imageToJpeg(
-        useHeicDecoder ? await heicToRawInput(input) : sharp(input),
-      ),
-      mediaType: "image/jpeg",
-    };
+    const image = useHeicDecoder ? await heicToRawInput(input) : sharp(input);
+    return { bytes: await imageToJpeg(image), mediaType: "image/jpeg", reencoded: true };
   } catch {
-    if (!useHeicDecoder && isHeicIsoBmff(bytes)) {
-      try {
-        return {
-          bytes: await imageToJpeg(await heicToRawInput(input)),
-          mediaType: "image/jpeg",
-        };
-      } catch {
-        return null;
-      }
+    if (useHeicDecoder || !isHeicIsoBmff(bytes)) return null;
+    try {
+      return {
+        bytes: await imageToJpeg(await heicToRawInput(input)),
+        mediaType: "image/jpeg",
+        reencoded: true,
+      };
+    } catch {
+      return null;
     }
-    return null;
   }
 }
 
-export async function normalizeInboundFile(
-  file: FetchFileResult,
-  fallbackMediaType?: string,
-): Promise<FetchFileResult> {
-  const mediaType = file.mediaType ?? fallbackMediaType;
-  if (mediaType === undefined || !mediaType.startsWith("image/")) return file;
+// Photon labels a file it has no type for `application/octet-stream`, so the bytes decide.
+export function looksLikeImage(bytes: Uint8Array, mediaType: string | undefined): boolean {
+  return (
+    mediaType?.startsWith("image/") === true ||
+    sniffProviderSafeImageType(bytes) !== undefined ||
+    isHeicIsoBmff(bytes)
+  );
+}
 
-  try {
-    const image = await toProviderSafeImage(file.bytes, mediaType);
-    if (image === null) throw new Error("Image decoding failed.");
-    if (
-      sniffProviderSafeImageType(file.bytes) === image.mediaType &&
-      file.bytes.byteLength <= INLINE_IMAGE_LIMIT_BYTES
-    ) {
-      return { ...file, bytes: image.bytes, mediaType: image.mediaType };
-    }
-    return {
-      bytes: image.bytes,
-      mediaType: image.mediaType,
-      filename: jpegFilename(file.filename),
-    };
-  } catch (error) {
+export async function normalizeInboundFile(file: FetchFileResult): Promise<FetchFileResult> {
+  const mediaType = file.mediaType ?? "application/octet-stream";
+  if (!looksLikeImage(file.bytes, file.mediaType)) return file;
+
+  const image = await toProviderSafeImage(file.bytes, mediaType);
+  if (image === null) {
     console.warn("[inbound-media:image.unreadable]", {
       mediaType,
       bytes: file.bytes.byteLength,
-      error,
     });
-    throw new Error(`Unreadable ${mediaType} image attachment.`);
+    throw attachmentError(
+      "the image could not be decoded. Ask them to send a screenshot of it instead.",
+    );
+  }
+  return {
+    ...file,
+    bytes: image.bytes,
+    mediaType: image.mediaType,
+    ...(image.reencoded ? { filename: jpegFilename(file.filename) } : {}),
+  };
+}
+
+async function inlinesAsIs(bytes: Buffer): Promise<boolean> {
+  if (bytes.byteLength > INLINE_IMAGE_LIMIT_BYTES) return false;
+  try {
+    const { width = 0, height = 0, orientation = 1 } = await sharp(bytes).metadata();
+    return width <= INLINE_IMAGE_MAX_SIDE && height <= INLINE_IMAGE_MAX_SIDE && orientation === 1;
+  } catch {
+    return false;
   }
 }
 
@@ -158,7 +170,7 @@ function ascii(bytes: Uint8Array, start: number, end: number): string {
   return String.fromCharCode(...bytes.subarray(start, end));
 }
 
-function jpegFilename(filename: string | undefined): string {
+export function jpegFilename(filename: string | undefined): string {
   const stem = filename?.replace(/\.[^.]*$/, "").trim();
   return `${stem && stem.length > 0 ? stem : "image"}.jpg`;
 }
