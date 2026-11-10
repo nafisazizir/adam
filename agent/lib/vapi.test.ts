@@ -23,17 +23,23 @@ test("a Vapi line needs its key, its number and the tool secret", () => {
   assert.equal(vapiLine({ ...urls, phoneNumberId: "pn", toolSecret: "s" }), null);
 });
 
-test("the assistant speaks the briefing with Deepgram's ears and voice, and asks Adam over the secret header", () => {
+test("the assistant speaks the briefing with Deepgram's ears and no office noise, and asks Adam over the secret header", () => {
   const assistant = vapiAssistant(briefing, line);
   assert.equal(assistant.firstMessage, briefing.greeting);
   assert.equal(assistant.model.messages[0]?.content, briefing.briefing);
-  assert.equal(assistant.transcriber.provider, "deepgram");
+  assert.deepEqual(assistant.transcriber, { provider: "deepgram", model: "flux-general-en" });
+  assert.equal(assistant.backgroundSound, "off");
   assert.equal(assistant.voice.provider, "deepgram");
   const ask = assistant.model.tools[0] as { function: { name: string }; server: { url: string; headers: Record<string, string> } };
   assert.equal(ask.function.name, "ask_adam");
   assert.equal(ask.server.url, line.toolsUrl);
   assert.equal(ask.server.headers["x-calls-secret"], "s3cret");
   assert.equal(assistant.server.headers["x-calls-secret"], "s3cret");
+});
+
+test("Adam's ElevenLabs voice speaks when there is one", () => {
+  const voice = vapiAssistant(briefing, { ...line, elevenLabsVoiceId: "voice_1" }).voice;
+  assert.deepEqual(voice, { provider: "11labs", model: "eleven_v4_turbo", voiceId: "voice_1" });
 });
 
 test("placing a call returns Vapi's call id", async () => {

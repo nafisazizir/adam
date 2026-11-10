@@ -26,6 +26,7 @@ export interface VapiLine {
   readonly toolSecret: string;
   readonly toolsUrl: string;
   readonly eventsUrl: string;
+  readonly elevenLabsVoiceId?: string;
 }
 
 export function vapiLine(settings: {
@@ -34,9 +35,17 @@ export function vapiLine(settings: {
   readonly toolSecret?: string;
   readonly toolsUrl: string;
   readonly eventsUrl: string;
+  readonly elevenLabsVoiceId?: string;
 }): VapiLine | null {
-  const { apiKey, phoneNumberId, toolSecret, toolsUrl, eventsUrl } = settings;
-  return apiKey && phoneNumberId && toolSecret ? { apiKey, phoneNumberId, toolSecret, toolsUrl, eventsUrl } : null;
+  const { apiKey, phoneNumberId, toolSecret, ...rest } = settings;
+  return apiKey && phoneNumberId && toolSecret ? { apiKey, phoneNumberId, toolSecret, ...rest } : null;
+}
+
+// Adam's ElevenLabs voice when there is one, so a Vapi call sounds like an ElevenLabs one.
+function vapiVoice(line: VapiLine) {
+  return line.elevenLabsVoiceId
+    ? { provider: "11labs", model: "eleven_v4_turbo", voiceId: line.elevenLabsVoiceId }
+    : { provider: "deepgram", model: "aura-2", voiceId: "apollo" };
 }
 
 function server(url: string, line: VapiLine, timeoutSeconds?: number) {
@@ -44,15 +53,16 @@ function server(url: string, line: VapiLine, timeoutSeconds?: number) {
 }
 
 // Built per call from the same briefing ElevenLabs gets, so nothing lives in the Vapi dashboard.
-// Deepgram both hears (Nova-3) and speaks (Aura-2).
 export function vapiAssistant(briefing: CallBriefing, line: VapiLine) {
   return {
     name: "Adam",
     firstMessage: briefing.greeting,
     firstMessageMode: "assistant-speaks-first",
     maxDurationSeconds: maxCallSecs,
-    transcriber: { provider: "deepgram", model: "nova-3", language: "en" },
-    voice: { provider: "deepgram", model: "aura-2", voiceId: "apollo" },
+    backgroundSound: "off",
+    // Flux detects the end of a turn itself, so Adam answers sooner without cutting in.
+    transcriber: { provider: "deepgram", model: "flux-general-en" },
+    voice: vapiVoice(line),
     model: {
       provider: "openai",
       model: "gpt-4.1-mini",
