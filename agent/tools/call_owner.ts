@@ -3,8 +3,8 @@ import { z } from "zod";
 
 import { blobClaimStore } from "#lib/claim-store.js";
 import { knownOwner } from "#lib/known-owner.js";
-import { configuredOutboundLine, ringOnceKey, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
-import { placeOutboundCall } from "#lib/voice.js";
+import { ringOnceKey, ringOwner, ringOwnerRefusal } from "#lib/ring-owner.js";
+import { configuredVoiceLine, placeOnLine } from "#lib/voice-lines.js";
 
 export default defineTool({
   description:
@@ -25,7 +25,7 @@ export default defineTool({
     const refusal = ringOwnerRefusal(auth);
     if (refusal) return { ringing: false, error: refusal };
 
-    const deps = { line: configuredOutboundLine(), owner: knownOwner, budget: blobClaimStore, place: placeOutboundCall };
+    const deps = { line: configuredVoiceLine(), owner: knownOwner, budget: blobClaimStore, place: placeOnLine };
     const outcome = await ringOwner(reason, deps, ringOnceKey(auth));
     if (!outcome.rung) return { ringing: false, error: outcome.error };
     return { ringing: true, conversationId: outcome.conversationId };

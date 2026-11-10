@@ -10,9 +10,10 @@ import { recordReminder } from "#lib/reminder-list.js";
 import { blobReminderListStore } from "#lib/reminder-list-store.js";
 import { reminderTiming } from "#lib/reminder-timing.js";
 import { reminderPayload } from "#lib/reminders.js";
-import { configuredOutboundLine, noOwnerNumber } from "#lib/ring-owner.js";
+import { noOwnerNumber } from "#lib/ring-owner.js";
 import { formatUserDateTime, userLocalDateTimeToInstant } from "#lib/time.js";
 import { timers } from "#lib/timers.js";
+import { configuredVoiceLine } from "#lib/voice-lines.js";
 
 export default defineTool({
   description:
@@ -62,7 +63,7 @@ export default defineTool({
     if (ring && !isOwnerChat(ctx.session.auth.current)) {
       throw new Error("Only the user can ask for a reminder that rings them, from chat. Schedule it without ring.");
     }
-    if (ring && !configuredOutboundLine()) {
+    if (ring && !configuredVoiceLine()) {
       throw new Error("Calling out isn't set up, so this reminder can't ring them. Tell them, and offer a text reminder instead.");
     }
     if (ring && !ownerPhoneNumber(await knownOwner())) {

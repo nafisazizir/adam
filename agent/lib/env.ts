@@ -25,6 +25,8 @@ export const calendarProcessPath = "/eve/v1/calendar/process";
 export const callsStartPath = "/eve/v1/calls/start";
 export const callsAskPath = "/eve/v1/calls/ask";
 export const callsEndedPath = "/eve/v1/calls/ended";
+export const vapiToolsPath = "/eve/v1/vapi/tools";
+export const vapiEventsPath = "/eve/v1/vapi/events";
 
 // An empty assignment such as `KEY=` in a .env file means unset, not an empty value.
 function blankAsUnset<T extends z.ZodType>(schema: T) {
@@ -109,6 +111,12 @@ const schema = z.object({
   ELEVENLABS_API_KEY: blankAsUnset(z.string().min(1).optional()),
   ELEVENLABS_VOICE_ID: blankAsUnset(z.string().min(1).optional()),
   CALLS_PHONE_NUMBER: blankAsUnset(z.string().min(1).optional()),
+  // Optional. Unset keeps ElevenLabs; vapi rings the owner through Vapi's line instead.
+  VOICE_PROVIDER: blankAsUnset(z.enum(["elevenlabs", "vapi"]).default("elevenlabs")),
+  VAPI_API_KEY: blankAsUnset(z.string().min(1).optional()),
+  VAPI_PHONE_NUMBER_ID: blankAsUnset(z.string().min(1).optional()),
+  // Optional. Set, voice notes and audio are transcribed by Deepgram instead of TRANSCRIPTION_MODEL.
+  DEEPGRAM_API_KEY: blankAsUnset(z.string().min(1).optional()),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -143,4 +151,6 @@ export const env = {
   callsStartUrl: `${parsed.data.BASE_URL}${callsStartPath}`,
   callsAskUrl: `${parsed.data.BASE_URL}${callsAskPath}`,
   callsEndedUrl: `${parsed.data.BASE_URL}${callsEndedPath}`,
+  vapiToolsUrl: `${parsed.data.BASE_URL}${vapiToolsPath}`,
+  vapiEventsUrl: `${parsed.data.BASE_URL}${vapiEventsPath}`,
 };

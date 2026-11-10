@@ -856,6 +856,17 @@ stub the route).
     - **Always.** The `<call_started>` text tells the owner a call is happening as soon as the
       thread is free; it queues like every call delivery, so it waits behind a running or parked
       turn.
+  - **Vapi, a second voice vendor** (`lib/vapi.ts`, `channels/vapi.ts`, `lib/voice-lines.ts`).
+    Voice vendors are swappable front ends, like coding agents: `VOICE_PROVIDER` (`elevenlabs`
+    by default, or `vapi`) picks the line `call_owner` and ringing reminders dial out on, through
+    `configuredVoiceLine`. Both vendors hand calls to the same relay (`lib/call-relay.ts`:
+    `relayCallRequest`, `relayCallEnded`, `noteCallStarted`), so a Vapi call lands in the owner's
+    one thread exactly as an ElevenLabs call does. Vapi needs nothing in its dashboard but a phone
+    number: each call carries a transient assistant built from the same `CallBriefing`, with
+    Deepgram Nova-3 transcribing, Deepgram Aura-2 speaking, `ask_adam` pointed at
+    `/eve/v1/vapi/tools` and the end-of-call report at `/eve/v1/vapi/events`, both carrying the
+    `x-calls-secret` header. Outbound only for now; an inbound Vapi number would answer an
+    `assistant-request` on the events route.
 - **Shared primitives**: `publishCallback`, `cancelCallback`, `maxDelaySeconds`, `verifyCallbackSignature`, `hasValidCallbackSignature` and `parseJson` in `lib/qstash.ts`;
   `createTimers` in `lib/timer.ts` and the wired `timers` in `lib/timers.ts` (fire a payload at any instant, cancel by id);
   `nextOccurrence` and `describeRecurrence` in `lib/recurrence.ts`; `updateDocument` (conditional-write retry over a
@@ -1222,6 +1233,7 @@ RIZ_MCP_JWT_SECRET=...              # signs the JWT riz-mcp expects
 AI_GATEWAY_API_KEY=...              # or ANTHROPIC_API_KEY; also routes the speech model
 BLOB_READ_WRITE_TOKEN=...           # optional; private Vercel Blob store for generated audio, the home delivery target, owner memory and the Google account list
 TRANSCRIPTION_MODEL=...             # optional, defaults to microsoft/mai-transcribe-2
+DEEPGRAM_API_KEY=...                # optional; set, voice notes are transcribed by Deepgram Nova-3 instead
 SPEECH_MODEL=...                    # optional, defaults to openai/tts-1
 SPEECH_VOICE=...                    # optional, defaults to alloy
 STRAVA_WEBHOOK_VERIFY_TOKEN=...     # Strava GET handshake
@@ -1235,6 +1247,9 @@ DEVIN_ORG_ID=...                    # optional; org-… from Devin Settings → 
 DEVIN_MAX_ACU_LIMIT=...             # optional; per-session spend cap in ACUs
 CURSOR_API_KEY=...                  # optional; Cursor Cloud Agents key (Dashboard → API Keys)
 CALLS_TOOL_SECRET=...               # optional; x-calls-secret header on the calls start webhook and ask_adam
+VOICE_PROVIDER=elevenlabs           # optional; vapi rings the owner through Vapi instead
+VAPI_API_KEY=...                    # optional; Vapi private key, needed with VOICE_PROVIDER=vapi
+VAPI_PHONE_NUMBER_ID=...            # optional; the Vapi phone number id Adam calls out from
 ELEVENLABS_API_KEY=...              # optional; the production build syncs the voice agent with it; call_owner places calls with it
 ELEVENLABS_VOICE_ID=...             # optional; the voice agent's voice
 CALLS_PHONE_NUMBER=...              # optional; Adam's number in E.164, assigned to the voice agent; call_owner rings from it
