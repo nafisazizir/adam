@@ -96,7 +96,7 @@ test("rings the owner's phone number with the reason", async () => {
 test("a second call inside the gap is refused without dialling", async () => {
   const ring = deps();
   await ringOwner("first", ring.deps);
-  const again = await ringOwner("second", { ...ring.deps, now: () => now + 60_000 });
+  const again = await ringOwner("second", { ...ring.deps, now: () => now + 5_000 });
   assert.equal(again.rung, false);
   assert.match(!again.rung ? again.error : "", /already rang them recently/u);
   assert.equal(ring.placed.length, 1);

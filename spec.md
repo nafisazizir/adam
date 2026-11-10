@@ -824,7 +824,7 @@ stub the route).
       texted anyway, as with the other owner-chat gates. Nothing asks for confirmation, so nothing
       parks a background turn. A standing "call me if X emails" would need its own gate matched in
       code, not by the model.
-    - **Budget.** At most one call every 10 minutes and six in a rolling 24 hours, kept in one
+    - **Budget.** At most one call every 15 seconds and 100 in a rolling 24 hours, kept in one
       claim store pointer (`claimRateSlot` in `lib/rate-limit.ts`: the recent call times, written
       conditionally); a store failure or a lost race refuses the call, so a loop or a replayed step
       stops at the gap. A ringing reminder also rings once: `call_owner` passes `ringOnceKey`

@@ -12,8 +12,8 @@ import { CallNotPlaced, type OutboundCall, type OutboundLine, type PlacedCall } 
 
 const budgetJob = "outbound-calls";
 
-// Enough for a wake-up call, a snooze and a few "call me"s a day; a loop stops at the first gap.
-export const ringLimit: RateLimit = { minGapMs: 10 * 60 * 1000, max: 6, windowMs: 24 * 60 * 60 * 1000 };
+// Loose enough to rehearse a demo back to back; the short gap still stops a runaway loop.
+export const ringLimit: RateLimit = { minGapMs: 15 * 1000, max: 100, windowMs: 24 * 60 * 60 * 1000 };
 
 // Ringing interrupts, and a turn started by mail, an invite, a coding agent or a call carries text
 // someone else wrote, so only the owner's say-so can ring: their chat, or a reminder they asked to
