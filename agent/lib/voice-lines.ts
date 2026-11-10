@@ -18,6 +18,7 @@ export function configuredVapiLine() {
     toolSecret: env.CALLS_TOOL_SECRET,
     toolsUrl: env.vapiToolsUrl,
     eventsUrl: env.vapiEventsUrl,
+    elevenLabsVoiceId: env.ELEVENLABS_VOICE_ID,
   });
 }
 
