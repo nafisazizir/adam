@@ -1,5 +1,6 @@
 import { experimental_transcribe } from "ai";
 
+import { deepgramTranscribe } from "#lib/deepgram.js";
 import { env } from "#lib/env.js";
 import { toTranscribableAudio } from "#lib/transcribable-audio.js";
 
@@ -14,6 +15,8 @@ export async function transcribeAudio(audio: {
   mediaType: string;
 }): Promise<Transcript> {
   const converted = await toTranscribableAudio(audio.data, audio.mediaType);
+  if (env.DEEPGRAM_API_KEY) return deepgramTranscribe(env.DEEPGRAM_API_KEY, converted);
+
   const result = await experimental_transcribe({
     model: env.TRANSCRIPTION_MODEL,
     audio: converted.bytes,

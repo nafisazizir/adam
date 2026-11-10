@@ -23,11 +23,11 @@ export function ringOwnerRefusal(auth: SessionAuthContext | null | undefined): s
   return "Only the user can have you ring them: from chat, or with a reminder they asked you to ring them for. Text them instead.";
 }
 
-export interface RingOwnerDeps {
-  readonly line: OutboundLine | null;
+export interface RingOwnerDeps<Line = OutboundLine> {
+  readonly line: Line | null;
   readonly owner: () => Promise<KnownOwner>;
   readonly budget: ClaimStore;
-  readonly place: (line: OutboundLine, call: OutboundCall) => Promise<PlacedCall>;
+  readonly place: (line: Line, call: OutboundCall) => Promise<PlacedCall>;
   readonly now?: () => number;
 }
 
@@ -36,7 +36,7 @@ export type RingOutcome =
   | { readonly rung: false; readonly error: string; readonly uncertain?: true };
 
 const notConfigured =
-  "Calling out isn't set up: it needs ELEVENLABS_API_KEY, CALLS_PHONE_NUMBER and CALLS_TOOL_SECRET. Text them instead.";
+  "Calling out isn't set up: with VOICE_PROVIDER elevenlabs it needs ELEVENLABS_API_KEY, CALLS_PHONE_NUMBER and CALLS_TOOL_SECRET; with vapi, VAPI_API_KEY, VAPI_PHONE_NUMBER_ID and CALLS_TOOL_SECRET. Text them instead.";
 
 export function outboundLine(settings: {
   readonly apiKey?: string;
@@ -69,7 +69,7 @@ export function ringOnceKey(auth: SessionAuthContext | null | undefined): string
 
 // `once` names a claim this ring takes, so the same trigger can't ring twice; it is given back
 // whenever the phone certainly did not ring.
-export async function ringOwner(reason: string, deps: RingOwnerDeps, once?: string): Promise<RingOutcome> {
+export async function ringOwner<Line>(reason: string, deps: RingOwnerDeps<Line>, once?: string): Promise<RingOutcome> {
   if (once === undefined) return ringWithinBudget(reason, deps);
 
   const claim = await claimOnce(deps.budget, once);
@@ -84,7 +84,7 @@ export async function ringOwner(reason: string, deps: RingOwnerDeps, once?: stri
   return outcome;
 }
 
-async function ringWithinBudget(reason: string, deps: RingOwnerDeps): Promise<RingOutcome> {
+async function ringWithinBudget<Line>(reason: string, deps: RingOwnerDeps<Line>): Promise<RingOutcome> {
   if (!deps.line) return { rung: false, error: notConfigured };
 
   const toNumber = ownerPhoneNumber(await deps.owner());
