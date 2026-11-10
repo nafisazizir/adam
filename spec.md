@@ -863,8 +863,8 @@ stub the route).
     `relayCallRequest`, `relayCallEnded`, `noteCallStarted`), so a Vapi call lands in the owner's
     one thread exactly as an ElevenLabs call does. Vapi needs nothing in its dashboard but a phone
     number: each call carries a transient assistant built from the same `CallBriefing`, with
-    Deepgram Nova-3 transcribing, Adam's ElevenLabs voice speaking (`ELEVENLABS_VOICE_ID`, else
-    Deepgram Aura-2), background sound off, `ask_adam` pointed at
+    Deepgram Flux transcribing (it detects end of turn itself), Adam's ElevenLabs voice speaking on
+    Eleven v4 Turbo (`ELEVENLABS_VOICE_ID`, else Deepgram Aura-2), background sound off, `ask_adam` pointed at
     `/eve/v1/vapi/tools` and the end-of-call report at `/eve/v1/vapi/events`, both carrying the
     `x-calls-secret` header. Outbound only for now; an inbound Vapi number would answer an
     `assistant-request` on the events route.

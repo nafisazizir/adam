@@ -44,7 +44,7 @@ export function vapiLine(settings: {
 // Adam's ElevenLabs voice when there is one, so a Vapi call sounds like an ElevenLabs one.
 function vapiVoice(line: VapiLine) {
   return line.elevenLabsVoiceId
-    ? { provider: "11labs", model: "eleven_flash_v2_5", voiceId: line.elevenLabsVoiceId }
+    ? { provider: "11labs", model: "eleven_v4_turbo", voiceId: line.elevenLabsVoiceId }
     : { provider: "deepgram", model: "aura-2", voiceId: "apollo" };
 }
 
@@ -60,7 +60,8 @@ export function vapiAssistant(briefing: CallBriefing, line: VapiLine) {
     firstMessageMode: "assistant-speaks-first",
     maxDurationSeconds: maxCallSecs,
     backgroundSound: "off",
-    transcriber: { provider: "deepgram", model: "nova-3", language: "en" },
+    // Flux detects the end of a turn itself, so Adam answers sooner without cutting in.
+    transcriber: { provider: "deepgram", model: "flux-general-en" },
     voice: vapiVoice(line),
     model: {
       provider: "openai",

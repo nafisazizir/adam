@@ -27,7 +27,7 @@ test("the assistant speaks the briefing with Deepgram's ears and no office noise
   const assistant = vapiAssistant(briefing, line);
   assert.equal(assistant.firstMessage, briefing.greeting);
   assert.equal(assistant.model.messages[0]?.content, briefing.briefing);
-  assert.equal(assistant.transcriber.provider, "deepgram");
+  assert.deepEqual(assistant.transcriber, { provider: "deepgram", model: "flux-general-en" });
   assert.equal(assistant.backgroundSound, "off");
   assert.equal(assistant.voice.provider, "deepgram");
   const ask = assistant.model.tools[0] as { function: { name: string }; server: { url: string; headers: Record<string, string> } };
@@ -39,7 +39,7 @@ test("the assistant speaks the briefing with Deepgram's ears and no office noise
 
 test("Adam's ElevenLabs voice speaks when there is one", () => {
   const voice = vapiAssistant(briefing, { ...line, elevenLabsVoiceId: "voice_1" }).voice;
-  assert.deepEqual(voice, { provider: "11labs", model: "eleven_flash_v2_5", voiceId: "voice_1" });
+  assert.deepEqual(voice, { provider: "11labs", model: "eleven_v4_turbo", voiceId: "voice_1" });
 });
 
 test("placing a call returns Vapi's call id", async () => {
